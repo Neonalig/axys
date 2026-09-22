@@ -228,12 +228,38 @@ export function themeColors(name: ThemeName): Theme {
  */
 export function applyTheme(name: ThemeName, root: HTMLElement = document.documentElement): void {
   const colors = PALETTES[name];
+  const changed = root.dataset['theme'] !== undefined && root.dataset['theme'] !== name;
   for (const token of THEME_TOKENS) {
     root.style.setProperty(cssVariable(token), colors[token]);
   }
   root.dataset['theme'] = name;
   root.style.colorScheme = isDarkTheme(name) ? 'dark' : 'light';
+  if (changed) {
+    crossFade(root);
+  }
 }
+
+/**
+ * Eases the chrome from one palette to the next.
+ *
+ * @remarks The class is on only for the length of the change. Left on, its colour transition
+ * would also ease every hover and pressed state underneath it.
+ */
+function crossFade(root: HTMLElement): void {
+  root.classList.add('is-theme-changing');
+  if (crossFadeTimer !== null) {
+    clearTimeout(crossFadeTimer);
+  }
+  crossFadeTimer = setTimeout(() => {
+    crossFadeTimer = null;
+    root.classList.remove('is-theme-changing');
+  }, CROSS_FADE_MS);
+}
+
+/** Length of the palette cross-fade, matching `--axys-duration-slow`. */
+const CROSS_FADE_MS = 240;
+
+let crossFadeTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Theme currently applied to an element, or the dark default. */
 export function currentTheme(root: HTMLElement = document.documentElement): ThemeName {

@@ -6,23 +6,59 @@
  */
 
 :root {
-  --axys-font: system-ui, 'Segoe UI', roboto, 'Helvetica Neue', arial, sans-serif;
-  --axys-font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', menlo, consolas, monospace;
-  --axys-size-sm: 11px;
+  /* Typeface: the two shipped faces first, the platform's own as the fallback */
+  --axys-font: 'Atkinson Hyperlegible Next', system-ui, 'Segoe UI', roboto, sans-serif;
+  --axys-font-mono:
+    'Atkinson Hyperlegible Mono', ui-monospace, 'Cascadia Mono', consolas, monospace;
+
+  /* Type size */
+  --axys-size-sm: 12px;
   --axys-size-md: 13px;
-  --axys-size-lg: 15px;
+  --axys-size-lg: 16px;
+
+  /* Weight */
+  --axys-weight-body: 400;
+  --axys-weight-control: 500;
+  --axys-weight-strong: 600;
+
+  /* Spacing, 4px base */
+  --axys-space-1: 4px;
+  --axys-space-2: 8px;
+  --axys-space-3: 12px;
+  --axys-space-4: 16px;
+  --axys-space-6: 24px;
+
+  /* Radius */
+  --axys-radius-sm: 4px;
   --axys-radius: 6px;
   --axys-radius-lg: 10px;
-  --axys-gap: 8px;
-  --axys-pad: 10px;
+  --axys-radius-pill: 999px;
+
+  /* Elevation, drawn in the theme's own shadow colour */
+  --axys-elevation-1: 0 1px 2px var(--axys-shadow);
+  --axys-elevation-2: 0 4px 12px var(--axys-shadow);
+  --axys-elevation-3: 0 12px 32px var(--axys-shadow);
+
+  /* Motion */
+  --axys-duration-fast: 90ms;
+  --axys-duration-base: 150ms;
+  --axys-duration-slow: 240ms;
+  --axys-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --axys-ease-enter: cubic-bezier(0, 0, 0, 1);
+  --axys-ease-exit: cubic-bezier(0.3, 0, 1, 1);
+
+  /* Chrome metrics */
   --axys-control-height: 28px;
-  --axys-inspector-width: 328px;
+  --axys-inspector-width: 344px;
   --axys-inspector-rail: 34px;
   --axys-toolbar-height: 44px;
   --axys-status-height: 26px;
   --axys-mixer-height: 248px;
   --axys-scrollbar: 12px;
-  --axys-motion: 120ms;
+
+  /* Translucency of chrome floating over the canvas */
+  --axys-surface-alpha: 72%;
+  --axys-blur: blur(20px) saturate(1.4);
 }
 
 *,
@@ -47,10 +83,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * A ring rather than an outline: `box-shadow` follows whatever radius the element already has,
+ * so no rule has to force one radius onto everything that can take focus. The inner band of `bg`
+ * keeps the ring legible against a control of any colour.
+ */
+
 :focus-visible {
-  outline: 2px solid var(--axys-focus);
-  outline-offset: 2px;
-  border-radius: var(--axys-radius);
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--axys-bg),
+    0 0 0 3px var(--axys-focus);
 }
 
 :focus:not(:focus-visible) {
@@ -73,6 +116,7 @@ body {
 
 #app {
   display: grid;
+  transition: grid-template-columns var(--axys-duration-base) var(--axys-ease-standard);
   grid-template-columns: minmax(0, 1fr) auto var(--axys-inspector-width);
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   grid-template-areas:
@@ -111,10 +155,11 @@ body {
   grid-area: toolbar;
   display: flex;
   align-items: center;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   flex-wrap: wrap;
   min-height: var(--axys-toolbar-height);
-  padding: 0 var(--axys-pad);
+  transition: min-height var(--axys-duration-base) var(--axys-ease-standard);
+  padding: 0 var(--axys-space-3);
   background: var(--axys-surface);
   border-bottom: 1px solid var(--axys-border);
 }
@@ -170,7 +215,7 @@ body {
   position: absolute;
   top: 0;
   left: 0;
-  border-radius: 999px;
+  border-radius: var(--axys-radius-pill);
   background: var(--axys-border-strong);
 }
 
@@ -226,7 +271,7 @@ body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--axys-pad);
+  padding: var(--axys-space-3);
   background: var(--axys-surface);
 }
 
@@ -239,8 +284,8 @@ body {
 .axys-inspector-head {
   display: flex;
   align-items: center;
-  gap: var(--axys-gap);
-  margin-bottom: var(--axys-pad);
+  gap: var(--axys-space-2);
+  margin-bottom: var(--axys-space-3);
 }
 
 .axys-inspector-head > .axys-tabs {
@@ -250,7 +295,7 @@ body {
 }
 
 .axys-inspector.is-collapsed {
-  padding: var(--axys-pad) 0;
+  padding: var(--axys-space-3) 0;
   overflow: hidden;
 }
 
@@ -269,13 +314,14 @@ body {
 .axys-mixer {
   grid-area: mixer;
   display: flex;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   align-items: stretch;
   height: var(--axys-mixer-height);
-  padding: var(--axys-gap) var(--axys-pad);
+  padding: var(--axys-space-2) var(--axys-space-3);
   overflow-x: auto;
   border-top: 1px solid var(--axys-border);
   background: var(--axys-surface);
+  transition: height var(--axys-duration-base) var(--axys-ease-standard);
 }
 
 .axys-mixer[hidden] {
@@ -352,7 +398,7 @@ body {
   min-width: 26px;
   height: 22px;
   font-size: var(--axys-size-sm);
-  font-weight: 600;
+  font-weight: var(--axys-weight-strong);
 }
 
 .axys-mixer-switch[aria-pressed='true'].is-mute {
@@ -370,9 +416,9 @@ body {
   grid-area: status;
   display: flex;
   align-items: center;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   min-height: var(--axys-status-height);
-  padding: 0 var(--axys-pad);
+  padding: 0 var(--axys-space-3);
   font-size: var(--axys-size-sm);
   color: var(--axys-text-muted);
   background: var(--axys-surface);
@@ -407,7 +453,7 @@ body {
 }
 
 .axys-group + .axys-group {
-  padding-left: var(--axys-gap);
+  padding-left: var(--axys-space-2);
   border-left: 1px solid var(--axys-border);
 }
 
@@ -465,9 +511,10 @@ button {
   border: 1px solid var(--axys-border);
   border-radius: var(--axys-radius);
   cursor: pointer;
+  font-weight: var(--axys-weight-control);
   transition:
-    background var(--axys-motion) ease,
-    border-color var(--axys-motion) ease;
+    background var(--axys-duration-fast) var(--axys-ease-standard),
+    border-color var(--axys-duration-fast) var(--axys-ease-standard);
 }
 
 button:hover:not(:disabled) {
@@ -569,7 +616,7 @@ input[type='checkbox'] {
 .axys-tabs {
   display: flex;
   gap: 2px;
-  margin-bottom: var(--axys-pad);
+  margin-bottom: var(--axys-space-3);
   padding: 2px;
   border-radius: var(--axys-radius);
   background: var(--axys-surface-sunken);
@@ -584,7 +631,7 @@ input[type='checkbox'] {
   height: 24px;
   padding: 0 8px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--axys-radius-sm);
   background: transparent;
   color: var(--axys-text-muted);
   font-size: var(--axys-size-sm);
@@ -613,15 +660,15 @@ input[type='checkbox'] {
 }
 
 .axys-panel + .axys-panel {
-  margin-top: var(--axys-pad);
-  padding-top: var(--axys-pad);
+  margin-top: var(--axys-space-3);
+  padding-top: var(--axys-space-3);
   border-top: 1px solid var(--axys-border);
 }
 
 .axys-panel > h2 {
-  margin: 0 0 var(--axys-gap);
+  margin: 0 0 var(--axys-space-2);
   font-size: var(--axys-size-md);
-  font-weight: 600;
+  font-weight: var(--axys-weight-strong);
   letter-spacing: 0.02em;
   color: var(--axys-text);
 }
@@ -631,7 +678,7 @@ input[type='checkbox'] {
   /* Wide enough for the longest label plus its info icon on one line */
   grid-template-columns: 120px minmax(0, 1fr);
   align-items: center;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   margin-bottom: 6px;
 }
 
@@ -698,7 +745,7 @@ input.is-adjustable {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   min-width: 0;
 }
 
@@ -706,7 +753,7 @@ input.is-adjustable {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 2px;
-  margin: var(--axys-gap) 0 0;
+  margin: var(--axys-space-2) 0 0;
   padding: 0;
   border: 0;
 }
@@ -732,12 +779,12 @@ input.is-adjustable {
   color: var(--axys-text-muted);
   background: var(--axys-surface-sunken);
   border: 1px solid var(--axys-border);
-  border-radius: 4px;
+  border-radius: var(--axys-radius-sm);
   cursor: pointer;
   user-select: none;
   transition:
-    background var(--axys-motion) ease,
-    color var(--axys-motion) ease;
+    background var(--axys-duration-fast) var(--axys-ease-standard),
+    color var(--axys-duration-fast) var(--axys-ease-standard);
 }
 
 .axys-note-toggle > input[type='checkbox'],
@@ -763,12 +810,13 @@ input.is-adjustable {
   color: var(--axys-accent-text);
   background: var(--axys-accent);
   border-color: var(--axys-accent);
-  font-weight: 600;
+  font-weight: var(--axys-weight-strong);
 }
 
 .axys-note-toggle:has(> input:focus-visible) {
-  outline: 2px solid var(--axys-focus);
-  outline-offset: 1px;
+  box-shadow:
+    0 0 0 1px var(--axys-bg),
+    0 0 0 3px var(--axys-focus);
 }
 
 .axys-hint {
@@ -780,7 +828,7 @@ input.is-adjustable {
 /* The selection count is a subheading, so the fields start below it rather than against it */
 
 .axys-selection-count {
-  margin-bottom: var(--axys-pad);
+  margin-bottom: var(--axys-space-3);
 }
 
 .axys-warning {
@@ -799,7 +847,7 @@ input.is-adjustable {
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   align-items: center;
   justify-content: center;
   background: color-mix(in srgb, var(--axys-bg) 82%, transparent);
@@ -820,7 +868,7 @@ input.is-adjustable {
 
 .axys-drop {
   position: absolute;
-  inset: var(--axys-pad);
+  inset: var(--axys-space-3);
   z-index: 21;
   display: flex;
   align-items: center;
@@ -849,17 +897,23 @@ input.is-adjustable {
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius);
   background: var(--axys-surface-raised);
-  box-shadow: 0 8px 24px var(--axys-shadow);
+  box-shadow: var(--axys-elevation-2);
+  animation: axys-pop-in var(--axys-duration-fast) var(--axys-ease-enter);
+  transform-origin: top center;
+}
+
+.axys-menu.is-leaving {
+  animation: axys-pop-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
 }
 
 .axys-menu-item {
   display: flex;
   align-items: center;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   height: 26px;
   padding: 0 8px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--axys-radius-sm);
   background: transparent;
   font-size: var(--axys-size-md);
   text-align: left;
@@ -893,7 +947,7 @@ input.is-adjustable {
 .axys-menu-key {
   padding: 0 4px;
   border: 1px solid var(--axys-border);
-  border-radius: 3px;
+  border-radius: var(--axys-radius-sm);
   color: var(--axys-text-muted);
   font-family: var(--axys-font-mono);
   font-size: var(--axys-size-sm);
@@ -922,11 +976,16 @@ input.is-adjustable {
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius);
   background: var(--axys-surface-raised);
-  box-shadow: 0 4px 12px var(--axys-shadow);
+  box-shadow: var(--axys-elevation-2);
   color: var(--axys-text);
   font-size: var(--axys-size-sm);
   line-height: 1.35;
   pointer-events: none;
+  animation: axys-fade-in var(--axys-duration-fast) var(--axys-ease-standard);
+}
+
+.axys-tooltip.is-leaving {
+  animation: axys-fade-out var(--axys-duration-fast) var(--axys-ease-standard) forwards;
 }
 
 .axys-tooltip[hidden] {
@@ -943,7 +1002,7 @@ input.is-adjustable {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   width: min(360px, calc(100vw - 32px));
   pointer-events: none;
 }
@@ -951,7 +1010,7 @@ input.is-adjustable {
 .axys-toast {
   display: flex;
   align-items: flex-start;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   width: 100%;
   padding: 10px 12px;
   background: var(--axys-surface-raised);
@@ -959,9 +1018,9 @@ input.is-adjustable {
   border: 1px solid var(--axys-border-strong);
   border-left: 3px solid var(--axys-accent);
   border-radius: var(--axys-radius);
-  box-shadow: 0 6px 20px var(--axys-shadow);
+  box-shadow: var(--axys-elevation-3);
   pointer-events: auto;
-  animation: axys-toast-in var(--axys-motion) ease-out;
+  animation: axys-toast-in var(--axys-duration-base) var(--axys-ease-enter);
 }
 
 .axys-toast.is-warn {
@@ -980,6 +1039,10 @@ input.is-adjustable {
   padding: 0;
   background: transparent;
   border-color: transparent;
+}
+
+.axys-toast.is-leaving {
+  animation: axys-toast-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
 }
 
 @keyframes axys-toast-in {
@@ -1001,6 +1064,7 @@ input.is-adjustable {
   inset: 0;
   z-index: 59;
   background: rgb(0 0 0 / 50%);
+  animation: axys-fade-in var(--axys-duration-base) var(--axys-ease-enter);
 }
 
 .axys-dialog {
@@ -1019,7 +1083,15 @@ input.is-adjustable {
   background: var(--axys-surface-raised);
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius-lg);
-  box-shadow: 0 12px 40px var(--axys-shadow);
+  box-shadow: var(--axys-elevation-3);
+  animation: axys-dialog-in var(--axys-duration-base) var(--axys-ease-enter);
+}
+
+/* A dragged panel keeps the position the drag gave it, so the entry transform must not replay */
+
+.axys-dialog.is-dragging,
+.axys-dialog.is-moved {
+  animation: none;
 }
 
 .axys-dialog-body {
@@ -1030,8 +1102,8 @@ input.is-adjustable {
 .axys-dialog-head {
   display: flex;
   align-items: center;
-  gap: var(--axys-gap);
-  margin-bottom: var(--axys-pad);
+  gap: var(--axys-space-2);
+  margin-bottom: var(--axys-space-3);
   cursor: grab;
   user-select: none;
 }
@@ -1042,7 +1114,7 @@ input.is-adjustable {
   align-self: center;
   min-width: 32px;
   height: 12px;
-  margin: 0 var(--axys-gap);
+  margin: 0 var(--axys-space-2);
   cursor: grab;
   background-image: radial-gradient(var(--axys-border-strong) 1px, transparent 1px);
   background-size: 4px 4px;
@@ -1070,8 +1142,8 @@ input.is-adjustable {
 
 .axys-dialog-actions {
   justify-content: flex-end;
-  margin-top: var(--axys-pad);
-  padding-top: var(--axys-pad);
+  margin-top: var(--axys-space-3);
+  padding-top: var(--axys-space-3);
   border-top: 1px solid var(--axys-border);
 }
 
@@ -1080,7 +1152,7 @@ input.is-adjustable {
 .axys-progress {
   overflow: hidden;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--axys-radius-sm);
   background: var(--axys-border);
 }
 
@@ -1117,7 +1189,7 @@ input.is-adjustable {
 /* The licence offer reads as its own section, so it is spaced like one */
 
 .axys-blurb {
-  margin-top: var(--axys-pad);
+  margin-top: var(--axys-space-3);
 }
 
 .axys-caps {
@@ -1131,7 +1203,7 @@ input.is-adjustable {
 .axys-caps > li {
   display: flex;
   align-items: baseline;
-  gap: var(--axys-gap);
+  gap: var(--axys-space-2);
   padding: 3px 0;
   border-bottom: 1px solid var(--axys-border);
 }
@@ -1153,10 +1225,65 @@ input.is-adjustable {
 .axys-blocker {
   display: grid;
   place-content: center;
-  gap: var(--axys-pad);
+  gap: var(--axys-space-3);
   height: 100dvh;
   padding: 24px;
   text-align: left;
+}
+
+/*
+ * Theme and accent change: the class is on for the length of the change only, because a standing
+ * colour transition on every element would also ease a control's own hover and pressed states.
+ */
+
+html.is-theme-changing,
+html.is-theme-changing * {
+  transition:
+    background-color var(--axys-duration-slow) var(--axys-ease-standard),
+    border-color var(--axys-duration-slow) var(--axys-ease-standard),
+    color var(--axys-duration-slow) var(--axys-ease-standard) !important;
+}
+
+/* Shared enter and exit keyframes, referenced by the chrome that is added and removed */
+
+@keyframes axys-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes axys-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes axys-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes axys-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes axys-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes axys-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px)) scale(0.98);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

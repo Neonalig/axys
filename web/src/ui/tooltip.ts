@@ -9,6 +9,8 @@
  * accessible name stays on the control, so assistive technology reads the same thing either way.
  */
 
+import { animateOut } from './motion.js';
+
 /** Milliseconds a pointer rests on a control before its tooltip appears. */
 const DELAY_MS = 320;
 
@@ -143,6 +145,7 @@ export class TooltipHost {
       return;
     }
     this.#target = target;
+    this.#element.classList.remove('is-leaving');
     this.#element.textContent = text;
     this.#element.hidden = false;
     target.setAttribute('aria-describedby', this.#element.id);
@@ -171,7 +174,16 @@ export class TooltipHost {
     }
     this.#target?.removeAttribute('aria-describedby');
     this.#target = null;
-    this.#element.hidden = true;
+    if (this.#element.hidden) {
+      return;
+    }
+    animateOut(this.#element, 'is-leaving', () => {
+      // Another control may have claimed the tooltip while this one was fading, so the element is
+      // hidden only when nothing is using it.
+      if (this.#target === null) {
+        this.#element.hidden = true;
+      }
+    });
   }
 }
 

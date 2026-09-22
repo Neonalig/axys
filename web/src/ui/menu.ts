@@ -38,6 +38,7 @@ export type MenuEntry = MenuItem | MenuSeparator;
 
 import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
+import { animateOut } from './motion.js';
 
 /** Distance in pixels a menu is kept from the viewport edge. */
 const MARGIN = 8;
@@ -174,10 +175,13 @@ export function showContextMenu(
     document.removeEventListener('pointerdown', onPointerDown, true);
     window.removeEventListener('blur', close);
     window.removeEventListener('resize', close);
-    element.remove();
+    // Focus goes back before the exit plays, so the keyboard is never parked on a leaving menu.
     if (previous instanceof HTMLElement) {
       previous.focus();
     }
+    animateOut(element, 'is-leaving', () => {
+      element.remove();
+    });
   };
 
   element.addEventListener('keydown', onKeyDown);

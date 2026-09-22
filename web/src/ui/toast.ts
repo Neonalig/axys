@@ -7,6 +7,7 @@
  */
 
 import { ICONS } from './icons.js';
+import { animateOut } from './motion.js';
 import { setTooltip } from './tooltip.js';
 
 /** Severity of a notification. */
@@ -129,6 +130,8 @@ export class ToastHost {
       globalThis.clearTimeout(timer);
       this.#timers.delete(toast);
     }
-    toast.remove();
+    animateOut(toast, 'is-leaving', () => {
+      toast.remove();
+    });
   }
 }
