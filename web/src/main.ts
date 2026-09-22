@@ -17,7 +17,7 @@ import { clampInspectorWidth, loadPreferences, savePreferences } from './app/pre
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
 import { AppStore, initialState } from './app/store.js';
-import type { CompareMode, FollowMode, ToolId } from './app/store.js';
+import type { FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile } from './audio/decode.js';
 import { AudioEngine } from './audio/engine.js';
 import type { EngineReport } from './audio/engine.js';
@@ -32,6 +32,7 @@ import type {
   ExportPreview,
   GuideOverlap,
   MappingProposal,
+  MixerSettings,
   Project,
   RenderPlan,
   ViewState,
@@ -623,8 +624,10 @@ class AxysWorkspace implements Workspace {
     clearPeaks();
     buildPeaks(mono, source.sampleRate, source.fingerprint);
 
+    const edits = session.state();
     await this.#audio.loadSource(session.source(), source.sampleRate, session.trackJson());
     this.#audio.setPlan(plan);
+    this.#audio.setMixer(edits.mixer);
     this.#audio.setLoop(null);
 
     const framed =
@@ -645,7 +648,7 @@ class AxysWorkspace implements Workspace {
       blobs,
       plan,
       conflicts: session.conflicts(),
-      edits: session.state(),
+      edits,
       midi: session.midi(),
       mappingReport: null,
       guideOverlaps: session.guideOverlaps(),
@@ -728,6 +731,10 @@ class AxysWorkspace implements Workspace {
       const plan = session.plan();
       this.#plan = plan;
       this.#audio.setPlan(plan);
+      const edits = session.state();
+      // The desk is monitoring rather than a plan input, so it reaches the worklet on its own
+      // path. It still travels with the project, which is why it is read back from the session.
+      this.#audio.setMixer(edits.mixer);
       const blobs = session.blobs();
       this.#store.update({
         blobs,
@@ -736,7 +743,7 @@ class AxysWorkspace implements Workspace {
         // an operation the plan carried moved nothing on screen.
         plan,
         conflicts: session.conflicts(),
-        edits: session.state(),
+        edits,
         // An edit can split, join or replace blobs, so what the selected span amounts to is
         // worked out again rather than left naming blobs the edit may have just removed.
         selection: selectionForRanges(blobs, this.#store.state.selection.ranges),
@@ -1181,8 +1188,8 @@ function buildHooks(
     setTool(tool: ToolId): void {
       store.update({ tool });
     },
-    setCompare(mode: CompareMode): void {
-      audio.setCompare(mode);
+    previewMixer(mixer: MixerSettings): void {
+      audio.setMixer(mixer);
     },
     setTuning(a4Hz: number): void {
       workspace()?.setTuning(a4Hz);

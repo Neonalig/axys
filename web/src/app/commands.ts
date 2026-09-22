@@ -8,9 +8,11 @@
  * drive the workspace, the audio engine and the editor they are handed.
  */
 
+import { savePreferences } from './preferences.js';
 import { selectionSpan } from './selection.js';
-import type { AppState, AppStore, CompareMode } from './store.js';
+import type { AppState, AppStore } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
+import { DEFAULT_MIXER, swapped, vocalMonitor } from '../audio/mixer.js';
 import type { Blob, EditOp, ExportPreview, MappingProposal, TimelineMap } from '../core/types.js';
 import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
@@ -164,8 +166,6 @@ const ADJACENT_SECONDS = 0.05;
 
 /** Pitch margin above and below the content Zoom Fit frames, in semitones. */
 const FIT_MARGIN = 3;
-
-const COMPARE_ORDER: readonly CompareMode[] = ['processed', 'original', 'split'];
 
 /** One edit when there is one, and one group when there are several. */
 function grouped(ops: readonly EditOp[]): EditOp {
@@ -670,18 +670,37 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      id: 'transport.toggleCompare',
-      label: 'Toggle Compare',
+      id: 'transport.swapVocal',
+      label: 'Swap Vocal',
       group: 'Transport',
       shortcut: 'C',
       enabled: ready,
       run: (ctx) => {
-        const current = COMPARE_ORDER.indexOf(ctx.store.state.compare);
-        const next = COMPARE_ORDER[(current + 1) % COMPARE_ORDER.length] ?? 'processed';
-        ctx.audio.setCompare(next);
+        const mixer = ctx.store.state.edits?.mixer ?? DEFAULT_MIXER;
+        // Hearing both, or neither, is an answer a swap cannot improve on, so it says so
+        // rather than silently changing which strip is muted.
+        if (vocalMonitor(mixer) === 'processed' || vocalMonitor(mixer) === 'original') {
+          ctx.workspace.apply({ type: 'setMixer', mixer: swapped(mixer) });
+          return;
+        }
+        ctx.toast.info('Mute One Vocal To Swap');
       },
     },
 
+    {
+      id: 'view.toggleMixer',
+      label: 'Toggle Mixer',
+      group: 'View',
+      shortcut: 'K',
+      enabled: () => true,
+      run: (ctx) => {
+        // A device preference like the theme: how the editor is laid out follows the person
+        // rather than the project.
+        const collapsed = !ctx.store.state.mixerCollapsed;
+        savePreferences({ mixerCollapsed: collapsed });
+        ctx.store.update({ mixerCollapsed: collapsed });
+      },
+    },
     {
       id: 'view.zoomIn',
       label: 'Zoom In',

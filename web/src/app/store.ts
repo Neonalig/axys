@@ -35,7 +35,6 @@ export interface AppState {
   tool: ToolId;
   transport: TransportState;
   analysis: { running: boolean; progress: number; stage: string };
-  compare: CompareMode;
   /** Whether the view scrolls to keep the playhead in sight. Panning the view clears it. */
   follow: boolean;
   /** How the view keeps up while following. */
@@ -44,6 +43,8 @@ export interface AppState {
   toolbarLabels: boolean;
   /** Whether the inspector is folded away to its rail. */
   inspectorCollapsed: boolean;
+  /** Whether the mixer is folded away to its bar. */
+  mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
   dirty: boolean;
@@ -63,9 +64,6 @@ export interface Selection {
 
 /** Editor tool in use. */
 export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'time';
-
-/** Which audio the transport plays. */
-export type CompareMode = 'processed' | 'original' | 'split';
 
 /**
  * How the view keeps up with a playing playhead.
@@ -190,11 +188,11 @@ export function initialState(): AppState {
       countIn: false,
     },
     analysis: { running: false, progress: 0, stage: '' },
-    compare: 'processed',
     follow: true,
     followMode: 'page',
     toolbarLabels: false,
     inspectorCollapsed: false,
+    mixerCollapsed: true,
     inspectorWidth: 328,
     dirty: false,
   };

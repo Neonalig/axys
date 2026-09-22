@@ -12,6 +12,7 @@ pub mod curve;
 pub mod dsp;
 pub mod edit;
 pub mod midi;
+pub mod mixer;
 pub mod project;
 pub mod render;
 pub mod target;

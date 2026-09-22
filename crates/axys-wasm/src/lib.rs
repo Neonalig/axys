@@ -382,6 +382,7 @@ impl Session {
             mappings: Vec::new(),
             tuning: Default::default(),
             accidentals: Default::default(),
+            mixer: Default::default(),
         };
 
         let mut session = Session {

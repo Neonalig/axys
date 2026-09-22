@@ -14,6 +14,7 @@ use crate::blob::BlobSet;
 use crate::dsp::formant::FormantMode;
 use crate::edit::History;
 use crate::midi::{GuideSelection, NoteMapping};
+use crate::mixer::MixerSettings;
 use crate::target::{ModulationSettings, ScaleSettings};
 use crate::timeline::TimelineMap;
 use crate::units::{AccidentalStyle, Tuning};
@@ -99,6 +100,9 @@ pub struct EditState {
     /// How accidentals are spelled.
     #[serde(default)]
     pub accidentals: AccidentalStyle,
+    /// Monitor levels for everything the transport plays.
+    #[serde(default)]
+    pub mixer: MixerSettings,
 }
 
 impl Default for EditState {
@@ -113,6 +117,7 @@ impl Default for EditState {
             mappings: Vec::new(),
             tuning: Tuning::default(),
             accidentals: AccidentalStyle::default(),
+            mixer: MixerSettings::default(),
         }
     }
 }

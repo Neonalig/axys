@@ -13,9 +13,10 @@ export type IconName =
   | 'pause'
   | 'stop'
   | 'loop'
-  | 'compareProcessed'
-  | 'compareOriginal'
-  | 'compareSplit'
+  | 'monitorProcessed'
+  | 'monitorOriginal'
+  | 'monitorBoth'
+  | 'mixer'
   | 'split'
   | 'join'
   | 'reset'
@@ -89,14 +90,17 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   loop: stroked(
     `<path d="M3.2 7.4v-.6a2.2 2.2 0 0 1 2.2-2.2h7.4"/><path d="M10.9 2.6 13.1 4.6l-2.2 2"/><path d="M12.8 8.6v.6a2.2 2.2 0 0 1-2.2 2.2H3.2"/><path d="m5.1 13.4-2.2-2 2.2-2"/>`,
   ),
-  compareProcessed: stroked(
+  monitorProcessed: stroked(
     `<circle cx="8" cy="8" r="5.5" fill="currentColor"/><path stroke="var(--axys-surface)" d="M4.6 8c.9-2.4 1.8-2.4 2.7 0s1.8 2.4 2.7 0"/>`,
   ),
-  compareOriginal: stroked(
+  monitorOriginal: stroked(
     `<circle cx="8" cy="8" r="5.5"/><path d="M4.6 8c.9-2.4 1.8-2.4 2.7 0s1.8 2.4 2.7 0"/>`,
   ),
-  compareSplit: stroked(
+  monitorBoth: stroked(
     `<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11"/><path fill="currentColor" stroke="none" d="M8 2.5a5.5 5.5 0 0 0 0 11Z"/>`,
+  ),
+  mixer: stroked(
+    `<path d="M4 2.6v3.2M4 8.2v5.2M8 2.6v6.6M8 11.6v1.8M12 2.6v1.8M12 6.6v6.8"/><path d="M2.4 7h3.2M6.4 10.4h3.2M10.4 5.4h3.2"/>`,
   ),
   split: stroked(
     `<path d="M2.2 4.9h11.6l-1.6 5.2H3.8Z"/><path d="M5.5 6.7h5"/><path stroke-width="2" d="M3.8 10.1h8.4"/>`,

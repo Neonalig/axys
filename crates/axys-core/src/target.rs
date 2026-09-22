@@ -614,7 +614,7 @@ fn build_gain(inputs: &PlanInputs<'_>, hop: f64, count: usize) -> SampledCurve {
         let Some((lo, hi)) = index_range(blob.start, blob.end, hop, count) else {
             continue;
         };
-        let gain = decibels_to_amplitude(blob.gain_db) as f32;
+        let gain = crate::units::decibels_to_amplitude(blob.gain_db) as f32;
         for slot in gains.iter_mut().take(hi + 1).skip(lo) {
             *slot = gain;
         }
@@ -628,16 +628,6 @@ fn build_gain(inputs: &PlanInputs<'_>, hop: f64, count: usize) -> SampledCurve {
         }
     } else {
         SampledCurve::constant(1.0, 0.0, hop.max(inputs.duration), 2)
-    }
-}
-
-/// Linear amplitude of a level in decibels, with the floor reading as silence.
-pub fn decibels_to_amplitude(decibels: f64) -> f64 {
-    let clamped = decibels.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
-    if clamped <= crate::limits::MIN_GAIN_DB {
-        0.0
-    } else {
-        10f64.powf(clamped / 20.0)
     }
 }
 
@@ -1112,19 +1102,6 @@ mod tests {
 
         assert!(!plan.moves_level());
         assert_eq!(plan.gain.at(0.5), 1.0);
-    }
-
-    #[test]
-    fn the_gain_floor_is_silence() {
-        assert_eq!(decibels_to_amplitude(crate::limits::MIN_GAIN_DB), 0.0);
-        assert_eq!(decibels_to_amplitude(-1000.0), 0.0);
-        assert_eq!(decibels_to_amplitude(0.0), 1.0);
-        assert!((decibels_to_amplitude(6.0) - 1.995_262).abs() < 1e-5);
-        // Past the ceiling is the ceiling, not a plan that asks for an unbounded level.
-        assert_eq!(
-            decibels_to_amplitude(1000.0),
-            decibels_to_amplitude(crate::limits::MAX_GAIN_DB)
-        );
     }
 
     #[test]

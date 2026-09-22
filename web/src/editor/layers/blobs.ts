@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { DEFAULT_MIXER, vocalMonitor } from '../../audio/mixer.js';
 import type { AppState } from '../../app/store.js';
 import type { Blob, PitchCurve, PitchTrackArrays, TimingConflict } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
@@ -183,9 +184,10 @@ export function drawBlobs(
 ): void {
   const selected = new Set(state.selection.blobs);
   // What is being heard is drawn solid and what is not is drawn transient, so the picture and
-  // the monitoring choice never disagree. Split plays both, so both go transient.
-  const hearingOriginal = state.compare === 'original';
-  const editedAlpha = state.compare === 'processed' ? 1 : hearingOriginal ? 0.28 : 0.55;
+  // the mixer never disagree. Hearing both puts both between the two.
+  const monitor = vocalMonitor(state.edits?.mixer ?? DEFAULT_MIXER);
+  const hearingOriginal = monitor === 'original';
+  const editedAlpha = monitor === 'processed' ? 1 : hearingOriginal ? 0.28 : 0.55;
   const originalAlpha = hearingOriginal ? 1 : 0.55;
   // Only the Time tool acts on a blob's edges, so the grips appear only while it is armed.
   const showHandles = state.tool === 'time';
@@ -195,7 +197,7 @@ export function drawBlobs(
   ctx.rect(0, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
 
-  if (state.compare !== 'processed') {
+  if (monitor !== 'processed') {
     for (const blob of state.blobs) {
       if (blob.end < viewport.view.visibleStart || blob.start > viewport.view.visibleEnd) {
         continue;

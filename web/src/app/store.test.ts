@@ -55,7 +55,6 @@ describe('initialState', () => {
       countIn: false,
     });
     expect(state.analysis).toEqual({ running: false, progress: 0, stage: '' });
-    expect(state.compare).toBe('processed');
     expect(state.dirty).toBe(false);
   });
 
@@ -152,7 +151,7 @@ describe('AppStore.update', () => {
     s.subscribe(() => order.push('first'));
     s.subscribe(() => order.push('second'));
     s.subscribe(() => order.push('third'));
-    s.update({ compare: 'original' });
+    s.update({ tool: 'pitch' });
     expect(order).toEqual(['first', 'second', 'third']);
   });
 });
@@ -296,8 +295,8 @@ describe('batchUpdate', () => {
 
   it('lets a later patch win over an earlier one', () => {
     const s = store();
-    batchUpdate(s, [{ compare: 'original' }, { compare: 'split' }]);
-    expect(s.state.compare).toBe('split');
+    batchUpdate(s, [{ tool: 'pitch' }, { tool: 'time' }]);
+    expect(s.state.tool).toBe('time');
   });
 
   it('does nothing for an empty list', () => {

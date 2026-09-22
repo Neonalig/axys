@@ -27,6 +27,8 @@ export interface Preferences {
   toolbarLabels: boolean;
   /** Whether the inspector starts folded away to its rail. */
   inspectorCollapsed: boolean;
+  /** Whether the mixer starts folded away to its bar. */
+  mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
 }
@@ -61,6 +63,7 @@ export function defaultPreferences(): Preferences {
     timeDisplay: 'seconds',
     toolbarLabels: false,
     inspectorCollapsed: false,
+    mixerCollapsed: true,
     inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
   };
 }
@@ -99,6 +102,10 @@ export function loadPreferences(): Preferences {
       typeof record['inspectorCollapsed'] === 'boolean'
         ? record['inspectorCollapsed']
         : defaults.inspectorCollapsed,
+    mixerCollapsed:
+      typeof record['mixerCollapsed'] === 'boolean'
+        ? record['mixerCollapsed']
+        : defaults.mixerCollapsed,
     inspectorWidth:
       typeof record['inspectorWidth'] === 'number'
         ? clampInspectorWidth(record['inspectorWidth'])

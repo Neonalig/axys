@@ -18,13 +18,15 @@ import {
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../editor/view.js';
-import type { AppState, CompareMode, FollowMode, ToolId } from '../app/store.js';
+import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
-import type { AccidentalStyle, EditOp, ViewState } from '../core/types.js';
+import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
+import { vocalMonitor, DEFAULT_MIXER } from '../audio/mixer.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { ICONS, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
+import { MixerPanel } from './mixer.js';
 import { showContextMenu } from './menu.js';
 import type { MenuEntry } from './menu.js';
 import { THEME_LABELS, THEME_NAMES } from './theme.js';
@@ -61,8 +63,8 @@ export interface ShellHooks {
   setFollowMode(mode: FollowMode): void;
   /** Zooms the time axis to a visible span in seconds, about the centre of the view. */
   setSpan(seconds: number): void;
-  /** Chooses which audio the transport plays. */
-  setCompare(mode: CompareMode): void;
+  /** Hands the engine a desk that has not been committed yet, so a dragged fader is audible. */
+  previewMixer(mixer: MixerSettings): void;
   /** Sets the concert reference in Hz. */
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
@@ -116,21 +118,19 @@ const RESIZE_STEP_COARSE = 32;
 const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
 
 /**
- * How each compare mode presents itself on the one transport toggle.
+ * What the swap button shows, by which vocal is being heard.
  *
- * @remarks One control with three faces rather than a button beside a drop-down: what is being
- * monitored is a single choice, and the icon is what says which.
+ * @remarks The button says which take is audible rather than what pressing it would do, because
+ * that is the thing being checked while A/B-ing. The mixer is where the two are set.
  */
-const COMPARE_FACES: Readonly<Record<CompareMode, { icon: IconName; label: string; tip: string }>> =
-  {
-    processed: { icon: 'compareProcessed', label: 'Processed', tip: 'Playing Processed' },
-    original: { icon: 'compareOriginal', label: 'Original', tip: 'Playing Original' },
-    split: {
-      icon: 'compareSplit',
-      label: 'Split',
-      tip: 'Playing Original Left, Processed Right',
-    },
-  };
+const MONITOR_FACES: Readonly<
+  Record<ReturnType<typeof vocalMonitor>, { icon: IconName; label: string; tip: string }>
+> = {
+  processed: { icon: 'monitorProcessed', label: 'Processed', tip: 'Playing Processed' },
+  original: { icon: 'monitorOriginal', label: 'Original', tip: 'Playing Original' },
+  both: { icon: 'monitorBoth', label: 'Both', tip: 'Playing Both Vocals' },
+  neither: { icon: 'monitorBoth', label: 'Muted', tip: 'Both Vocals Muted' },
+};
 
 /**
  * Names the toolbar shows instead of a command's full label.
@@ -148,7 +148,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'edit.smoothSpan': 'Smooth',
   'transport.loopSelection': 'Loop',
   'transport.toggleMetronome': 'Metronome',
-  'transport.toggleCompare': 'Compare',
+  'transport.swapVocal': 'Swap',
   'view.followPlayhead': 'Follow',
   'midi.alignGuide': 'Align',
   'help.showDiagnostics': 'Help',
@@ -236,6 +236,8 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'file.cancelImport',
   // Selecting everything is a keyboard action; a button for it would say nothing a drag does not.
   'edit.selectAll',
+  // The mixer carries the control that folds it away, where the hand already is.
+  'view.toggleMixer',
   // Where a save goes is a variation on Save, so it lives in that button's own menu.
   'file.saveProjectAs',
 ]);
@@ -281,7 +283,7 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Pause: 'pause',
   Stop: 'stop',
   'Loop Selection': 'loop',
-  'Toggle Compare': 'compareProcessed',
+  'Swap Vocal': 'monitorProcessed',
   'Zoom In': 'zoomIn',
   'Zoom Out': 'zoomOut',
   'Zoom Fit': 'zoomFit',
@@ -393,6 +395,7 @@ export class AppShell {
   readonly #toasts: ToastHost;
   readonly #tooltips: TooltipHost;
   readonly #inspector: Inspector;
+  readonly #mixer: MixerPanel;
 
   readonly #commandButtons = new Map<string, ToolbarButton>();
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
@@ -595,6 +598,18 @@ export class AppShell {
       },
     });
 
+    this.#mixer = new MixerPanel({
+      applyEdit: (op) => {
+        this.#hooks.applyEdit(op);
+      },
+      previewMixer: (mixer) => {
+        this.#hooks.previewMixer(mixer);
+      },
+      runCommand: (id) => {
+        this.#hooks.runCommand(id);
+      },
+    });
+
     const footer = document.createElement('footer');
     footer.className = 'axys-status';
     this.#statusPhase = statusItem(footer, 'State');
@@ -622,7 +637,14 @@ export class AppShell {
     footer.append(spacerEnd, this.#zoom.element);
 
     this.#resizer = this.#buildResizer();
-    this.#root.append(header, main, this.#resizer, this.#inspector.element, footer);
+    this.#root.append(
+      header,
+      main,
+      this.#resizer,
+      this.#inspector.element,
+      this.#mixer.element,
+      footer,
+    );
     this.#toasts = new ToastHost(document.body);
     this.#tooltips = TooltipHost.install(this.#root);
   }
@@ -705,12 +727,13 @@ export class AppShell {
       button.disabled = state.phase !== 'ready';
     }
 
-    const compare = COMPARE_FACES[state.compare];
-    this.#setFace('transport.toggleCompare', {
-      icon: compare.icon,
-      label: compare.label,
-      tooltip: `${compare.tip} (C)`,
-      pressed: state.compare !== 'processed',
+    const monitor = vocalMonitor(state.edits?.mixer ?? DEFAULT_MIXER);
+    const face = MONITOR_FACES[monitor];
+    this.#setFace('transport.swapVocal', {
+      icon: face.icon,
+      label: face.label,
+      tooltip: `${face.tip} (C)`,
+      pressed: monitor !== 'processed',
     });
 
     // Following, looping and the metronome are switches, so each says whether it is on rather
@@ -795,6 +818,7 @@ export class AppShell {
 
     this.#announceSelection(state);
     this.#inspector.update(state);
+    this.#mixer.update(state);
   }
 
   /** Removes the chrome and its notification layer. */

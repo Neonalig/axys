@@ -144,11 +144,12 @@ export interface AppState {
   tool: ToolId;
   transport: TransportState;
   analysis: { running: boolean; progress: number; stage: string };
-  compare: CompareMode;
   follow: boolean;
   followMode: FollowMode;
   /** Whether the toolbar buttons carry their names beside their icons. */
   toolbarLabels: boolean;
+  /** Whether the mixer is folded away to its bar. */
+  mixerCollapsed: boolean;
   dirty: boolean;
 }
 
@@ -171,9 +172,6 @@ export type FollowMode = 'page' | 'centre';
 
 /** Editor tool in use. */
 export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'time';
-
-/** Which audio the transport plays. */
-export type CompareMode = 'processed' | 'original' | 'split';
 
 /** Transport position and mode. */
 export interface TransportState {
@@ -231,8 +229,8 @@ export function findCommand(commands: Command[], id: string): Command | undefine
 
 Commands must cover, at minimum: Open, Save Project, Save As, Import MIDI, Export Audio, Cancel
 Import, Undo, Redo, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
-Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Compare, Zoom In, Zoom Out, Zoom
-Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
+Character, Play, Stop, Loop Selection, Toggle Metronome, Swap Vocal, Toggle Mixer, Zoom In, Zoom
+Out, Zoom Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
 
 One Open covers a project or a vocal; a MIDI guide is imported into an open project and has its own
 command. Reset is one command whose extent comes from the selected span. A command that addresses a
@@ -290,7 +288,8 @@ export class AudioEngine {
   loadSource(samples: Float32Array, sampleRate: number, trackJson: string): Promise<void>;
   /** Pushes a compiled plan to the worklet. Cheap, safe to call on every edit. */
   setPlan(plan: RenderPlan): void;
-  setCompare(mode: CompareMode): void;
+  /** Hands the worklet the monitor desk: level, pan, mute and solo for every strip. */
+  setMixer(mixer: MixerSettings): void;
   play(from?: number): Promise<void>;
   pause(): void;
   stop(): void;
@@ -429,6 +428,18 @@ WAV panel: a range choice of whole project or selection defaulting to the select
 one, a sample rate, and a bit depth of 16-bit, 24-bit or 32-bit float. Measuring a range renders
 it, so the `exportPreview` figures and their warnings are shown on request rather than on every
 change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `onExport`.
+
+`ui/mixer.ts` exports `class MixerPanel`, the desk at the bottom of the editor: one strip per audio
+source, each with a level, a pan, a mute and a solo. Pressing a mute or a solo settles the desk on
+that strip alone and Ctrl or Cmd adds to what is already on, so more than one strip can be muted or
+soloed at a time. A fader is heard as it moves, through `previewMixer`, and committed as one
+`setMixer` edit when it is let go, so one drag is one undo step. The panel folds away to its bar,
+which is a device preference like the inspector's.
+
+The mixer is monitoring and never reaches the render plan, so an export is unchanged by it. It
+supersedes Compare: the processed and original takes are two strips, and Swap Vocal exchanges which
+of them is heard. `audio/mixer.ts` is the one place the desk is turned into amplitudes, read by the
+worklet, by the blob layer and by the toolbar face that says which vocal is playing.
 
 `ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
 settings, each bound to an `EditOp`. Correction and voice character are not here: they are

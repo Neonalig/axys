@@ -10,7 +10,9 @@
  * use, so the small wasm-bindgen calling convention the renderer needs is implemented here.
  */
 
-import type { CompareMode } from '../../app/store.js';
+import { DEFAULT_MIXER, mixLevels } from '../mixer.js';
+import type { MixLevels } from '../mixer.js';
+import type { MixerSettings } from '../../core/types.js';
 
 declare const sampleRate: number;
 
@@ -48,7 +50,7 @@ export type EngineMessage =
       plan: Uint8Array;
     }
   | { type: 'plan'; plan: Uint8Array }
-  | { type: 'compare'; mode: CompareMode }
+  | { type: 'mixer'; mixer: MixerSettings }
   | { type: 'play'; from: number | null; countIn: boolean; seq: number }
   | { type: 'pause'; seq: number }
   | { type: 'seek'; seconds: number; seq: number }
@@ -87,7 +89,6 @@ export type EndReason = 'end' | 'audition';
 const COUNT_IN_BEATS = 4;
 const DEFAULT_BEAT_SECONDS = 0.5;
 const CLICK_SECONDS = 0.035;
-const CLICK_GAIN = 0.28;
 const ACCENT_HZ = 1760;
 const BEAT_HZ = 880;
 const TWO_PI = Math.PI * 2;
@@ -368,11 +369,12 @@ function asciiBytes(text: string): Uint8Array {
 }
 
 /**
- * Plays the compiled plan, the original source, or both side by side.
+ * Mixes the compiled plan, the original source and the click into the output.
  *
- * @remarks Every block is answered from preallocated buffers. A missing core, a rejected plan or
- * a failed render counts an underrun and outputs silence, and the count and the reason reach the
- * main thread with the position report once a second.
+ * @remarks Every block is answered from preallocated buffers, and the desk is resolved to
+ * amplitudes when it changes rather than per sample. A missing core, a rejected plan or a failed
+ * render counts an underrun and outputs silence, and the count and the reason reach the main
+ * thread with the position report once a second.
  */
 class RendererProcessor extends AudioWorkletProcessor {
   #core: Core | null = null;
@@ -387,7 +389,7 @@ class RendererProcessor extends AudioWorkletProcessor {
   #scratch: Float32Array = new Float32Array(512);
   #position = 0;
   #playing = false;
-  #compare: CompareMode = 'processed';
+  #levels: MixLevels = mixLevels(DEFAULT_MIXER);
   #loop: { start: number; end: number } | null = null;
   #audition: { end: number; restore: number } | null = null;
 
@@ -458,8 +460,8 @@ class RendererProcessor extends AudioWorkletProcessor {
       case 'plan':
         this.#setPlan(message.plan);
         break;
-      case 'compare':
-        this.#compare = message.mode;
+      case 'mixer':
+        this.#levels = mixLevels(message.mixer);
         break;
       case 'play':
         this.#seq = message.seq;
@@ -688,37 +690,48 @@ class RendererProcessor extends AudioWorkletProcessor {
     }
   }
 
+  /**
+   * Mixes the two vocal strips into one segment of the block.
+   *
+   * @remarks A strip nothing can be heard from is not rendered at all, so a muted processed
+   * strip costs no synthesis and a desk with both vocals down costs none either.
+   */
   #renderSegment(output: Float32Array[], offset: number, count: number): void {
     const ratio = this.#ratio;
     const start = Math.floor(this.#position);
     const span = Math.floor(this.#position + (count - 1) * ratio) - start + 2;
-    const wantProcessed = this.#compare !== 'original';
-    const wantOriginal = this.#compare !== 'processed';
-    const processedOk = wantProcessed ? this.#renderProcessed(start, span) : false;
-
-    const left = output[0];
-    const right = output[1];
-    const split = this.#compare === 'split' && left !== undefined && right !== undefined;
+    const processedLevel = this.#levels.processed;
+    const originalLevel = this.#levels.original;
+    const processedOk = processedLevel.audible ? this.#renderProcessed(start, span) : false;
 
     for (let i = 0; i < count; i += 1) {
       const position = this.#position + i * ratio - start;
       const processed = processedOk ? sampleAt(this.#scratch, position) : 0;
-      const original = wantOriginal ? sampleAt(this.#source, position + start) : 0;
-      const index = offset + i;
-      if (split && left && right) {
-        left[index] = original;
-        right[index] = processed;
-        for (let c = 2; c < output.length; c += 1) {
-          const channel = output[c];
-          if (channel) channel[index] = processed;
-        }
-        continue;
-      }
-      const value = this.#compare === 'original' ? original : processed;
-      for (let c = 0; c < output.length; c += 1) {
-        const channel = output[c];
-        if (channel) channel[index] = value;
-      }
+      const original = originalLevel.audible ? sampleAt(this.#source, position + start) : 0;
+      this.#write(
+        output,
+        offset + i,
+        processed * processedLevel.left + original * originalLevel.left,
+        processed * processedLevel.right + original * originalLevel.right,
+      );
+    }
+  }
+
+  /**
+   * Adds one stereo frame to the output.
+   *
+   * @remarks Channel 0 is left and channel 1 is right. A device with more channels than that
+   * takes the sum of the pair, so a panned strip is still heard on every one of them.
+   */
+  #write(output: Float32Array[], index: number, left: number, right: number): void {
+    const first = output[0];
+    if (first) first[index] = (first[index] ?? 0) + left;
+    const second = output[1];
+    if (second) second[index] = (second[index] ?? 0) + right;
+    const summed = (left + right) * 0.5;
+    for (let c = 2; c < output.length; c += 1) {
+      const channel = output[c];
+      if (channel) channel[index] = (channel[index] ?? 0) + summed;
     }
   }
 
@@ -755,6 +768,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     preroll = false,
   ): void {
     const clicks = this.#clicks;
+    const level = this.#levels.click;
     const step = 1 / sampleRate;
     for (let i = 0; i < frames; i += 1) {
       if (timelineStart !== null) {
@@ -773,15 +787,11 @@ class RendererProcessor extends AudioWorkletProcessor {
       }
 
       if (this.#clickLeft <= 0) continue;
-      const envelope = (this.#clickLeft / this.#clickLength) * CLICK_GAIN;
-      const value = Math.sin(this.#clickPhase) * envelope;
+      const value = Math.sin(this.#clickPhase) * (this.#clickLeft / this.#clickLength);
       this.#clickPhase += this.#clickStep;
       if (this.#clickPhase > TWO_PI) this.#clickPhase -= TWO_PI;
       this.#clickLeft -= 1;
-      for (let c = 0; c < output.length; c += 1) {
-        const channel = output[c];
-        if (channel) channel[i] = (channel[i] ?? 0) + value;
-      }
+      this.#write(output, i, value * level.left, value * level.right);
     }
   }
 
@@ -861,7 +871,7 @@ function asEngineMessage(value: unknown): EngineMessage | null {
     case 'init':
     case 'source':
     case 'plan':
-    case 'compare':
+    case 'mixer':
     case 'play':
     case 'pause':
     case 'seek':

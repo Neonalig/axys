@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Frequency, MIDI note, cents and note-name conversions.
+//! Frequency, MIDI note, cents, level and note-name conversions.
 
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +124,22 @@ pub fn name_to_midi(name: &str) -> Option<i32> {
     Some((octave + 1) * 12 + step + alter)
 }
 
+/// Linear amplitude of a level in decibels, with the floor reading as silence.
+///
+/// Levels are clamped to [`crate::limits::MIN_GAIN_DB`] and [`crate::limits::MAX_GAIN_DB`], and
+/// the floor is silence rather than a very quiet signal, so a fader taken all the way down is off.
+pub fn decibels_to_amplitude(decibels: f64) -> f64 {
+    if !decibels.is_finite() {
+        return 1.0;
+    }
+    let clamped = decibels.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
+    if clamped <= crate::limits::MIN_GAIN_DB {
+        0.0
+    } else {
+        10f64.powf(clamped / 20.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +187,17 @@ mod tests {
     fn cents_deviation_is_signed() {
         assert!((midi_cents_deviation(60.25) - 25.0).abs() < 1e-9);
         assert!((midi_cents_deviation(59.75) + 25.0).abs() < 1e-9);
+    }
+    #[test]
+    fn the_level_floor_is_silence() {
+        assert_eq!(decibels_to_amplitude(crate::limits::MIN_GAIN_DB), 0.0);
+        assert_eq!(decibels_to_amplitude(-1000.0), 0.0);
+        assert_eq!(decibels_to_amplitude(0.0), 1.0);
+        assert!((decibels_to_amplitude(6.0) - 1.995_262).abs() < 1e-5);
+        // Past the ceiling is the ceiling, not a level without a bound.
+        assert_eq!(
+            decibels_to_amplitude(1000.0),
+            decibels_to_amplitude(crate::limits::MAX_GAIN_DB)
+        );
     }
 }

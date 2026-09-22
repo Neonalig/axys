@@ -9,8 +9,8 @@
  */
 
 import workletUrl from './worklet/renderer-worklet.ts?worker&url';
-import type { AppStore, CompareMode } from '../app/store.js';
-import type { RenderPlan, TimelineMap } from '../core/types.js';
+import type { AppStore } from '../app/store.js';
+import type { MixerSettings, RenderPlan, TimelineMap } from '../core/types.js';
 import { wasmModuleUrl } from '../core/wasm-url.js';
 import type { EngineMessage, OutputRange, RendererMessage } from './worklet/renderer-worklet.js';
 
@@ -156,10 +156,9 @@ export class AudioEngine {
     if (this.#metronome) this.#sendClicks();
   }
 
-  /** Chooses processed audio, the untouched source, or the two split across the stereo field. */
-  setCompare(mode: CompareMode): void {
-    this.#send({ type: 'compare', mode });
-    if (this.#store.state.compare !== mode) this.#store.update({ compare: mode });
+  /** Hands the worklet the monitor desk: level, pan, mute and solo for every strip. */
+  setMixer(mixer: MixerSettings): void {
+    this.#send({ type: 'mixer', mixer });
   }
 
   /**

@@ -911,3 +911,54 @@ The curve holds the level flat across the blob and reads 1.0 outside it, so the 
 interpolation ramps over one 5 ms hop at each edge rather than stepping the level at a boundary.
 Decibels, not an amplitude, because that is what a level is read and typed in, and the floor is
 silence rather than -60 dB of signal, so a field taken all the way down is off.
+
+## The mixer
+
+### The desk supersedes Compare
+
+Compare was one toolbar button with three faces, and it answered one question: which take is
+audible. A mixer answers it with the control everyone already knows, and answers the questions
+Compare could not: how loud the original is against the processed one, where each sits in the
+field, and how loud the click is. `CompareMode` is gone with the button, and the split mode with
+it: original hard left and processed hard right is two pan controls rather than a mode.
+
+Swap Vocal keeps `C`, and exchanges which of the two vocal strips is heard. It moves mute and solo
+only: a swap answers which take is being listened to, and taking each strip's level and pan with it
+would answer a question nobody asked. With both strips up, or both down, it says so rather than
+silently picking one.
+
+### The mixer is monitoring, not an edit to the take
+
+Strip levels never reach `compile_plan`, so an export is exactly what it was before the fader
+moved. A blob's own gain is the opposite: it is a plan stage and is written on export. The two are
+different questions, and folding them together would mean either an export that changes when the
+monitor does or a monitor that cannot be turned down without changing the file.
+
+The desk still lives in the project document, in `EditState` beside the scale and modulation
+settings, because how a take is listened to is part of the work. That also makes it an `EditOp`
+like everything else, so it undoes and autosaves with no machinery of its own.
+
+### The worklet mixes voices rather than switching between them
+
+The realtime path summed processed, original and click and then switched on a compare mode. It now
+resolves the desk to a left and right amplitude per voice when a message arrives, and every block
+is a sum of those, so the audio thread does no mixing arithmetic beyond two multiplies per voice
+per sample. A voice nothing can be heard from is not rendered at all, so a muted processed strip
+costs no synthesis.
+
+Pan is equal power, so a strip swept across the field holds its loudness instead of dipping through
+the middle. `audio/mixer.ts` is the one place the desk becomes amplitudes, shared by the worklet,
+the blob layer that draws what is audible, and the toolbar face that names it.
+
+### A fader is heard as it moves and kept when it is let go
+
+Dragging a fader sends the desk straight to the engine and commits one `setMixer` when the pointer
+is released, so the sound follows the hand and the history gets one entry per drag rather than one
+per frame. It is the same shape as the guide strength slider, without the operation machinery,
+because a fader has nothing to discard.
+
+### Mute and solo are exclusive until Ctrl says otherwise
+
+Pressing a mute or a solo settles the desk on that strip alone, which is what someone wants nine
+times in ten. Ctrl or Cmd adds instead, which is how more than one strip is muted or soloed at a
+time. The same modifier that adds a span to a selection.

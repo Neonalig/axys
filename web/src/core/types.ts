@@ -390,6 +390,7 @@ export type EditOp =
   | { type: 'resetRange'; start: number; end: number }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setGain'; blob: BlobId; gainDb: number }
+  | { type: 'setMixer'; mixer: MixerSettings }
   | { type: 'setScale'; scale: ScaleSettings }
   | { type: 'setTuning'; tuning: Tuning }
   | { type: 'setAccidentals'; accidentals: AccidentalStyle }
@@ -461,6 +462,8 @@ export interface AnalysisInfo {
 /** The mutable part of a project: everything an edit operation may change. */
 export interface EditState {
   blobs: BlobSet;
+  /** Monitor levels for everything the transport plays. */
+  mixer: MixerSettings;
   scale: ScaleSettings;
   modulation: ModulationSettings;
   formant: FormantMode;
@@ -469,6 +472,27 @@ export interface EditState {
   mappings: NoteMapping[];
   tuning: Tuning;
   accidentals: AccidentalStyle;
+}
+
+/** One audio source on the monitor desk. */
+export interface MixerStrip {
+  /** Level in decibels; 0 is unity and `MIN_GAIN_DB` is silence. */
+  gainDb: number;
+  /** Position across the stereo field, -1 hard left to 1 hard right. */
+  pan: number;
+  mute: boolean;
+  /** Silences every strip that is not soloed. */
+  solo: boolean;
+}
+
+/** The monitor desk: one strip per audio source the transport plays. */
+export interface MixerSettings {
+  /** The take as the edits make it sound. */
+  processed: MixerStrip;
+  /** The take as it was sung, on the same transport clock. */
+  original: MixerStrip;
+  /** The metronome. */
+  click: MixerStrip;
 }
 
 /** Whether the ruler reads in clock time or in bars and beats. */

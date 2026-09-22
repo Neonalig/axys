@@ -31,6 +31,8 @@ import type {
   MidiFile,
   MidiNote,
   MidiTrackInfo,
+  MixerSettings,
+  MixerStrip,
   ModulationSettings,
   NoteMapping,
   PitchCurve,
@@ -176,7 +178,10 @@ export function isBlob(value: unknown): value is Blob {
     value.subregions.every(isSubregion) &&
     isPitchCurve(value.curve) &&
     isBoolean(value.excluded) &&
-    isNumber(value.gainDb)
+    // Absent in a document written before blobs carried a level, which the core fills in with
+    // silence-free unity rather than refusing. Refusing here would be stricter than the thing
+    // this file mirrors.
+    (value.gainDb === undefined || isNumber(value.gainDb))
   );
 }
 
@@ -549,6 +554,7 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   resetRange: (op) => isNumber(op.start) && isNumber(op.end),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
   setGain: (op) => isNumber(op.blob) && isNumber(op.gainDb),
+  setMixer: (op) => isMixerSettings(op.mixer),
   setScale: (op) => isScaleSettings(op.scale),
   setTuning: (op) => isTuning(op.tuning),
   setAccidentals: (op) => isLiteral(ACCIDENTAL_STYLES, op.accidentals),
@@ -631,11 +637,33 @@ function isTuning(value: unknown): value is Tuning {
   return isRecord(value) && isNumber(value.a4Hz);
 }
 
+function isMixerStrip(value: unknown): value is MixerStrip {
+  return (
+    isRecord(value) &&
+    isNumber(value.gainDb) &&
+    isNumber(value.pan) &&
+    isBoolean(value.mute) &&
+    isBoolean(value.solo)
+  );
+}
+
+/** Accepts the monitor desk. */
+export function isMixerSettings(value: unknown): value is MixerSettings {
+  return (
+    isRecord(value) &&
+    isMixerStrip(value.processed) &&
+    isMixerStrip(value.original) &&
+    isMixerStrip(value.click)
+  );
+}
+
 /** Accepts the mutable part of a project. */
 export function isEditState(value: unknown): value is EditState {
   return (
     isRecord(value) &&
     isBlobSet(value.blobs) &&
+    // Absent in a document written before the mixer, which the core opens with the default desk.
+    (value.mixer === undefined || isMixerSettings(value.mixer)) &&
     isScaleSettings(value.scale) &&
     isModulationSettings(value.modulation) &&
     isFormantMode(value.formant) &&

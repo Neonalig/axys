@@ -840,6 +840,7 @@ pub enum EditOp {
     ResetRange { start: f64, end: f64 },
     SetExcluded { blob: BlobId, excluded: bool },
     SetGain { blob: BlobId, gain_db: f64 },
+    SetMixer { mixer: MixerSettings },
     SetScale { scale: ScaleSettings },
     SetModulation { modulation: ModulationSettings },
     SetFormant { formant: FormantMode },
@@ -978,6 +979,40 @@ pub struct EditState {
     pub mappings: Vec<NoteMapping>,
     pub tuning: Tuning,
     pub accidentals: AccidentalStyle,
+    /// Monitor levels for everything the transport plays. Never read by the plan compiler, so
+    /// an export is unchanged by it.
+    #[serde(default)]
+    pub mixer: MixerSettings,
+}
+
+/// The monitor desk, in `mixer.rs`: one strip per audio source the transport plays.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MixerSettings {
+    pub processed: MixerStrip,
+    pub original: MixerStrip,
+    pub click: MixerStrip,
+}
+
+/// One audio source on the desk.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MixerStrip {
+    /// Level in decibels; 0.0 is unity and `limits::MIN_GAIN_DB` is silence.
+    pub gain_db: f64,
+    /// Position across the stereo field, -1.0 hard left to 1.0 hard right.
+    pub pan: f64,
+    pub mute: bool,
+    /// Silences every strip that is not soloed.
+    pub solo: bool,
+}
+
+impl MixerSettings {
+    pub fn strips(&self) -> [&MixerStrip; 3];
+    pub fn soloed(&self) -> bool;
+    /// The same settings with every figure brought inside its bounds. A level out of range is
+    /// clamped; a figure that is not a number is refused.
+    pub fn validated(&self) -> Result<Self>;
 }
 
 /// Saved editor view state, restored on reopen.

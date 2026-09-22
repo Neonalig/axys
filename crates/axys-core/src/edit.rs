@@ -13,6 +13,7 @@ use crate::blob::{BlobId, BlobSet, Edge, Voicing};
 use crate::curve::{Anchor, PitchCurve};
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideSelection, NoteMapping};
+use crate::mixer::MixerSettings;
 use crate::project::EditState;
 use crate::target::{ModulationSettings, ScaleSettings};
 use crate::timeline::{MeterEvent, TempoEvent};
@@ -188,6 +189,11 @@ pub enum EditOp {
         /// Absolute level in decibels; 0.0 is the blob as sung.
         gain_db: f64,
     },
+    /// Replaces the monitor levels.
+    SetMixer {
+        /// New mixer settings.
+        mixer: MixerSettings,
+    },
     /// Replaces the key and scale used by pitch correction.
     SetScale {
         /// New scale settings.
@@ -272,6 +278,7 @@ impl EditOp {
             EditOp::ResetRange { .. } => "Reset Range",
             EditOp::SetExcluded { .. } => "Exclude Blob",
             EditOp::SetGain { .. } => "Set Gain",
+            EditOp::SetMixer { .. } => "Set Mixer",
             EditOp::SetScale { .. } => "Set Scale",
             EditOp::SetTuning { .. } => "Set Tuning",
             EditOp::SetAccidentals { .. } => "Set Accidentals",
@@ -502,6 +509,9 @@ pub fn apply_with_baseline(
             let gain_db = finite(*gain_db, "gain")?;
             blob_mut(state, *blob)?.gain_db =
                 gain_db.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
+        }
+        EditOp::SetMixer { mixer } => {
+            state.mixer = mixer.validated()?;
         }
         EditOp::SetScale { scale } => {
             validate_scale(scale)?;
@@ -800,6 +810,7 @@ mod tests {
             mappings: Vec::new(),
             tuning: Tuning::default(),
             accidentals: AccidentalStyle::default(),
+            mixer: MixerSettings::default(),
         }
     }
 
@@ -963,6 +974,50 @@ mod tests {
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
         assert_eq!(s.blobs.get(BlobId(1)).unwrap().pitch_offset, -2.0);
+    }
+
+    #[test]
+    fn set_mixer_replaces_the_desk_and_clamps_what_it_is_given() {
+        let mut s = state();
+        let mut mixer = MixerSettings::default();
+        mixer.original.mute = false;
+        mixer.processed.gain_db = -3.0;
+        mixer.click.pan = 9.0;
+        apply(&mut s, None, &EditOp::SetMixer { mixer }).unwrap();
+        assert!(!s.mixer.original.mute);
+        assert_eq!(s.mixer.processed.gain_db, -3.0);
+        assert_eq!(s.mixer.click.pan, 1.0);
+
+        mixer.click.pan = f64::INFINITY;
+        assert!(apply(&mut s, None, &EditOp::SetMixer { mixer }).is_err());
+    }
+
+    #[test]
+    fn set_gain_is_absolute_and_clamped() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetGain {
+                blob: BlobId(1),
+                gain_db: -6.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blobs.get(BlobId(1)).unwrap().gain_db, -6.0);
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetGain {
+                blob: BlobId(1),
+                gain_db: 1000.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.blobs.get(BlobId(1)).unwrap().gain_db,
+            crate::limits::MAX_GAIN_DB
+        );
     }
 
     #[test]

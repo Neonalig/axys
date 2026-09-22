@@ -53,6 +53,19 @@ interface PlanJson {
   formant: unknown;
 }
 
+/** One strip of the mixer, as `axys_core::mixer::MixerStrip` serialises. */
+interface StripJson {
+  gainDb: number;
+  pan: number;
+  mute: boolean;
+  solo: boolean;
+}
+
+/** The part of `Session.stateJson` these tests read. */
+interface StateJson {
+  mixer: { processed: StripJson; original: StripJson; click: StripJson };
+}
+
 /** `Session.historyJson`. */
 interface HistoryJson {
   undo: string | null;
@@ -358,6 +371,45 @@ describe('wasm boundary', () => {
       expect(scoped.undo()).toBe(false);
       expect((JSON.parse(scoped.historyJson()) as HistoryJson).undo).toBeNull();
     } finally {
+      scoped.free();
+    }
+  });
+
+  it('keeps the mixer in the document and in the history', () => {
+    const scoped = core.Session.create(samples, sampleRate, 'mixer', analysis, '');
+    let reopened: TestCore['Session']['prototype'] | null = null;
+    try {
+      const before = (JSON.parse(scoped.stateJson()) as StateJson).mixer;
+      expect(before.original.mute).toBe(true);
+      expect(before.click.gainDb).toBeCloseTo(-11, 6);
+
+      const mixer = {
+        ...before,
+        processed: { ...before.processed, gainDb: -4.5, pan: -0.5 },
+        original: { ...before.original, mute: false, solo: true },
+      };
+      scoped.applyEdit(JSON.stringify({ type: 'setMixer', mixer }));
+      expect((JSON.parse(scoped.historyJson()) as HistoryJson).undo).toBe('Set Mixer');
+
+      const document = scoped.projectJson('');
+      reopened = core.Session.openProject(document, samples, sampleRate);
+      const saved = (JSON.parse(reopened.stateJson()) as StateJson).mixer;
+      expect(saved.processed.gainDb).toBeCloseTo(-4.5, 6);
+      expect(saved.processed.pan).toBeCloseTo(-0.5, 6);
+      expect(saved.original.solo).toBe(true);
+
+      // The desk is monitoring, so it must not reach the render plan.
+      const plain = core.Session.create(samples, sampleRate, 'mixer', analysis, '');
+      try {
+        expect(scoped.planJson()).toBe(plain.planJson());
+      } finally {
+        plain.free();
+      }
+
+      expect(scoped.undo()).toBe(true);
+      expect((JSON.parse(scoped.stateJson()) as StateJson).mixer).toEqual(before);
+    } finally {
+      reopened?.free();
       scoped.free();
     }
   });
