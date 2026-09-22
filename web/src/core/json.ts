@@ -175,7 +175,8 @@ export function isBlob(value: unknown): value is Blob {
     Array.isArray(value.subregions) &&
     value.subregions.every(isSubregion) &&
     isPitchCurve(value.curve) &&
-    isBoolean(value.excluded)
+    isBoolean(value.excluded) &&
+    isNumber(value.gainDb)
   );
 }
 
@@ -521,6 +522,7 @@ export function isRenderPlan(value: unknown): value is RenderPlan {
     isTimeMap(value.timeMap) &&
     isSampledCurve(value.pitchRatio) &&
     isSampledCurve(value.targetMidi) &&
+    isSampledCurve(value.gain) &&
     isFormantMode(value.formant)
   );
 }
@@ -546,6 +548,7 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   resetBlob: (op) => isNumber(op.blob),
   resetRange: (op) => isNumber(op.start) && isNumber(op.end),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
+  setGain: (op) => isNumber(op.blob) && isNumber(op.gainDb),
   setScale: (op) => isScaleSettings(op.scale),
   setTuning: (op) => isTuning(op.tuning),
   setAccidentals: (op) => isLiteral(ACCIDENTAL_STYLES, op.accidentals),

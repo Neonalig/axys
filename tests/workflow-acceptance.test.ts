@@ -644,6 +644,29 @@ describe('core workflow acceptance (design bible 13.4)', () => {
       expect(cents(tail, head)).toBeGreaterThan(100);
     });
 
+    it('a gain edit lowers that note alone and leaves its neighbour at its own level', () => {
+      const first = sourceBlobs[0];
+      const second = sourceBlobs[1];
+      if (!first || !second) throw new Error('phrase.wav must have two blobs');
+      const quiet = sessionWith({ type: 'setGain', blob: first.id, gainDb: -6 });
+      try {
+        const render = renderAll(quiet);
+        const level = (blob: BlobJson, samples: Float32Array): number =>
+          rms(
+            samples.slice(
+              Math.round(blob.start * fixture.sampleRate),
+              Math.round(blob.end * fixture.sampleRate),
+            ),
+          );
+        // Half the amplitude, which is what -6 dB is, measured off the render rather than
+        // off the plan: the claim is that a level reaches the audio.
+        expect(level(first, render) / level(first, baseline.render)).toBeCloseTo(0.501, 2);
+        expect(level(second, render) / level(second, baseline.render)).toBeCloseTo(1, 3);
+      } finally {
+        quiet.free();
+      }
+    });
+
     it('a timing move changes the time map and leaves every pitch ratio at unity', () => {
       const first = sourceBlobs[0];
       const second = sourceBlobs[1];

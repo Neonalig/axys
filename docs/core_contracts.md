@@ -181,6 +181,10 @@ pub struct Blob {
     /// Excludes the blob from automatic scale correction and MIDI guidance. The blob still
     /// sounds, and edits made on it by hand still apply.
     pub excluded: bool,
+    /// Level applied to the blob in the render, in decibels; 0.0 leaves it as sung. Clamped to
+    /// `limits::MIN_GAIN_DB` and `limits::MAX_GAIN_DB`, and the floor is silence.
+    #[serde(default)]
+    pub gain_db: f64,
 }
 
 impl Blob {
@@ -758,6 +762,10 @@ pub struct RenderPlan {
     /// plan written by hand may omit it.
     #[serde(default)]
     pub target_midi: SampledCurve,
+    /// Amplitude multiplier indexed by **source** time. 1.0 leaves level unchanged, and carries
+    /// each blob's own level. A plan written by hand may omit it.
+    #[serde(default)]
+    pub gain: SampledCurve,
     pub formant: FormantMode,
 }
 
@@ -766,6 +774,8 @@ impl RenderPlan {
     pub fn passthrough(sample_rate: f64, duration: f64) -> Self;
     /// Whether the plan asks for nothing: no time move, no repitch, no formant move.
     pub fn is_identity(&self) -> bool;
+    /// Whether any blob asks for a level other than the one it was sung at.
+    pub fn moves_level(&self) -> bool;
 }
 
 /// Inputs the compiler reads to produce a plan.
@@ -829,6 +839,7 @@ pub enum EditOp {
     ResetBlob { blob: BlobId },
     ResetRange { start: f64, end: f64 },
     SetExcluded { blob: BlobId, excluded: bool },
+    SetGain { blob: BlobId, gain_db: f64 },
     SetScale { scale: ScaleSettings },
     SetModulation { modulation: ModulationSettings },
     SetFormant { formant: FormantMode },

@@ -342,11 +342,22 @@ pub struct RenderPlan {
     /// Read by the editor and never by the renderer, so a plan written by hand may omit it.
     #[serde(default)]
     pub target_midi: SampledCurve,
+    /// Amplitude multiplier indexed by **source** time. 1.0 leaves level unchanged.
+    ///
+    /// Carries each blob's own level, so one word can be lifted or dropped. A plan written by
+    /// hand may omit it, which is the same as asking for no level change anywhere.
+    #[serde(default)]
+    pub gain: SampledCurve,
     /// How the spectral envelope is treated while pitch moves.
     pub formant: FormantMode,
 }
 
 impl RenderPlan {
+    /// Whether any blob asks for a level other than the one it was sung at.
+    pub fn moves_level(&self) -> bool {
+        self.gain.values.iter().any(|gain| *gain != 1.0)
+    }
+
     /// Whether the plan asks for nothing: no time move, no repitch, no formant move.
     ///
     /// A project with no edits compiles to such a plan, and rendering one is a copy rather than
@@ -372,6 +383,7 @@ impl RenderPlan {
             time_map: TimeMap::identity(span),
             pitch_ratio: SampledCurve::constant(1.0, 0.0, span, 2),
             target_midi: SampledCurve::constant(0.0, 0.0, span, 2),
+            gain: SampledCurve::constant(1.0, 0.0, span, 2),
             formant: FormantMode::default(),
         }
     }
@@ -464,6 +476,7 @@ pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan> {
         time_map: build_time_map(inputs)?,
         pitch_ratio,
         target_midi,
+        gain: build_gain(inputs, hop, count),
         formant: inputs.formant,
     })
 }
@@ -585,6 +598,47 @@ fn apply_blob_pitch(
         moved = true;
     }
     moved
+}
+
+/// Amplitude multipliers each blob asks for, indexed by source time.
+///
+/// A level is held flat across the blob and read back to 1.0 outside it, so the grid's own
+/// interpolation ramps in and out over one hop rather than stepping the level at a boundary.
+fn build_gain(inputs: &PlanInputs<'_>, hop: f64, count: usize) -> SampledCurve {
+    let mut gains = vec![1.0f32; count];
+    let mut moved = false;
+    for blob in inputs.blobs.blobs() {
+        if blob.gain_db == 0.0 || !blob.gain_db.is_finite() {
+            continue;
+        }
+        let Some((lo, hi)) = index_range(blob.start, blob.end, hop, count) else {
+            continue;
+        };
+        let gain = decibels_to_amplitude(blob.gain_db) as f32;
+        for slot in gains.iter_mut().take(hi + 1).skip(lo) {
+            *slot = gain;
+        }
+        moved = true;
+    }
+    if moved {
+        SampledCurve {
+            start: 0.0,
+            hop,
+            values: gains,
+        }
+    } else {
+        SampledCurve::constant(1.0, 0.0, hop.max(inputs.duration), 2)
+    }
+}
+
+/// Linear amplitude of a level in decibels, with the floor reading as silence.
+pub fn decibels_to_amplitude(decibels: f64) -> f64 {
+    let clamped = decibels.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
+    if clamped <= crate::limits::MIN_GAIN_DB {
+        0.0
+    } else {
+        10f64.powf(clamped / 20.0)
+    }
 }
 
 /// Semitones scale correction moves a blob centre by.
@@ -1029,6 +1083,48 @@ mod tests {
 
         let expected = (1.0f64 / 12.0).exp2() as f32;
         assert!((plan.pitch_ratio.at(0.5) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_blob_gain_covers_its_own_span_and_nothing_else() {
+        let track = flat_track(60.0, 2.0);
+        let mut quiet = blob(1, 0.1, 0.9, 60.0);
+        quiet.gain_db = -6.0;
+        let untouched = blob(2, 1.1, 1.9, 60.0);
+        let blobs = BlobSet::from_blobs(vec![quiet, untouched]).expect("blobs");
+        let scale = ScaleSettings::default();
+        let modulation = ModulationSettings::default();
+        let plan = compile_plan(&inputs(&track, &blobs, &scale, &modulation, 2.0)).expect("plan");
+
+        assert!(plan.moves_level());
+        assert!((f64::from(plan.gain.at(0.5)) - 0.501_187).abs() < 1e-4);
+        assert_eq!(plan.gain.at(1.5), 1.0);
+        assert_eq!(plan.gain.at(0.0), 1.0);
+    }
+
+    #[test]
+    fn a_take_with_no_gain_edit_asks_for_no_level_change() {
+        let track = flat_track(60.0, 1.0);
+        let blobs = BlobSet::from_blobs(vec![blob(1, 0.1, 0.9, 60.0)]).expect("blobs");
+        let scale = ScaleSettings::default();
+        let modulation = ModulationSettings::default();
+        let plan = compile_plan(&inputs(&track, &blobs, &scale, &modulation, 1.0)).expect("plan");
+
+        assert!(!plan.moves_level());
+        assert_eq!(plan.gain.at(0.5), 1.0);
+    }
+
+    #[test]
+    fn the_gain_floor_is_silence() {
+        assert_eq!(decibels_to_amplitude(crate::limits::MIN_GAIN_DB), 0.0);
+        assert_eq!(decibels_to_amplitude(-1000.0), 0.0);
+        assert_eq!(decibels_to_amplitude(0.0), 1.0);
+        assert!((decibels_to_amplitude(6.0) - 1.995_262).abs() < 1e-5);
+        // Past the ceiling is the ceiling, not a plan that asks for an unbounded level.
+        assert_eq!(
+            decibels_to_amplitude(1000.0),
+            decibels_to_amplitude(crate::limits::MAX_GAIN_DB)
+        );
     }
 
     #[test]

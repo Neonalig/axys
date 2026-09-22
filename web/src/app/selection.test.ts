@@ -17,6 +17,7 @@ function blob(id: number, start: number, end: number): Blob {
     subregions: [],
     curve: { anchors: [] },
     excluded: false,
+    gainDb: 0,
   };
 }
 

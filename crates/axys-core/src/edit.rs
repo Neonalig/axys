@@ -39,7 +39,13 @@ const MAX_SMOOTH_SAMPLES: usize = 4_096;
 
 /// A serialisable user intent applied over immutable analysis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+// `rename_all` names the variants; `rename_all_fields` names their fields, which matters as
+// soon as one is two words.
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum EditOp {
     /// Cuts a blob in two at a source time.
     SplitBlob {
@@ -175,6 +181,13 @@ pub enum EditOp {
         /// New exclusion state.
         excluded: bool,
     },
+    /// Sets one blob's level.
+    SetGain {
+        /// Blob to set the level of.
+        blob: BlobId,
+        /// Absolute level in decibels; 0.0 is the blob as sung.
+        gain_db: f64,
+    },
     /// Replaces the key and scale used by pitch correction.
     SetScale {
         /// New scale settings.
@@ -258,6 +271,7 @@ impl EditOp {
             EditOp::ResetBlob { .. } => "Reset Blob",
             EditOp::ResetRange { .. } => "Reset Range",
             EditOp::SetExcluded { .. } => "Exclude Blob",
+            EditOp::SetGain { .. } => "Set Gain",
             EditOp::SetScale { .. } => "Set Scale",
             EditOp::SetTuning { .. } => "Set Tuning",
             EditOp::SetAccidentals { .. } => "Set Accidentals",
@@ -465,6 +479,7 @@ pub fn apply_with_baseline(
             blob.time_scale = 1.0;
             blob.curve = PitchCurve::new();
             blob.excluded = false;
+            blob.gain_db = 0.0;
         }
         EditOp::ResetRange { start, end } => {
             let (start, end) = finite_span(*start, *end)?;
@@ -482,6 +497,11 @@ pub fn apply_with_baseline(
         }
         EditOp::SetExcluded { blob, excluded } => {
             blob_mut(state, *blob)?.excluded = *excluded;
+        }
+        EditOp::SetGain { blob, gain_db } => {
+            let gain_db = finite(*gain_db, "gain")?;
+            blob_mut(state, *blob)?.gain_db =
+                gain_db.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
         }
         EditOp::SetScale { scale } => {
             validate_scale(scale)?;

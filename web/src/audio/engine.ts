@@ -517,6 +517,7 @@ export function passthroughPlan(sampleRate: number, duration: number): RenderPla
     },
     pitchRatio: { start: 0, hop: PLAN_HOP, values: [1, 1] },
     targetMidi: { start: 0, hop: PLAN_HOP, values: [0, 0] },
+    gain: { start: 0, hop: PLAN_HOP, values: [1, 1] },
     formant: 'follow',
   };
 }

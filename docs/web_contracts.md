@@ -43,9 +43,17 @@ in undo:
 
 `isEditOp` in `core/json.ts` accepts both.
 
+A blob carries its own level, so one word can be lifted or dropped:
+
+- `{ type: 'setGain', blob: BlobId, gainDb: number }` sets one blob's level in decibels, clamped to
+  `MIN_GAIN_DB` and `MAX_GAIN_DB`, where the floor is silence. It reaches the plan as `gain`, an
+  amplitude curve indexed by source time, so it is heard in preview and written on export alike.
+  The field is in the Properties tab and reads across the whole selection like the others.
+
 `FormantMode` serialises as `"follow"`, `"preserve"` or `{ shift: number }`.
 
-Also export the named constants `MIN_BLOB_SECONDS = 0.01` and `SCHEMA_VERSION = 1`.
+Also export the named constants `MIN_BLOB_SECONDS = 0.01`, `SCHEMA_VERSION = 1`,
+`MIN_GAIN_DB = -60` and `MAX_GAIN_DB = 24`.
 
 ## WASM facade: `core/wasm.ts`
 

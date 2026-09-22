@@ -64,4 +64,10 @@ pub mod limits {
     pub const MAX_CURVE_ANCHORS: usize = 100_000;
     /// Largest accepted blob count in one project.
     pub const MAX_BLOBS: usize = 100_000;
+    /// Quietest a blob or a mixer strip may be set to, in decibels.
+    ///
+    /// The floor is silence rather than a level, so a fader taken all the way down is off.
+    pub const MIN_GAIN_DB: f64 = -60.0;
+    /// Loudest a blob or a mixer strip may be set to, in decibels.
+    pub const MAX_GAIN_DB: f64 = 24.0;
 }

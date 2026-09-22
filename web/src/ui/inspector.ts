@@ -11,6 +11,7 @@ import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState, FollowMode } from '../app/store.js';
+import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
 import type {
   AccidentalStyle,
   Blob,
@@ -341,6 +342,7 @@ export class Inspector {
   readonly #targetName: HTMLElement;
   readonly #semitones: HTMLInputElement;
   readonly #cents: HTMLInputElement;
+  readonly #gain: HTMLInputElement;
   readonly #excluded: HTMLInputElement;
   readonly #blobHeading: HTMLElement;
 
@@ -428,6 +430,7 @@ export class Inspector {
     this.#targetName.className = 'axys-readout';
     this.#semitones = numberInput({ step: 0.01, min: -48, max: 48 });
     this.#cents = numberInput({ step: 1, min: -4800, max: 4800 });
+    this.#gain = numberInput({ step: 0.5, min: MIN_GAIN_DB, max: MAX_GAIN_DB });
     this.#excluded = checkboxInput();
 
     blobPanel.append(
@@ -449,6 +452,11 @@ export class Inspector {
       ),
       field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch.'),
       field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents.'),
+      field(
+        'Gain',
+        this.#gain,
+        `Level of the blob in decibels, so one word can be lifted or dropped. ${String(MIN_GAIN_DB)} dB is silence.`,
+      ),
       field(
         'Exclude',
         this.#excluded,
@@ -644,6 +652,7 @@ export class Inspector {
       this.#target,
       this.#semitones,
       this.#cents,
+      this.#gain,
       this.#excluded,
     ];
     for (const control of controls) {
@@ -703,6 +712,11 @@ export class Inspector {
       this.#cents,
       blobs.map((entry) => Math.round(entry.pitchOffset * 100)),
       0,
+    );
+    setShared(
+      this.#gain,
+      blobs.map((entry) => entry.gainDb),
+      1,
     );
     setSharedChecked(
       this.#excluded,
@@ -871,6 +885,14 @@ export class Inspector {
         blob: blob.id,
         semitones: wanted / 100,
       }));
+    });
+
+    this.#gain.addEventListener('change', () => {
+      const wanted = readNumber(this.#gain, Number.NaN);
+      if (!Number.isFinite(wanted)) return;
+      this.#applyToSelection((blob) =>
+        blob.gainDb === wanted ? null : { type: 'setGain', blob: blob.id, gainDb: wanted },
+      );
     });
 
     this.#excluded.addEventListener('change', () => {

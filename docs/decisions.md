@@ -896,3 +896,18 @@ touches neither.
 `npm run dev` serves the module graph file by file, so there is no build to precache and no stamp
 to compare against. Registration happens in the production build only, which also keeps a stale
 worker from serving yesterday's bundle over a dev server.
+
+## Per-blob gain
+
+### A level is a plan stage, not a mixer strip
+
+A blob's `gain_db` compiles into `RenderPlan::gain`, an amplitude curve indexed by source time
+alongside the pitch ratio, and `render_range` applies it last on both the copy path and the
+synthesis path. So a level is the same multiplier whichever produced the sample under it, and it
+reaches the export as surely as it reaches playback, which is what makes it an edit rather than a
+monitoring choice.
+
+The curve holds the level flat across the blob and reads 1.0 outside it, so the grid's own
+interpolation ramps over one 5 ms hop at each edge rather than stepping the level at a boundary.
+Decibels, not an amplitude, because that is what a level is read and typed in, and the floor is
+silence rather than -60 dB of signal, so a field taken all the way down is off.

@@ -138,6 +138,7 @@ impl Renderer {
         // something inaudibly but measurably different from the file that was imported.
         if self.plan.is_identity() {
             self.render_copy(out_start, out);
+            self.apply_gain(out_start, out);
             return;
         }
         match self.quality {
@@ -153,6 +154,21 @@ impl Renderer {
             Quality::Offline => self.render_offline(out_start, out),
         }
         self.mask_outside_source(out_start, out);
+        self.apply_gain(out_start, out);
+    }
+
+    /// Scales each output sample by the level its blob asks for.
+    ///
+    /// Applied to the copy and the synthesis alike, and last in either, so a level is the same
+    /// multiplier whichever path produced the sample under it.
+    fn apply_gain(&self, out_start: u64, out: &mut [f32]) {
+        if !self.plan.moves_level() {
+            return;
+        }
+        for (i, slot) in out.iter_mut().enumerate() {
+            let out_seconds = (out_start.saturating_add(i as u64)) as f64 / self.sample_rate;
+            *slot *= self.plan.gain.at(self.plan.time_map.source_at(out_seconds));
+        }
     }
 
     /// Renders the whole output, or the given output-second range.
@@ -645,6 +661,46 @@ mod tests {
             (detected / 200.0).log2().abs() < 0.05,
             "detected {detected}"
         );
+    }
+
+    #[test]
+    fn a_gain_curve_scales_the_copy_and_the_synthesis_alike() {
+        let duration = 0.4;
+        let source = saw(200.0, (SR * duration) as usize);
+        let track = analysed(&source);
+        let half = SampledCurve::constant(0.5, 0.0, duration, 2);
+
+        // The unedited plan is a copy, and the repitched one is a resynthesis. A level is the
+        // same multiplier on either, so it cannot be a thing that only applies to one path.
+        for ratio in [1.0f32, 1.5] {
+            let mut quiet = plan(duration, ratio);
+            quiet.gain = half.clone();
+            let loud = Renderer::new(
+                source.clone(),
+                &track,
+                plan(duration, ratio),
+                Quality::Preview,
+            );
+            let soft = Renderer::new(source.clone(), &track, quiet, Quality::Preview);
+
+            let full = loud.render_all(None);
+            let halved = soft.render_all(None);
+            assert_eq!(full.len(), halved.len());
+            for (a, b) in full.iter().zip(halved.iter()) {
+                assert!((a * 0.5 - b).abs() < 1e-6, "{a} halved is not {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_silent_blob_renders_silence() {
+        let duration = 0.2;
+        let source = saw(200.0, (SR * duration) as usize);
+        let track = analysed(&source);
+        let mut plan = plan(duration, 1.0);
+        plan.gain = SampledCurve::constant(0.0, 0.0, duration, 2);
+        let renderer = Renderer::new(source, &track, plan, Quality::Offline);
+        assert!(renderer.render_all(None).iter().all(|s| *s == 0.0));
     }
 
     #[test]

@@ -147,6 +147,8 @@ export interface Blob {
   curve: PitchCurve;
   /** Excludes the blob from automatic scale correction and guidance. */
   excluded: boolean;
+  /** Level applied to the blob in the render, in decibels; 0 leaves it as sung. */
+  gainDb: number;
 }
 
 /** An ordered, non-overlapping set of blobs. */
@@ -363,6 +365,8 @@ export interface RenderPlan {
   pitchRatio: SampledCurve;
   /** Pitch the plan produces in fractional MIDI, indexed by source time; 0 where it leaves it. */
   targetMidi: SampledCurve;
+  /** Amplitude multiplier indexed by source time; 1 leaves level unchanged. */
+  gain: SampledCurve;
   formant: FormantMode;
 }
 
@@ -385,6 +389,7 @@ export type EditOp =
   | { type: 'resetBlob'; blob: BlobId }
   | { type: 'resetRange'; start: number; end: number }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
+  | { type: 'setGain'; blob: BlobId; gainDb: number }
   | { type: 'setScale'; scale: ScaleSettings }
   | { type: 'setTuning'; tuning: Tuning }
   | { type: 'setAccidentals'; accidentals: AccidentalStyle }
@@ -508,3 +513,9 @@ export const MIN_BLOB_SECONDS = 0.01;
 
 /** Project schema version this build reads and writes. */
 export const SCHEMA_VERSION = 1;
+
+/** Quietest a blob or a mixer strip may be set to, in decibels. This far down is silence. */
+export const MIN_GAIN_DB = -60;
+
+/** Loudest a blob or a mixer strip may be set to, in decibels. */
+export const MAX_GAIN_DB = 24;

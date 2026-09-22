@@ -89,6 +89,9 @@ pub struct Blob {
     pub curve: PitchCurve,
     /// Excludes the blob from automatic scale correction.
     pub excluded: bool,
+    /// Level applied to the blob in the render, in decibels; 0.0 leaves it as sung.
+    #[serde(default)]
+    pub gain_db: f64,
 }
 
 impl Blob {
@@ -106,6 +109,7 @@ impl Blob {
             subregions: vec![Subregion::new(start, end, Voicing::Voiced)],
             curve: PitchCurve::new(),
             excluded: false,
+            gain_db: 0.0,
         }
     }
 
