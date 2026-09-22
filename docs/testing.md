@@ -12,8 +12,12 @@ is met.
 npm run check
 ```
 
-That runs `cargo fmt --check`, `cargo clippy -D warnings`, `tsc --noEmit`, ESLint, Prettier, then
-the Rust, TypeScript and integration suites. `npm run test` runs only the suites.
+That builds the WebAssembly bindings, then runs `cargo fmt --check`, `cargo clippy -D warnings`,
+`tsc --noEmit`, ESLint, Prettier, and the Rust, TypeScript and integration suites. `npm run test`
+runs the bindings and the suites only.
+
+The bindings come first because `web/src/wasm/` is generated rather than committed: type-checking
+and the tests both import it, so neither can run on a fresh clone until it exists.
 
 Individual suites:
 
