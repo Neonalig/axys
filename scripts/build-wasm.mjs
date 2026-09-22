@@ -4,11 +4,12 @@
  * Builds crates/axys-wasm to web/src/wasm with wasm-pack.
  *
  * Flags: --watch rebuilds on Rust source changes, --dev builds an unoptimised
- * module. Watch mode implies --dev unless --release is given.
+ * module, --force rebuilds even when the output is already current. Watch mode
+ * implies --dev unless --release is given.
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,7 +20,14 @@ const watchRoots = [join(root, 'crates')];
 
 const args = process.argv.slice(2);
 const watch = args.includes('--watch');
+const force = args.includes('--force');
 const release = args.includes('--release') || (!watch && !args.includes('--dev'));
+
+/** Records which profile produced the output, so a dev build is never mistaken for a release one. */
+const stampFile = join(outDir, '.build-profile');
+
+/** Files outside `crates/` that still change what wasm-pack produces. */
+const manifests = [join(root, 'Cargo.toml'), join(root, 'Cargo.lock')];
 
 const wasmPackBin = join(
   root,
@@ -75,9 +83,37 @@ function latestMtime(dir) {
   return newest;
 }
 
-const first = await runBuild();
-if (!watch) {
-  process.exit(first);
+/**
+ * Whether the output is present, built from this profile, and newer than every input.
+ *
+ * The profile is part of the question rather than the mtimes alone: a dev build is newer than the
+ * sources too, and shipping one as a release would be silent. An input with no mtime, which is a
+ * source tree that does not exist, is treated as not current rather than as unchanged.
+ */
+function isCurrent() {
+  const wasm = join(outDir, 'axys_wasm_bg.wasm');
+  if (!existsSync(wasm) || !existsSync(stampFile)) return false;
+  if (readFileSync(stampFile, 'utf8').trim() !== (release ? 'release' : 'dev')) return false;
+  const built = statSync(wasm).mtimeMs;
+  const newest = Math.max(
+    watchRoots.reduce((acc, dir) => Math.max(acc, latestMtime(dir)), 0),
+    ...manifests.map((file) => (existsSync(file) ? statSync(file).mtimeMs : 0)),
+  );
+  return newest > 0 && built >= newest;
+}
+
+function stamp() {
+  writeFileSync(stampFile, release ? 'release' : 'dev');
+}
+
+if (!force && isCurrent()) {
+  console.log(`[wasm] ${release ? 'release' : 'dev'} build is current, skipping`);
+  if (!watch) process.exit(0);
+} else {
+  const first = await runBuild();
+  if (first === 0) stamp();
+  if (!watch) process.exit(first);
+  if (first !== 0) process.exit(first);
 }
 
 console.log('[wasm] watching crates for changes');
@@ -91,6 +127,6 @@ setInterval(async () => {
   lastSeen = now;
   building = true;
   console.log('[wasm] change detected, rebuilding');
-  await runBuild();
+  if ((await runBuild()) === 0) stamp();
   building = false;
 }, 700);
