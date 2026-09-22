@@ -65,7 +65,7 @@ export function exportProject(json: string, name: string): string {
   try {
     parseJson(json, isProject, 'project');
   } catch (cause) {
-    throw new PersistenceError('corrupt', 'Refusing to export a document that is not a project.', {
+    throw new PersistenceError('corrupt', 'Refusing to export a document that is not a project', {
       cause,
     });
   }

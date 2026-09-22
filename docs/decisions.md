@@ -1349,3 +1349,35 @@ bar marches at, so the two read as one idea. The offset comes from the clock rat
 frame counter, so the speed does not depend on how often the editor happens to redraw, and the only
 continuous frame request in the renderer is the one that keeps the ants moving while the pointer is
 still. Under reduced motion the dashes hold still and say the same thing.
+
+### Every string read once against the GNOME HIG
+
+The HIG is written for desktop application chrome rather than for marketing pages, and it matches
+the house style already in use, so it is the standard rather than a taste argument. The rules are
+in design bible section 16.4 so the next string is written right the first time.
+
+What the sweep changed. A heading, a description and a single-sentence string lose the full stop,
+which is most of the tooltips, field explainers, toasts and hints. Header capitalisation leaves
+short articles and conjunctions lower case, so Choose a Theme rather than Choose A Theme. A toast
+takes sentence capitalisation rather than Title Case: "Nothing to undo", not "Nothing To Undo".
+
+A toggle's tooltip names what pressing it will do rather than reporting the state the pressed
+styling already carries: Stop Following, not Following Playhead; Silence Metronome, not Metronome
+On. Mute and solo say the same thing the same way in both states through one helper, because a
+gesture written differently in each place is a gesture nobody learns.
+
+Rich tooltips are the tools and nothing else: a header-capitalised title, one supplementary line,
+and the key. No examples, no explanation of why the tool exists.
+
+### Cerulean is the identity
+
+OKLCH hue 248, `#34a4ff` in dark and `#006cb5` in light. It is the default accent in every theme
+and the seed for Slate, and it is what the mark, the splash bar and the app icons are drawn in.
+
+The dark and light palettes no longer author the eight accent-derived colours at all: they are
+typed as a base theme without them and the ramp supplies the rest, so `#4cc2ff` cannot come back by
+someone editing a table. High Contrast stays a full theme, because it takes no accent.
+
+The icon set is one mark at every size: rounded for a tab and a shortcut, maskable with the mark
+held inside the safe circle for a host that crops to its own shape, and monochrome in
+`currentColor` with no ground for a host that recolours the icon itself.

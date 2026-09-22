@@ -518,7 +518,7 @@ export function buildCommands(): Command[] {
       shortcut: 'Ctrl+Z',
       enabled: editable,
       run: (ctx) => {
-        if (!ctx.workspace.undo()) ctx.toast.info('Nothing To Undo');
+        if (!ctx.workspace.undo()) ctx.toast.info('Nothing to undo');
       },
     },
     {
@@ -529,7 +529,7 @@ export function buildCommands(): Command[] {
       altShortcut: 'Ctrl+Y',
       enabled: editable,
       run: (ctx) => {
-        if (!ctx.workspace.redo()) ctx.toast.info('Nothing To Redo');
+        if (!ctx.workspace.redo()) ctx.toast.info('Nothing to redo');
       },
     },
     {
@@ -543,7 +543,7 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const run = joinRun(ctx.store.state);
         if (!run) {
-          ctx.toast.warn('Select two or more neighbouring blobs to join.');
+          ctx.toast.warn('Select two or more neighbouring blobs to join');
           return;
         }
         // Each join folds the next blob into the first, so the survivor stays addressable and
@@ -567,7 +567,7 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const op = resetTarget(ctx.store.state);
         if (!op) {
-          ctx.toast.warn('Select a blob or a span to reset.');
+          ctx.toast.warn('Select a blob or a span to reset');
           return;
         }
         ctx.workspace.apply(op);
@@ -582,7 +582,7 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const span = targetSpan(ctx.store.state);
         if (!span) {
-          ctx.toast.warn('Select a span inside a blob to smooth.');
+          ctx.toast.warn('Select a span inside a blob to smooth');
           return;
         }
         ctx.workspace.apply({
@@ -679,7 +679,7 @@ export function buildCommands(): Command[] {
           return;
         }
         if (wanted === null) {
-          ctx.toast.warn('Select a span to loop.');
+          ctx.toast.warn('Select a span to loop');
           return;
         }
         ctx.audio.setLoop(wanted);
@@ -768,7 +768,7 @@ export function buildCommands(): Command[] {
     },
     {
       id: 'view.toggleBarsBeats',
-      label: 'Toggle Bars Beats',
+      label: 'Toggle Bars and Beats',
       group: 'View',
       shortcut: 'Ctrl+Alt+B',
       enabled: () => true,
@@ -816,7 +816,7 @@ export function buildCommands(): Command[] {
       // One Help entry: the diagnostics dialog already carries the Source Code offer at its
       // foot, so a second button for it was the same dialog by another name.
       id: 'help.showDiagnostics',
-      label: 'Help And Diagnostics',
+      label: 'Help and Diagnostics',
       group: 'Help',
       shortcut: 'F1',
       enabled: () => true,

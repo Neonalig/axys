@@ -143,7 +143,7 @@ export class AudioEngine {
       if (this.#ready) return;
       this.#publish(
         'failed',
-        'The renderer did not start, so playback would be silent. Reload the page.',
+        'The renderer did not start, so playback would be silent. Reload the page',
       );
     }, READY_TIMEOUT_MS);
   }
@@ -196,7 +196,7 @@ export class AudioEngine {
   async play(from?: number): Promise<void> {
     const node = this.#node;
     if (!node) {
-      this.#publish('idle', 'Open an audio file to play.');
+      this.#publish('idle', 'Open an audio file to play');
       return;
     }
     await this.#resume();
@@ -352,13 +352,13 @@ export class AudioEngine {
 
     const bytes = this.#coreBytes;
     if (!bytes) {
-      this.#publish('failed', 'Playback is unavailable: the core did not load.');
+      this.#publish('failed', 'Playback is unavailable: the core did not load');
       return null;
     }
 
     const context = openContext(rate);
     if (!context) {
-      this.#publish('failed', 'This browser has no Web Audio support.');
+      this.#publish('failed', 'This browser has no Web Audio support');
       return null;
     }
 
@@ -379,7 +379,7 @@ export class AudioEngine {
       this.#receive(event.data);
     };
     node.onprocessorerror = (): void => {
-      this.#publish('failed', 'The audio renderer stopped and playback was silenced.');
+      this.#publish('failed', 'The audio renderer stopped and playback was silenced');
     };
     node.connect(context.destination);
     context.onstatechange = (): void => {

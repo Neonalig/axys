@@ -105,21 +105,18 @@ export class MediaStore {
         bytes = await file.arrayBuffer();
       } catch (error) {
         if (error instanceof DOMException && error.name === 'NotFoundError') {
-          throw new PersistenceError(
-            'missing',
-            'The project audio is no longer stored. Relink it.',
-          );
+          throw new PersistenceError('missing', 'The project audio is no longer stored. Relink it');
         }
         throw toPersistenceError(error, 'Reading the stored audio');
       }
       if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
-        throw new PersistenceError('corrupt', 'The stored audio is truncated. Relink the file.');
+        throw new PersistenceError('corrupt', 'The stored audio is truncated. Relink the file');
       }
       return new Float32Array(bytes);
     }
     const db = this.#db;
     if (db === null) {
-      throw new PersistenceError('unavailable', 'This browser cannot store decoded audio.');
+      throw new PersistenceError('unavailable', 'This browser cannot store decoded audio');
     }
     let samples: Float32Array | null;
     try {
@@ -128,7 +125,7 @@ export class MediaStore {
       throw toPersistenceError(error, 'Reading the stored audio');
     }
     if (samples === null) {
-      throw new PersistenceError('missing', 'The project audio is no longer stored. Relink it.');
+      throw new PersistenceError('missing', 'The project audio is no longer stored. Relink it');
     }
     return samples;
   }
@@ -159,7 +156,7 @@ export class MediaStore {
     }
     const db = this.#db;
     if (db === null) {
-      throw new PersistenceError('unavailable', 'This browser cannot store decoded audio.');
+      throw new PersistenceError('unavailable', 'This browser cannot store decoded audio');
     }
     try {
       await writeMediaRecord(db, fingerprint, samples);

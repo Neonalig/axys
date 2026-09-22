@@ -46,7 +46,7 @@ export function guidedLabel(text: string, guide: string): HTMLLabelElement {
  * on every one of them: a gesture that is written differently in each row is a gesture nobody
  * learns.
  */
-export const DRAG_HINT = 'Drag to set. Shift coarse, Alt fine.';
+export const DRAG_HINT = 'Drag to set. Shift coarse, Alt fine';
 
 /**
  * Wraps a control in a labelled row, with the label carrying the field's explainer.

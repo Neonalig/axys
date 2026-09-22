@@ -119,12 +119,12 @@ interface ToolEntry {
 }
 
 const TOOLS: readonly ToolEntry[] = [
-  { id: 'select', label: 'Select Tool', icon: 'select', tooltip: 'Selects blobs and anchors.' },
-  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob where you click.' },
-  { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Drags whole blobs in pitch.' },
-  { id: 'pen', label: 'Draw Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target.' },
-  { id: 'line', label: 'Ramp Tool', icon: 'line', tooltip: 'Draws a straight pitch transition.' },
-  { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time.' },
+  { id: 'select', label: 'Select Tool', icon: 'select', tooltip: 'Selects blobs and anchors' },
+  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob where you click' },
+  { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Drags whole blobs in pitch' },
+  { id: 'pen', label: 'Draw Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target' },
+  { id: 'line', label: 'Ramp Tool', icon: 'line', tooltip: 'Draws a straight pitch transition' },
+  { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time' },
 ];
 
 /** How long the metronome flash takes to fade, in seconds. */
@@ -338,11 +338,11 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Zoom In': 'zoomIn',
   'Zoom Out': 'zoomOut',
   'Zoom Fit': 'zoomFit',
-  'Toggle Bars Beats': 'barsBeats',
+  'Toggle Bars and Beats': 'barsBeats',
   'Follow Playhead': 'follow',
   'Toggle Metronome': 'metronome',
   'Align Guide': 'time',
-  'Help And Diagnostics': 'help',
+  'Help and Diagnostics': 'help',
 };
 
 function iconFor(command: ShellCommand): IconName {
@@ -653,7 +653,7 @@ export class AppShell {
     emptyHeading.textContent = 'Open a vocal to start';
     const emptyHint = document.createElement('p');
     emptyHint.className = 'axys-hint';
-    emptyHint.textContent = 'Drop an audio file here, or open one.';
+    emptyHint.textContent = 'Drop an audio file here, or open one';
     const emptyActions = group('Ways In');
     for (const id of EMPTY_COMMANDS) {
       const command = options.commands.find((entry) => entry.id === id);
@@ -872,7 +872,7 @@ export class AppShell {
     this.#setFace('view.followPlayhead', {
       icon: state.follow ? STATE_ICONS.follow.on : STATE_ICONS.follow.off,
       label: 'Follow',
-      tooltip: state.follow ? 'Following Playhead (F)' : 'Follow Playhead (F)',
+      tooltip: state.follow ? 'Stop Following (F)' : 'Follow Playhead (F)',
       pressed: state.follow,
     });
     const looping = state.transport.loop !== null;
@@ -887,7 +887,7 @@ export class AppShell {
     this.#setFace('transport.toggleMetronome', {
       icon: 'metronome',
       label: 'Metronome',
-      tooltip: metronome ? 'Metronome On (M)' : 'Metronome Off (M)',
+      tooltip: metronome ? 'Silence Metronome (M)' : 'Sound Metronome (M)',
       pressed: metronome,
     });
 
@@ -1087,7 +1087,7 @@ export class AppShell {
     }
     this.#lastSelection = key;
     if (ids.length === 0 && ranges.length === 0) {
-      this.announce('Selection cleared.');
+      this.announce('Selection cleared');
       return;
     }
     const parts: string[] = [];
@@ -1097,7 +1097,7 @@ export class AppShell {
       parts.push(
         blob
           ? `Blob ${String(blob.id)} selected, ${blob.start.toFixed(2)} to ${blob.end.toFixed(2)} seconds.`
-          : 'One blob selected.',
+          : 'One blob selected',
       );
     } else if (ids.length > 1) {
       parts.push(`${String(ids.length)} blobs selected.`);
@@ -1352,12 +1352,15 @@ export class AppShell {
     // Segmented, so it reads as one control with one answer rather than eight loose buttons.
     section.classList.add('axys-segmented');
     for (const tool of TOOLS) {
+      // The tools are the one place a rich tooltip is warranted: a header-capitalised title, one
+      // supplementary line saying what the tool does, and the key. No examples and no rationale.
       const key = toolDefinition(tool.id).key;
-      const named = key === '' ? tool.label : `${tool.label} (${key})`;
+      const title = key === '' ? tool.label : `${tool.label} (${key})`;
       const button = control({
         icon: tool.icon,
         label: tool.label,
-        tooltip: `${named}: ${tool.tooltip}`,
+        tooltip: `${title}
+${tool.tooltip}`,
       });
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
@@ -1383,7 +1386,7 @@ export class AppShell {
       label: 'Theme',
       tooltip: themeTip(this.#themeChoice),
     });
-    button.setAttribute('aria-label', 'Choose A Theme');
+    button.setAttribute('aria-label', 'Choose a Theme');
     button.setAttribute('aria-haspopup', 'menu');
     button.addEventListener('click', () => {
       this.#openButtonMenu(button, (shell) =>

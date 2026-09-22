@@ -170,7 +170,7 @@ export function renderSourceCode(): HTMLElement {
     const warning = document.createElement('p');
     warning.className = 'axys-hint axys-warning';
     warning.textContent =
-      'This build records no revision, so the link resolves to the repository rather than the exact source. A host serving a modified Axys must set AXYS_SOURCE_REPOSITORY and AXYS_SOURCE_REVISION at build time.';
+      'This build records no revision, so the link resolves to the repository rather than the exact source. A host serving a modified Axys must set AXYS_SOURCE_REPOSITORY and AXYS_SOURCE_REVISION at build time';
     section.append(warning);
   }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { AccentName } from './accent.js';
+import type { AccentName, AccentTokenName } from './accent.js';
 import { ACCENT_NAMES, DEFAULT_ACCENT, accentTokens } from './accent.js';
 
 /** Selectable colour scheme. */
@@ -71,7 +71,15 @@ export type TokenName = (typeof THEME_TOKENS)[number];
 /** Resolved colour per token, ready for Canvas 2D or inline styling. */
 export type Theme = Readonly<Record<TokenName, string>>;
 
-const DARK: Theme = {
+/**
+ * A theme's own colours, without the eight the accent ramp supplies.
+ *
+ * @remarks Dark and light are authored this way so there is one source for an accent colour. High
+ * Contrast is a full theme, because it takes no accent.
+ */
+type BaseTheme = Readonly<Record<Exclude<TokenName, AccentTokenName>, string>>;
+
+const DARK: BaseTheme = {
   bg: '#0e1116',
   surface: '#161b22',
   surfaceRaised: '#1e242d',
@@ -80,9 +88,6 @@ const DARK: Theme = {
   borderStrong: '#3d4756',
   text: '#e6edf3',
   textMuted: '#9aa7b4',
-  accent: '#4cc2ff',
-  accentText: '#04121c',
-  focus: '#7fd6ff',
   danger: '#ff6b6b',
   warning: '#ffb454',
   success: '#56d364',
@@ -95,12 +100,7 @@ const DARK: Theme = {
   waveform: '#33465c',
   pitchDetected: '#6fe3b0',
   pitchTarget: '#ffd166',
-  blobFill: '#2f5d8c59',
-  blobFillSelected: '#3f8fd680',
-  blobBounds: '#8fb8e0',
   blobOriginal: '#c9a227',
-  selection: '#4cc2ff',
-  selectionFill: '#4cc2ff33',
   handle: '#f2f7fb',
   handleActive: '#ffd166',
   playhead: '#ff79c6',
@@ -115,7 +115,7 @@ const DARK: Theme = {
   conflict: '#ff4d4d',
 };
 
-const LIGHT: Theme = {
+const LIGHT: BaseTheme = {
   bg: '#f6f8fa',
   surface: '#ffffff',
   surfaceRaised: '#ffffff',
@@ -124,9 +124,6 @@ const LIGHT: Theme = {
   borderStrong: '#aab6c2',
   text: '#101820',
   textMuted: '#5a6773',
-  accent: '#0b6bcb',
-  accentText: '#ffffff',
-  focus: '#0b6bcb',
   danger: '#c02626',
   warning: '#9a5b00',
   success: '#1a7f37',
@@ -139,12 +136,7 @@ const LIGHT: Theme = {
   waveform: '#b9c7d6',
   pitchDetected: '#0f7a55',
   pitchTarget: '#b26a00',
-  blobFill: '#0b6bcb24',
-  blobFillSelected: '#0b6bcb45',
-  blobBounds: '#2a6ea8',
   blobOriginal: '#a8760a',
-  selection: '#0b6bcb',
-  selectionFill: '#0b6bcb26',
   handle: '#16202b',
   handleActive: '#b26a00',
   playhead: '#d81b60',
@@ -203,7 +195,8 @@ const CONTRAST: Theme = {
   conflict: '#ff1744',
 };
 
-const PALETTES: Readonly<Record<ThemeName, Theme>> = {
+/** The colours each theme authors for itself. */
+const PALETTES: Readonly<Record<ThemeName, BaseTheme>> = {
   dark: DARK,
   light: LIGHT,
   contrast: CONTRAST,
@@ -227,11 +220,10 @@ export function cssVariable(token: TokenName): string {
  * own promise.
  */
 export function themeColors(name: ThemeName, accent: AccentName = DEFAULT_ACCENT): Theme {
-  const base = PALETTES[name];
   if (name === 'contrast') {
-    return base;
+    return CONTRAST;
   }
-  return { ...base, ...accentTokens(accent, isDarkTheme(name)) };
+  return { ...PALETTES[name], ...accentTokens(accent, isDarkTheme(name)) };
 }
 
 /**

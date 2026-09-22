@@ -90,7 +90,7 @@ const GUIDE_MODES: readonly { value: GuideMode; label: string }[] = [
   { value: 'visualOnly', label: 'Visual Only' },
   { value: 'pitchOnly', label: 'Pitch Only' },
   { value: 'timingOnly', label: 'Timing Only' },
-  { value: 'combined', label: 'Pitch And Timing' },
+  { value: 'combined', label: 'Pitch and Timing' },
 ];
 
 /** A count with its noun, singular where the count is one. */
@@ -116,7 +116,7 @@ export function scopeLine(state: AppState): HTMLElement {
   const count = state.selection.blobs.length;
   line.textContent =
     count === 0
-      ? 'No selection. Affects whole project.'
+      ? 'No selection. Affects whole project'
       : `Affects ${String(count)} selected ${count === 1 ? 'blob' : 'blobs'}.`;
   return line;
 }
@@ -363,24 +363,24 @@ export class Inspector {
     this.#excluded = checkboxInput();
 
     blobPanel.append(
-      field('Start', this.#start, 'Start of the blob in source seconds.'),
-      field('End', this.#end, 'End of the blob in source seconds.'),
-      field('Duration', this.#duration, 'Output duration of the blob in seconds.'),
-      field('Time Offset', this.#timeOffset, 'Seconds the blob is moved along the timeline.'),
+      field('Start', this.#start, 'Start of the blob in source seconds'),
+      field('End', this.#end, 'End of the blob in source seconds'),
+      field('Duration', this.#duration, 'Output duration of the blob in seconds'),
+      field('Time Offset', this.#timeOffset, 'Seconds the blob is moved along the timeline'),
       this.#readoutField(
         'Detected Centre',
         this.#detected,
         this.#detectedName,
-        'Detected pitch centre in MIDI notes. Analysis evidence, not editable.',
+        'Detected pitch centre in MIDI notes. Analysis evidence, not editable',
       ),
       this.#readoutField(
         'Target Centre',
         this.#target,
         this.#targetName,
-        'Pitch the blob is corrected to, in MIDI notes.',
+        'Pitch the blob is corrected to, in MIDI notes',
       ),
-      field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch.'),
-      field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents.'),
+      field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch'),
+      field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents'),
       field(
         'Gain',
         this.#gain,
@@ -389,7 +389,7 @@ export class Inspector {
       field(
         'Exclude',
         this.#excluded,
-        'Leaves this blob out of scale correction and MIDI guidance. It still sounds, and edits made on it by hand still apply.',
+        'Leaves this blob out of scale correction and MIDI guidance. It still sounds, and edits made on it by hand still apply',
       ),
     );
     properties.append(blobPanel);
@@ -402,7 +402,7 @@ export class Inspector {
     const projectPanel = panel('Project');
     this.#projectName = textInput(MAX_PROJECT_NAME);
     projectPanel.append(
-      field('Name', this.#projectName, 'What this project is called. Renaming is undoable.'),
+      field('Name', this.#projectName, 'What this project is called. Renaming is undoable'),
     );
     project.append(projectPanel);
 
@@ -422,7 +422,7 @@ export class Inspector {
     );
     this.#timeDisplay = selectInput([
       { value: 'seconds', label: 'Clock Time' },
-      { value: 'barsBeats', label: 'Bars And Beats' },
+      { value: 'barsBeats', label: 'Bars and Beats' },
     ]);
     this.#followMode = selectInput([
       { value: 'page', label: 'Page Ahead' },
@@ -431,20 +431,20 @@ export class Inspector {
     this.#toolbarLabels = checkboxInput();
 
     displayPanel.append(
-      field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz.'),
-      field('Accidental Style', this.#accidentals, 'How note names spell accidentals.'),
-      field('Snap Division', this.#snap, 'Grid resolution edits snap to.'),
+      field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz'),
+      field('Accidental Style', this.#accidentals, 'How note names spell accidentals'),
+      field('Snap Division', this.#snap, 'Grid resolution edits snap to'),
       field(
         'Time Display',
         this.#timeDisplay,
-        'Whether the ruler reads clock time or bars and beats.',
+        'Whether the ruler reads clock time or bars and beats',
       ),
       field(
         'Follow Mode',
         this.#followMode,
-        'Whether a following view jumps ahead a screen at a time or holds the playhead centred.',
+        'Whether a following view jumps ahead a screen at a time or holds the playhead centred',
       ),
-      field('Button Names', this.#toolbarLabels, 'Shows each toolbar button name beside its icon.'),
+      field('Button Names', this.#toolbarLabels, 'Shows each toolbar button name beside its icon'),
     );
     project.append(displayPanel);
 
@@ -464,18 +464,18 @@ export class Inspector {
       'Guide Strength',
       this.#guideStrength,
       this.#guideStrengthReadout,
-      'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung.',
+      'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung',
     );
     this.#guideMutedRow = field(
       'Mute Guide',
       this.#guideMuted,
-      'Stops the guide sounding and hides its notes. The mapping is kept, so unmuting brings it back as it was.',
+      'Stops the guide sounding and hides its notes. The mapping is kept, so unmuting brings it back as it was',
     );
     guidePanel.append(
       field(
         'Guide Mode',
         this.#guideMode,
-        'What the guide contributes: the pitch of each mapped blob, its timing, or both. Visual Only draws the notes and moves nothing.',
+        'What the guide contributes: the pitch of each mapped blob, its timing, or both. Visual Only draws the notes and moves nothing',
       ),
       this.#guideStrengthRow,
       this.#guideMutedRow,
@@ -608,7 +608,7 @@ export class Inspector {
     if (!blob) {
       this.#blobHeading.textContent = 'Selected Blob';
       this.#selectionCount.hidden = false;
-      this.#selectionCount.textContent = 'No blob selected.';
+      this.#selectionCount.textContent = 'No blob selected';
       for (const control of controls) {
         if (control.type === 'checkbox') {
           setChecked(control, false);

@@ -52,7 +52,7 @@ export class ZoomControl {
     const slider = rangeInput(0, STEPS.length - 1, 1);
     slider.className = 'axys-zoom-slider';
     slider.setAttribute('aria-label', 'Zoom Level');
-    setTooltip(slider, 'Visible span. Ctrl and the wheel zoom freely between these steps.');
+    setTooltip(slider, 'Visible span. Ctrl and the wheel zoom freely between these steps');
     slider.addEventListener('input', () => {
       const chosen = STEPS[Number(slider.value)];
       if (chosen !== undefined) this.#options.onSpan(chosen);
@@ -63,7 +63,7 @@ export class ZoomControl {
     readout.className = 'axys-zoom-readout';
     readout.inputMode = 'decimal';
     readout.setAttribute('aria-label', 'Visible Seconds');
-    setTooltip(readout, 'Seconds across the editor. Type one to zoom to it.');
+    setTooltip(readout, 'Seconds across the editor. Type one to zoom to it');
     readout.addEventListener('change', () => {
       const typed = Number.parseFloat(readout.value);
       if (Number.isFinite(typed) && typed > 0) this.#options.onSpan(typed);

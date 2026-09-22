@@ -110,9 +110,12 @@ export class MixerPanel {
         setValue(controls.pan, String(strip.pan));
         controls.panReadout.textContent = panText(strip.pan);
       }
+      // A toggle's tooltip names what pressing it will do, and follows the state icon.
       controls.mute.innerHTML = stateIcon('mute', !strip.mute);
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
+      setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', STRIP_NAMES[id]));
       controls.solo.setAttribute('aria-pressed', String(strip.solo));
+      setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', STRIP_NAMES[id]));
     }
   }
 
@@ -138,8 +141,8 @@ export class MixerPanel {
     gain.setAttribute('aria-orientation', 'vertical');
     const gainReadout = readout('axys-mixer-level');
 
-    const mute = this.#buildSwitch(id, 'mute', `Mute ${label}`);
-    const solo = this.#buildSwitch(id, 'solo', `Solo ${label}`);
+    const mute = this.#buildSwitch(id, 'mute', label);
+    const solo = this.#buildSwitch(id, 'solo', label);
     const switches = document.createElement('div');
     switches.className = 'axys-mixer-switches';
     switches.append(mute, solo);
@@ -207,16 +210,17 @@ export class MixerPanel {
    * @remarks Pressing one settles the desk on that strip alone; Ctrl or Cmd adds it to whatever
    * is already switched on, which is how more than one strip is muted or soloed at a time.
    */
-  #buildSwitch(id: StripId, field: 'mute' | 'solo', label: string): HTMLButtonElement {
+  #buildSwitch(id: StripId, field: 'mute' | 'solo', strip: string): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `axys-icon axys-mixer-switch is-${field}`;
     // Mute swaps its glyph with its state; Lucide ships no off headphones, so solo carries its
     // state in its pressed styling alone.
     button.innerHTML = field === 'mute' ? stateIcon('mute', true) : ICONS.solo;
-    button.setAttribute('aria-label', label);
+    const action = field === 'mute' ? 'Mute' : 'Solo';
+    button.setAttribute('aria-label', `${action} ${strip}`);
     button.setAttribute('aria-pressed', 'false');
-    setTooltip(button, `${label}. Ctrl-click for more than one`);
+    setTooltip(button, switchTip(action, strip));
     button.addEventListener('click', (event: MouseEvent) => {
       this.#toggle(id, field, event.ctrlKey || event.metaKey);
     });
@@ -242,6 +246,16 @@ export class MixerPanel {
     this.#mixer = mixer;
     this.#hooks.applyEdit({ type: 'setMixer', mixer });
   }
+}
+
+/**
+ * A mute or solo tooltip: what pressing it will do, and how to do it to more than one strip.
+ *
+ * @remarks Said the same way for both switches and in both states, because a gesture written
+ * differently in each place is a gesture nobody learns.
+ */
+function switchTip(action: string, strip: string): string {
+  return `${action} ${strip}. Ctrl-click for more than one`;
 }
 
 function readout(className: string): HTMLElement {

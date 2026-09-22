@@ -142,7 +142,7 @@ export function openDatabase(): Promise<IDBDatabase> {
   if (typeof indexedDB === 'undefined') {
     throw new PersistenceError(
       'unavailable',
-      'This browser has no IndexedDB, so projects cannot be saved. Export before closing the tab.',
+      'This browser has no IndexedDB, so projects cannot be saved. Export before closing the tab',
     );
   }
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -151,7 +151,7 @@ export function openDatabase(): Promise<IDBDatabase> {
       request = indexedDB.open(DB_NAME, DB_VERSION);
     } catch (cause) {
       reject(
-        new PersistenceError('unavailable', 'Browser storage is blocked in this window.', {
+        new PersistenceError('unavailable', 'Browser storage is blocked in this window', {
           cause,
         }),
       );
@@ -164,7 +164,7 @@ export function openDatabase(): Promise<IDBDatabase> {
       reject(
         new PersistenceError(
           'unavailable',
-          'Another Axys tab is upgrading storage. Close it and try again.',
+          'Another Axys tab is upgrading storage. Close it and try again',
         ),
       );
     };
@@ -175,7 +175,7 @@ export function openDatabase(): Promise<IDBDatabase> {
       reject(
         new PersistenceError(
           'unavailable',
-          'Browser storage is unavailable, which private browsing can cause.',
+          'Browser storage is unavailable, which private browsing can cause',
           { cause: request.error },
         ),
       );
@@ -248,7 +248,7 @@ export class ProjectStore {
       throw new PersistenceError('missing', `No stored project has the id ${id}.`);
     }
     if (!isProjectRecord(row)) {
-      throw new PersistenceError('corrupt', 'The stored project record is unreadable.');
+      throw new PersistenceError('corrupt', 'The stored project record is unreadable');
     }
     return row.json;
   }
@@ -264,7 +264,7 @@ export class ProjectStore {
     try {
       document = parseJson(json, isProject, 'project');
     } catch (cause) {
-      throw new PersistenceError('corrupt', 'Refusing to store a document that is not a project.', {
+      throw new PersistenceError('corrupt', 'Refusing to store a document that is not a project', {
         cause,
       });
     }
@@ -305,7 +305,7 @@ export async function readMediaRecord(
   await settled(tx);
   if (row === undefined) return null;
   if (!isMediaRecord(row)) {
-    throw new PersistenceError('corrupt', 'The stored audio record is unreadable.');
+    throw new PersistenceError('corrupt', 'The stored audio record is unreadable');
   }
   return new Float32Array(row.samples);
 }

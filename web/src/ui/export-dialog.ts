@@ -163,7 +163,7 @@ function describe(panel: HTMLElement, preview: ExportPreview | null, choice: Exp
   panel.append(heading);
 
   if (!preview) {
-    panel.append(warning('This range could not be measured. Exporting it may not produce audio.'));
+    panel.append(warning('This range could not be measured. Exporting it may not produce audio'));
     return;
   }
 
@@ -176,10 +176,10 @@ function describe(panel: HTMLElement, preview: ExportPreview | null, choice: Exp
   panel.append(list);
 
   if (preview.frames === 0) {
-    panel.append(warning('This range is empty, so the file would hold no audio.'));
+    panel.append(warning('This range is empty, so the file would hold no audio'));
   }
   if (preview.clips && choice.depth !== 'float32') {
-    panel.append(warning('The peak is over full scale, so this export would clip.'));
+    panel.append(warning('The peak is over full scale, so this export would clip'));
   }
   if (preview.silent > SILENCE_EPSILON) {
     panel.append(

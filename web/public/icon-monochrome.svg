@@ -1,0 +1,4 @@
+<!-- Monochrome, for a host that recolours the icon itself: no ground, drawn in currentColor. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path d="M5 21c4 0 5-10 9-10s4 10 8 10h5" fill="none" stroke="currentColor" stroke-width="3.75" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1342,6 +1342,7 @@ input.is-adjustable {
   position: fixed;
   z-index: 50;
   max-width: 280px;
+  /* A rich tooltip is a title line and one supplementary line, so its newline is honoured */
   white-space: pre-line;
   padding: 4px 8px;
   border: 1px solid var(--axys-border-strong);

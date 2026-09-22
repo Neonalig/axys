@@ -1,4 +1,5 @@
+<!-- The mark: a pitch curve rising and settling, in Cerulean on the dark surface. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#151a21" />
-  <path d="M5 21c4 0 5-10 9-10s4 10 8 10h5" fill="none" stroke="#5ad1c8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+  <rect width="32" height="32" rx="7" fill="#151a21"/>
+  <path d="M5 21c4 0 5-10 9-10s4 10 8 10h5" fill="none" stroke="#34a4ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

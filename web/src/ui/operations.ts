@@ -154,8 +154,8 @@ export function showCorrection(ctx: CommandContext): Dialog {
   const state = ctx.store.state;
   const current = state.edits?.scale ?? null;
   if (current === null) {
-    ctx.toast.warn('Open a vocal before correcting it.');
-    return Dialog.open({ title: 'Correction', content: hint('Nothing to correct.') });
+    ctx.toast.warn('Open a vocal before correcting it');
+    return Dialog.open({ title: 'Correction', content: hint('Nothing to correct') });
   }
   const scopeOps = scopeOf(state);
 
@@ -181,7 +181,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
   strengthRow.className = 'axys-field';
   const strengthLabel = guidedLabel(
     'Strength',
-    'How far correction pulls a blob onto its scale degree. 0% leaves it where it was sung.',
+    'How far correction pulls a blob onto its scale degree. 0% leaves it where it was sung',
   );
   strengthLabel.htmlFor = strength.id;
   const pair = document.createElement('div');
@@ -209,11 +209,11 @@ export function showCorrection(ctx: CommandContext): Dialog {
   }
 
   content.append(
-    field('Key', key, 'Tonic the scale is built on. Every scale degree is measured from it.'),
+    field('Key', key, 'Tonic the scale is built on. Every scale degree is measured from it'),
     field(
       'Scale',
       scale,
-      'The degrees correction is allowed to pull a blob onto. Anything not in the scale is moved to the nearest degree that is.',
+      'The degrees correction is allowed to pull a blob onto. Anything not in the scale is moved to the nearest degree that is',
     ),
     strengthRow,
     excluded,
@@ -249,8 +249,8 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   const state = ctx.store.state;
   const edits = state.edits;
   if (edits === null) {
-    ctx.toast.warn('Open a vocal before shaping it.');
-    return Dialog.open({ title: 'Voice Character', content: hint('Nothing to shape.') });
+    ctx.toast.warn('Open a vocal before shaping it');
+    return Dialog.open({ title: 'Voice Character', content: hint('Nothing to shape') });
   }
   const modulation = edits.modulation;
   const formant = edits.formant;
@@ -297,14 +297,14 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   };
 
   content.append(
-    row('Pitch Drift', drift, driftReadout, 'How much slow pitch drift survives correction.'),
-    row('Vibrato Depth', vibrato, vibratoReadout, 'Scales detected vibrato; 100% keeps it.'),
-    field('Vibrato Split', split, 'Boundary in Hz between drift and vibrato.'),
-    field('Formant Mode', mode, 'How the vocal tract is treated while pitch moves.'),
-    row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones.'),
+    row('Pitch Drift', drift, driftReadout, 'How much slow pitch drift survives correction'),
+    row('Vibrato Depth', vibrato, vibratoReadout, 'Scales detected vibrato; 100% keeps it'),
+    field('Vibrato Split', split, 'Boundary in Hz between drift and vibrato'),
+    field('Formant Mode', mode, 'How the vocal tract is treated while pitch moves'),
+    row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones'),
     // Drift, vibrato and formants are properties of the voice rather than of a span, and the
     // core compiles them over the whole take, so this one has no selection to narrow it to.
-    hint('Affects whole project.'),
+    hint('Affects whole project'),
   );
 
   const readouts = (): void => {

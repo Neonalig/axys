@@ -1353,7 +1353,7 @@ export class EditorController {
       view: { ...state.view, loopStart: null, loopEnd: null },
     });
     this.#options.setLoop?.(null);
-    this.#announce('Loop cleared.');
+    this.#announce('Loop cleared');
   }
 
   #setSelection(selection: Selection): void {

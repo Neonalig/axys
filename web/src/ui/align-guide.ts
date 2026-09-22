@@ -21,7 +21,7 @@ import type { EditOp, GuideMode, GuideSelection, NoteMapping } from '../core/typ
 const GUIDE_MODES: readonly { value: GuideMode; label: string }[] = [
   { value: 'pitchOnly', label: 'Pitch Only' },
   { value: 'timingOnly', label: 'Timing Only' },
-  { value: 'combined', label: 'Pitch And Timing' },
+  { value: 'combined', label: 'Pitch and Timing' },
   { value: 'visualOnly', label: 'Visual Only' },
 ];
 
@@ -55,7 +55,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   const state: AppState = ctx.store.state;
   const guide = state.edits?.guide ?? null;
   if (guide === null) {
-    ctx.toast.warn('Choose a MIDI guide track before aligning it.');
+    ctx.toast.warn('Choose a MIDI guide track before aligning it');
     return Dialog.open({ title: 'Align Guide', content: document.createElement('div') });
   }
   const selected = new Set(state.selection.blobs);
@@ -63,7 +63,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   // blobs and the notes; mode and strength decide what is done with it, not what it is.
   const proposal = ctx.workspace.proposeMappings();
   if (proposal === null) {
-    ctx.toast.warn('This guide could not be aligned.');
+    ctx.toast.warn('This guide could not be aligned');
     return Dialog.open({ title: 'Align Guide', content: document.createElement('div') });
   }
   const mappings = narrow(proposal.mappings, state.edits?.mappings ?? [], selected);
@@ -87,7 +87,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   strengthRow.className = 'axys-field';
   const strengthLabel = guidedLabel(
     'Guide Strength',
-    'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung.',
+    'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung',
   );
   strengthLabel.htmlFor = strength.id;
   const pair = document.createElement('div');
@@ -106,7 +106,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
     field(
       'Guide Mode',
       mode,
-      'What the guide moves. A blob mapped to a note is pulled onto that note; Visual Only maps the notes and moves nothing, which is how a mapping is checked before it is used.',
+      'What the guide moves. A blob mapped to a note is pulled onto that note; Visual Only maps the notes and moves nothing, which is how a mapping is checked before it is used',
     ),
     strengthRow,
     scopeLine(state),
