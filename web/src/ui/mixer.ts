@@ -223,7 +223,7 @@ export class MixerPanel {
     button.className = `axys-icon axys-mixer-switch is-${field}`;
     // Mute swaps its glyph with its state; Lucide ships no off headphones, so solo carries its
     // state in its pressed styling alone.
-    button.innerHTML = field === 'mute' ? stateIcon('mute', true) : ICONS.solo;
+    swapGlyph(button, field === 'mute' ? stateIcon('mute', true) : ICONS.solo);
     const action = field === 'mute' ? 'Mute' : 'Solo';
     button.setAttribute('aria-label', `${action} ${strip}`);
     button.setAttribute('aria-pressed', 'false');

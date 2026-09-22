@@ -40,7 +40,7 @@ export function button(options: ButtonOptions): HTMLButtonElement {
 
   const glyph = document.createElement('span');
   glyph.className = 'axys-button-icon';
-  glyph.innerHTML = ICONS[options.icon];
+  swapGlyph(glyph, ICONS[options.icon]);
 
   const text = document.createElement('span');
   text.className = 'axys-button-label';
@@ -56,17 +56,34 @@ export function button(options: ButtonOptions): HTMLButtonElement {
 }
 
 /**
+ * What each host was last given, so an unchanged glyph is left alone.
+ *
+ * @remarks Not `innerHTML`, which comes back renormalised and so never compares equal to the
+ * string it was set from. Comparing against that made every call a change: a control refreshed
+ * from state, which the mixer is on every frame of playback, rewrote its glyph and restarted its
+ * fade sixty times a second.
+ */
+const written = new WeakMap<HTMLElement, string>();
+
+/**
  * Replaces a glyph, fading the new one in.
  *
  * @remarks A swapped glyph is a different control saying a different thing, and swapping the
- * markup outright reads as a flicker. The class is removed once the fade has played, so the next
- * swap can replay it. Under reduced motion the markup is simply replaced.
+ * markup outright reads as a flicker. Cheap to call on every update: an unchanged glyph does
+ * nothing at all. The class is removed once the fade has played, so the next swap can replay it,
+ * and under reduced motion the markup is simply replaced.
  */
 export function swapGlyph(host: HTMLElement, markup: string): void {
-  if (host.innerHTML === markup) {
+  if (written.get(host) === markup) {
     return;
   }
+  const first = !written.has(host);
+  written.set(host, markup);
   host.innerHTML = markup;
+  // The glyph a control is built with is not a swap, so it does not fade in behind the shell.
+  if (first) {
+    return;
+  }
   if (prefersReducedMotion()) {
     return;
   }

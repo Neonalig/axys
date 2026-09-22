@@ -1485,8 +1485,23 @@ which is what `hidden` was doing.
 Tabs ease between their states, and a glyph swapped for its other state fades in through
 `swapGlyph` rather than being replaced outright, which read as a flicker.
 
+`swapGlyph` remembers what it last wrote, in a `WeakMap` keyed on the element, rather than
+comparing `innerHTML`. Markup read back out of the DOM comes renormalised and never compares equal
+to the string it was set from, so the guard never held: a control refreshed from state, which the
+mixer is on every frame of playback, rewrote its glyph and restarted its fade sixty times a second.
+That is what made the mute switches flicker under the transport and the metronome. The same record
+tells a control's first glyph from a swap, so nothing fades in behind the shell as it is built.
+
 ### Time zero is a landmark, not a measurement
 
 Every other line on the timeline says where something is; zero says where the take starts. It is
 drawn in `gridLineOctave` at twice the weight of the grid, the same emphasis an octave boundary
 gets against the semitone lines, and after the rest of the grid so nothing is written over it.
+
+### A panel leaves the way it arrived
+
+Dialogs animated in and then vanished. Closing now plays the entry in reverse, shrinking back into
+the panel's own centre while the backdrop fades, through the same `animateOut` the menus and toasts
+use. Focus goes back and `onClose` reports the moment the panel is dismissed rather than when it
+has finished leaving, because a panel that previews in the editor has to put the preview down at
+once, and a leaving panel takes no pointer events so the page is usable immediately.

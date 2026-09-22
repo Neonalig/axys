@@ -10,6 +10,7 @@
  */
 
 import { button as iconButton } from './controls/index.js';
+import { animateOut } from './motion.js';
 import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
@@ -250,12 +251,24 @@ export class Dialog {
     window.removeEventListener('pointermove', this.#onDragMove);
     window.removeEventListener('pointerup', this.#onDragEnd);
     document.removeEventListener('pointerdown', this.#onOutside, true);
-    this.#backdrop?.remove();
-    this.#element.remove();
+    // Focus goes back before the exit plays, so the keyboard is never parked on a leaving panel,
+    // and `onClose` reports at once rather than in ninety milliseconds: a panel that previews in
+    // the editor has to put the preview down when it is dismissed, not when it has finished
+    // leaving.
     if (this.#opener instanceof HTMLElement) {
       this.#opener.focus();
     }
     this.#onClose?.();
+
+    const backdrop = this.#backdrop;
+    if (backdrop !== null) {
+      animateOut(backdrop, 'is-leaving', () => {
+        backdrop.remove();
+      });
+    }
+    animateOut(this.#element, 'is-leaving', () => {
+      this.#element.remove();
+    });
   }
 
   #show(): void {

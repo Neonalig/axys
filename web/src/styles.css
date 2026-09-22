@@ -1550,6 +1550,12 @@ input.is-adjustable {
   animation: axys-fade-in var(--axys-duration-base) var(--axys-ease-enter);
 }
 
+.axys-backdrop.is-leaving {
+  /* Dismissed the moment it is asked to go, whatever its fade still has left to play */
+  pointer-events: none;
+  animation: axys-fade-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
+}
+
 /*
  * Positioned in pixels rather than centred with a translate. A panel is dragged, and a transform
  * that carries half the positioning cannot be animated without fighting the drag: the entry
@@ -1584,6 +1590,14 @@ input.is-adjustable {
 .axys-dialog.is-entering {
   transform-origin: center;
   animation: axys-dialog-in var(--axys-duration-base) var(--axys-ease-enter);
+}
+
+/* Leaving the way it arrived, shrinking back into its own centre rather than blinking away */
+
+.axys-dialog.is-leaving {
+  pointer-events: none;
+  transform-origin: center;
+  animation: axys-dialog-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
 }
 
 .axys-dialog-body {
@@ -1775,6 +1789,13 @@ html.is-theme-changing * {
   from {
     opacity: 0;
     transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes axys-dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
   }
 }
 

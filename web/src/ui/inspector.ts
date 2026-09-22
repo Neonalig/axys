@@ -326,7 +326,7 @@ export class Inspector {
     const fold = document.createElement('button');
     fold.type = 'button';
     fold.className = 'axys-icon axys-inspector-fold';
-    fold.innerHTML = stateIcon('inspectorFold', true);
+    swapGlyph(fold, stateIcon('inspectorFold', true));
     fold.addEventListener('click', () => {
       this.#hooks.setCollapsed(!this.#collapsed);
     });
