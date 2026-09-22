@@ -16,7 +16,7 @@ import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
-import { showSourceCode, showDiagnostics } from '../ui/diagnostics.js';
+import { showDiagnostics } from '../ui/diagnostics.js';
 import { showExportDialog } from '../ui/export-dialog.js';
 import type { ExportChoice, ExportRange } from '../ui/export-dialog.js';
 import type { ToastHost } from '../ui/toast.js';
@@ -120,12 +120,6 @@ const SMOOTH_AMOUNT = 0.5;
 const FIT_MARGIN = 3;
 
 const COMPARE_ORDER: readonly CompareMode[] = ['processed', 'original', 'split'];
-
-const COMPARE_LABELS: Readonly<Record<CompareMode, string>> = {
-  processed: 'Processed',
-  original: 'Original',
-  split: 'Split',
-};
 
 /** Blobs the selection covers, in time order. */
 function selectedBlobs(state: AppState): Blob[] {
@@ -412,7 +406,7 @@ export function buildCommands(): Command[] {
       shortcut: 'Ctrl+Z',
       enabled: editable,
       run: (ctx) => {
-        if (!ctx.workspace.undo()) ctx.toast.info('Nothing left to undo.');
+        if (!ctx.workspace.undo()) ctx.toast.info('Nothing To Undo');
       },
     },
     {
@@ -422,7 +416,7 @@ export function buildCommands(): Command[] {
       shortcut: 'Ctrl+Shift+Z',
       enabled: editable,
       run: (ctx) => {
-        if (!ctx.workspace.redo()) ctx.toast.info('Nothing left to redo.');
+        if (!ctx.workspace.redo()) ctx.toast.info('Nothing To Redo');
       },
     },
     {
@@ -434,7 +428,7 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const target = splitTarget(ctx.store.state);
         if (!target) {
-          ctx.toast.warn('Put the playhead inside a blob to split it.');
+          ctx.toast.warn('Put the playhead inside a blob to split.');
           return;
         }
         ctx.workspace.apply({
@@ -466,7 +460,7 @@ export function buildCommands(): Command[] {
         }
         const pair = joinPair(ctx.store.state);
         if (!pair) {
-          ctx.toast.warn('Select a blob that has a neighbour to join.');
+          ctx.toast.warn('Select two or more neighbouring blobs to join.');
           return;
         }
         ctx.workspace.apply({ type: 'joinBlobs', first: pair.first.id, second: pair.second.id });
@@ -481,7 +475,7 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const op = resetTarget(ctx.store.state);
         if (!op) {
-          ctx.toast.warn('Select something to reset.');
+          ctx.toast.warn('Select a blob or a span to reset.');
           return;
         }
         ctx.workspace.apply(op);
@@ -496,7 +490,7 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const span = targetSpan(ctx.store.state);
         if (!span) {
-          ctx.toast.warn('Select a time range inside a blob first.');
+          ctx.toast.warn('Select a span inside a blob to smooth.');
           return;
         }
         ctx.workspace.apply({
@@ -589,26 +583,13 @@ export function buildCommands(): Command[] {
         }
         const range = state.selection.range;
         if (!range) {
-          ctx.toast.warn('Select a time range to loop.');
+          ctx.toast.warn('Select a span to loop.');
           return;
         }
         ctx.audio.setLoop({
           start: ctx.workspace.outputAt(Math.min(range.start, range.end)),
           end: ctx.workspace.outputAt(Math.max(range.start, range.end)),
         });
-      },
-    },
-    {
-      id: 'transport.toggleCompare',
-      label: 'Toggle Compare',
-      group: 'Transport',
-      shortcut: 'C',
-      enabled: ready,
-      run: (ctx) => {
-        const current = COMPARE_ORDER.indexOf(ctx.store.state.compare);
-        const next = COMPARE_ORDER[(current + 1) % COMPARE_ORDER.length] ?? 'processed';
-        ctx.audio.setCompare(next);
-        ctx.toast.info(`Playing the ${COMPARE_LABELS[next].toLowerCase()} audio.`);
       },
     },
     {
@@ -621,6 +602,18 @@ export function buildCommands(): Command[] {
         const timeline = timelineOf(ctx.store.state);
         if (!timeline) return;
         ctx.audio.setMetronome(!ctx.store.state.transport.metronome, timeline);
+      },
+    },
+    {
+      id: 'transport.toggleCompare',
+      label: 'Toggle Compare',
+      group: 'Transport',
+      shortcut: 'C',
+      enabled: ready,
+      run: (ctx) => {
+        const current = COMPARE_ORDER.indexOf(ctx.store.state.compare);
+        const next = COMPARE_ORDER[(current + 1) % COMPARE_ORDER.length] ?? 'processed';
+        ctx.audio.setCompare(next);
       },
     },
 
@@ -705,23 +698,15 @@ export function buildCommands(): Command[] {
     },
 
     {
+      // One Help entry: the diagnostics dialog already carries the Source Code offer at its
+      // foot, so a second button for it was the same dialog by another name.
       id: 'help.showDiagnostics',
-      label: 'Show Diagnostics',
+      label: 'Help And Diagnostics',
       group: 'Help',
       shortcut: 'F1',
       enabled: () => true,
       run: async (ctx) => {
         showDiagnostics({ capabilities: await probeCapabilities(), engine: ctx.audio.report });
-      },
-    },
-    {
-      id: 'help.showSourceCode',
-      label: 'Show Source Code',
-      group: 'Help',
-      shortcut: 'F2',
-      enabled: () => true,
-      run: () => {
-        showSourceCode();
       },
     },
   ];

@@ -193,15 +193,13 @@ class AxysWorkspace implements Workspace {
       });
       await this.#install(session, analysed.samples, analysed.name, null);
       if (decoded.resampled) {
-        this.#toast.warn(
-          `This browser decoded "${decoded.name}" at ${String(decoded.sampleRate)} Hz rather than its own rate.`,
-        );
+        this.#toast.warn(`Decoded at ${String(decoded.sampleRate)} Hz, not the file's own rate.`);
       }
     } catch (error) {
       if (error instanceof WorkerCancelled) {
         this.#idle();
         this.#store.update({ phase: this.#session ? 'ready' : 'empty', message: null });
-        this.#toast.info('The import was cancelled.');
+        this.#toast.info('Import Cancelled');
       } else {
         this.#fail('Open Audio', error);
       }
@@ -218,7 +216,7 @@ class AxysWorkspace implements Workspace {
   async openMidiFile(file: File): Promise<void> {
     const session = this.#session;
     if (!session) {
-      this.#toast.warn('Open a vocal before importing a MIDI guide.');
+      this.#toast.warn('Open a vocal before a MIDI guide.');
       return;
     }
     try {
@@ -227,7 +225,7 @@ class AxysWorkspace implements Workspace {
       this.#store.update({ midi });
       this.#publish();
       this.#toast.info(
-        `Imported ${String(midi.tracks.length)} MIDI tracks and ${String(midi.notes.length)} notes.`,
+        `Imported ${String(midi.tracks.length)} tracks, ${String(midi.notes.length)} notes.`,
       );
     } catch (error) {
       this.#fail('Open MIDI', error);
@@ -257,14 +255,14 @@ class AxysWorkspace implements Workspace {
     const projects = this.#projects;
     const json = this.#projectJson();
     if (!projects || json === null) {
-      this.#toast.error('Projects cannot be stored in this browser. Export the project instead.');
+      this.#toast.error('This browser cannot store projects. Export instead.');
       return;
     }
     const id = this.#projectId ?? 'project';
     try {
       await projects.save(id, json);
       this.#store.update({ dirty: false });
-      this.#toast.info('The project is saved on this device.');
+      this.#toast.info(`Saved ${this.#name}`);
     } catch (error) {
       this.#fail('Save Project', error);
     }
@@ -273,12 +271,12 @@ class AxysWorkspace implements Workspace {
   exportProjectFile(): void {
     const json = this.#projectJson();
     if (json === null) {
-      this.#toast.error('There is no project to export yet.');
+      this.#toast.error('Nothing To Export');
       return;
     }
     try {
       const name = exportProject(json, this.#name);
-      this.#toast.info(`Wrote ${name}.`);
+      this.#toast.info(`Saved ${name}`);
     } catch (error) {
       this.#fail('Export Project', error);
     }
@@ -298,7 +296,7 @@ class AxysWorkspace implements Workspace {
     const session = this.#session;
     const json = this.#projectJson();
     if (!session || json === null) {
-      this.#toast.error('There is nothing to export yet.');
+      this.#toast.error('Nothing To Export');
       return;
     }
     this.#progress('Export WAV', 0.02);
@@ -318,12 +316,10 @@ class AxysWorkspace implements Workspace {
       download(new Blob([toBytes(encoded.bytes)], { type: 'audio/wav' }), `${this.#name}.wav`);
       if (encoded.report.clippedSamples > 0) {
         this.#toast.warn(
-          `The export clipped ${String(encoded.report.clippedSamples)} samples. Lower the level and export again.`,
+          `Clipped ${String(encoded.report.clippedSamples)} samples. Lower the level and export again.`,
         );
       } else {
-        this.#toast.info(
-          `Exported ${String(encoded.report.frames)} frames at a peak of ${encoded.report.peak.toFixed(3)}.`,
-        );
+        this.#toast.info(`Exported ${this.#name}.wav, peak ${encoded.report.peak.toFixed(2)}`);
       }
     } catch (error) {
       this.#fail('Export WAV', error);
@@ -340,7 +336,7 @@ class AxysWorkspace implements Workspace {
       this.#publish();
       this.#store.update({ mappingReport: report, drift: session.drift() });
       this.#toast.info(
-        `Mapped the guide with ${String(report.unmappedBlobs.length)} blobs and ${String(report.unmappedNotes.length)} notes left over.`,
+        `Guide aligned. ${String(report.unmappedBlobs.length)} blobs and ${String(report.unmappedNotes.length)} notes unmapped.`,
       );
       this.#reportGuideOverlaps(true);
     } catch (error) {
@@ -401,7 +397,7 @@ class AxysWorkspace implements Workspace {
         phase: 'error',
         message: `Relink "${project.source.name}" to open this project.`,
       });
-      this.#toast.warn(`Open "${project.source.name}" to relink this project's audio.`);
+      this.#toast.warn(`Relink ${project.source.name} to open this project.`);
       return;
     }
     this.#progress('Open Project', 0.4);
@@ -422,7 +418,7 @@ class AxysWorkspace implements Workspace {
       const session = this.#core.openSession(pending.json, relinked.samples);
       this.#pending = null;
       await this.#install(session, relinked.samples, pending.project.name, pending.project.view);
-      this.#toast.info('The project audio is relinked.');
+      this.#toast.info('Audio Relinked');
     } catch (error) {
       this.#fail('Open Project', error);
     }
@@ -508,7 +504,7 @@ class AxysWorkspace implements Workspace {
       if (await media.has(fingerprint)) return;
       await media.write(fingerprint, mono);
     } catch {
-      this.#toast.warn('This browser would not cache the audio, so reopening will decode again.');
+      this.#toast.warn('Audio not cached. Reopening will decode again.');
     }
   }
 
@@ -542,7 +538,7 @@ class AxysWorkspace implements Workspace {
     this.#store.update({ guideOverlaps: overlaps });
     if (announce && overlaps.length > 0) {
       this.#toast.warn(
-        `The guide has ${String(overlaps.length)} overlapping notes. Each note takes at most one blob, so the rest stay unmapped.`,
+        `Guide has ${String(overlaps.length)} overlapping notes. Each note takes one blob at most.`,
       );
     }
   }
@@ -591,7 +587,7 @@ class AxysWorkspace implements Workspace {
    */
   #fail(operation: string, error: unknown): void {
     const message = describe(error);
-    this.#toast.error(`${operation} failed: ${message}`);
+    this.#toast.error(`${operation} failed. ${message}`);
     const open = this.#session !== null;
     this.#store.update({
       phase: open ? 'ready' : 'error',
@@ -744,7 +740,7 @@ async function openDropped(
   else if (audio) await workspace.openAudioFile(audio);
   if (midi) {
     if (!project && !audio && !workspace.ready) {
-      toast.warn('Open a vocal before importing a MIDI guide.');
+      toast.warn('Open a vocal before a MIDI guide.');
       return;
     }
     await workspace.openMidiFile(midi);
@@ -823,7 +819,7 @@ function noteDegradedCapabilities(caps: Capability[], toast: ToastHost): void {
     // A browser that refuses storage shows the notice again next time, which is harmless.
   }
   const names = missing.map((cap) => cap.label).join(', ');
-  toast.warn(`Running in a reduced mode: ${names} are unavailable. See Show Diagnostics.`);
+  toast.warn(`Reduced mode: ${names} unavailable. See Help And Diagnostics.`);
 }
 
 /** Resolves with the opened store, or `null` when this browser will not provide it. */
@@ -915,9 +911,7 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
     const missed = report.underruns - seenUnderruns;
     seenUnderruns = report.underruns;
     shell.setEngineReport(report);
-    toast.warn(
-      `Playback dropped ${String(missed)} audio blocks. Close other heavy tabs and play again.`,
-    );
+    toast.warn(`Dropped ${String(missed)} audio blocks. Close other heavy tabs.`);
   }, UNDERRUN_INTERVAL_MS);
 
   return () => {
@@ -1071,14 +1065,10 @@ async function start(): Promise<void> {
   const projects = await projectsPromise;
   const media = await mediaPromise;
   if (!projects) {
-    toast.warn(
-      'Projects cannot be stored in this browser. Export your work before closing the tab.',
-    );
+    toast.warn('This browser cannot store projects. Export before closing the tab.');
   }
   if (!media) {
-    toast.warn(
-      'Decoded audio cannot be cached here, so reopening a project will ask for the file.',
-    );
+    toast.warn('Audio cannot be cached here. Reopening will ask for the file.');
   }
 
   workspace = new AxysWorkspace({ core, store, audio, toast, projects, media });

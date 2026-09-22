@@ -90,11 +90,17 @@ const TOOLS: readonly ToolEntry[] = [
 /** Theme entries the chrome offers, with following the operating system first and default. */
 const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
 
-const COMPARE_OPTIONS: readonly { value: CompareMode; label: string }[] = [
-  { value: 'processed', label: 'Processed' },
-  { value: 'original', label: 'Original' },
-  { value: 'split', label: 'Split Compare' },
-];
+/**
+ * How each compare mode presents itself on the one transport toggle.
+ *
+ * @remarks One control with three faces rather than a button beside a drop-down: what is being
+ * monitored is a single choice, and the icon is what says which.
+ */
+const COMPARE_FACES: Readonly<Record<CompareMode, { icon: IconName; tip: string }>> = {
+  processed: { icon: 'compareProcessed', tip: 'Playing Processed' },
+  original: { icon: 'compareOriginal', tip: 'Playing Original' },
+  split: { icon: 'compareSplit', tip: 'Playing Original Left, Processed Right' },
+};
 
 /**
  * Commands the toolbar does not draw.
@@ -108,7 +114,15 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'view.zoomOut',
   'view.zoomFit',
   'view.toggleBarsBeats',
+  // A project-wide bypass is a state of the project, not a transport button, and it reads as a
+  // duplicate of Compare while it sits beside it.
+  'edit.bypassAll',
+  // Cancelling an import belongs under the progress it is cancelling.
+  'file.cancelImport',
 ]);
+
+/** Commands drawn in their own group ahead of the rest of theirs. */
+const HISTORY_COMMANDS: ReadonlySet<string> = new Set(['edit.undo', 'edit.redo']);
 
 const GROUP_ORDER: readonly CommandGroup[] = [
   'File',
@@ -149,7 +163,7 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Pause: 'pause',
   Stop: 'stop',
   'Loop Selection': 'loop',
-  'Toggle Compare': 'compare',
+  'Toggle Compare': 'compareProcessed',
   'Zoom In': 'zoomIn',
   'Zoom Out': 'zoomOut',
   'Zoom Fit': 'zoomFit',
@@ -157,8 +171,7 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Follow Playhead': 'follow',
   'Toggle Metronome': 'metronome',
   'Align Guide': 'time',
-  'Show Diagnostics': 'diagnostics',
-  'Show Source Code': 'sourceCode',
+  'Help And Diagnostics': 'help',
 };
 
 function iconFor(command: ShellCommand): IconName {
@@ -243,7 +256,6 @@ export class AppShell {
   readonly #commandButtons = new Map<string, HTMLButtonElement>();
   readonly #commandLabels = new Map<string, ShellCommand>();
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
-  readonly #compare: HTMLSelectElement;
 
   readonly #statusPhase: { wrapper: HTMLElement; value: HTMLElement };
   readonly #statusPosition: HTMLElement;
@@ -263,6 +275,9 @@ export class AppShell {
 
   /** Whether the transport button currently draws the pause icon, so it is rewritten only on a change. */
   #showingPause = false;
+
+  /** Compare mode the toggle currently shows, so its icon is rewritten only on a change. */
+  #showingCompare: CompareMode | null = null;
 
   private constructor(options: ShellOptions) {
     this.#hooks = options.hooks;
@@ -284,9 +299,7 @@ export class AppShell {
       }
     }
 
-    const compare = this.#buildCompare();
     const theme = this.#buildTheme(options.theme ?? 'system');
-    this.#compare = compare.select;
 
     for (const name of GROUP_ORDER) {
       if (name === 'Tools') {
@@ -301,12 +314,23 @@ export class AppShell {
       if (commands.length === 0) {
         continue;
       }
-      const section = group(`${name} Commands`);
-      for (const command of commands) {
-        section.append(this.#buildCommandButton(command));
+      // Undo and redo get their own rule. They act on the last thing done rather than on
+      // anything selected, so grouping them with the edits invites reading them as one set.
+      const history = commands.filter((command) => HISTORY_COMMANDS.has(command.id));
+      if (history.length > 0) {
+        const section = group('History');
+        for (const command of history) {
+          section.append(this.#buildCommandButton(command));
+        }
+        header.append(section);
       }
-      if (name === 'Transport') {
-        section.append(compare.wrapper);
+      const rest = commands.filter((command) => !HISTORY_COMMANDS.has(command.id));
+      if (rest.length === 0 && name !== 'Transport' && name !== 'View') {
+        continue;
+      }
+      const section = group(`${name} Commands`);
+      for (const command of rest) {
+        section.append(this.#buildCommandButton(command));
       }
       if (name === 'View') {
         section.append(theme.wrapper);
@@ -314,14 +338,9 @@ export class AppShell {
       header.append(section);
     }
 
-    const extras = group('Playback And View');
-    if (compare.wrapper.parentElement === null) {
-      extras.append(compare.wrapper);
-    }
     if (theme.wrapper.parentElement === null) {
+      const extras = group('View Settings');
       extras.append(theme.wrapper);
-    }
-    if (extras.childElementCount > 0) {
       header.append(extras);
     }
 
@@ -493,10 +512,14 @@ export class AppShell {
       button.disabled = state.phase !== 'ready';
     }
 
-    if (document.activeElement !== this.#compare) {
-      this.#compare.value = state.compare;
+    const compare = this.#byLabel('Toggle Compare');
+    if (compare && state.compare !== this.#showingCompare) {
+      this.#showingCompare = state.compare;
+      const face = COMPARE_FACES[state.compare];
+      compare.button.innerHTML = ICONS[face.icon];
+      compare.button.setAttribute('aria-label', `Toggle Compare: ${face.tip}`);
+      setTooltip(compare.button, `${face.tip} (C)`);
     }
-    this.#compare.disabled = state.phase !== 'ready';
 
     // A readout earns its place only while it has something to say. A working editor reporting
     // "ready", "0 conflicts" and "nothing selected" is a row of noise to read past.
@@ -612,6 +635,8 @@ export class AppShell {
 
   #buildToolGroup(): HTMLElement {
     const section = group('Editing Tools');
+    // Segmented, so it reads as one control with one answer rather than eight loose buttons.
+    section.classList.add('axys-segmented');
     for (const tool of TOOLS) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -628,31 +653,6 @@ export class AppShell {
       section.append(button);
     }
     return section;
-  }
-
-  #buildCompare(): { wrapper: HTMLElement; select: HTMLSelectElement } {
-    const wrapper = document.createElement('span');
-    wrapper.className = 'axys-field';
-    const select = document.createElement('select');
-    select.id = 'axys-compare';
-    for (const option of COMPARE_OPTIONS) {
-      const element = document.createElement('option');
-      element.value = option.value;
-      element.textContent = option.label;
-      select.append(element);
-    }
-    setTooltip(select, 'Which audio the transport plays.');
-    const label = document.createElement('label');
-    label.htmlFor = select.id;
-    label.textContent = 'Compare';
-    select.addEventListener('change', () => {
-      const mode = COMPARE_OPTIONS.find((entry) => entry.value === select.value)?.value;
-      if (mode) {
-        this.#hooks.setCompare(mode);
-      }
-    });
-    wrapper.append(label, select);
-    return { wrapper, select };
   }
 
   #buildTheme(current: ThemeChoice): { wrapper: HTMLElement; select: HTMLSelectElement } {

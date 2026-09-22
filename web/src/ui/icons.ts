@@ -13,7 +13,9 @@ export type IconName =
   | 'pause'
   | 'stop'
   | 'loop'
-  | 'compare'
+  | 'compareProcessed'
+  | 'compareOriginal'
+  | 'compareSplit'
   | 'split'
   | 'join'
   | 'pitch'
@@ -81,7 +83,13 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   loop: stroked(
     `<path d="M3.2 7.4v-.6a2.2 2.2 0 0 1 2.2-2.2h7.4"/><path d="M10.9 2.6 13.1 4.6l-2.2 2"/><path d="M12.8 8.6v.6a2.2 2.2 0 0 1-2.2 2.2H3.2"/><path d="m5.1 13.4-2.2-2 2.2-2"/>`,
   ),
-  compare: stroked(
+  compareProcessed: stroked(
+    `<circle cx="8" cy="8" r="5.5" fill="currentColor"/><path stroke="var(--axys-surface)" d="M4.6 8c.9-2.4 1.8-2.4 2.7 0s1.8 2.4 2.7 0"/>`,
+  ),
+  compareOriginal: stroked(
+    `<circle cx="8" cy="8" r="5.5"/><path d="M4.6 8c.9-2.4 1.8-2.4 2.7 0s1.8 2.4 2.7 0"/>`,
+  ),
+  compareSplit: stroked(
     `<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11"/><path fill="currentColor" stroke="none" d="M8 2.5a5.5 5.5 0 0 0 0 11Z"/>`,
   ),
   split: stroked(`<path d="M8 2v12"/><path d="M5.4 6 3.4 8l2 2"/><path d="m10.6 6 2 2-2 2"/>`),

@@ -252,6 +252,33 @@ body {
   border-left: 1px solid var(--axys-border);
 }
 
+/* Segmented: a set of buttons that share one answer, joined so only one can read as chosen */
+
+.axys-segmented {
+  gap: 0;
+}
+
+.axys-segmented > button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+.axys-segmented > button:first-child {
+  border-start-start-radius: var(--axys-radius);
+  border-end-start-radius: var(--axys-radius);
+  margin-left: 0;
+}
+
+.axys-segmented > button:last-child {
+  border-start-end-radius: var(--axys-radius);
+  border-end-end-radius: var(--axys-radius);
+}
+
+.axys-segmented > button[aria-pressed='true'] {
+  position: relative;
+  z-index: 1;
+}
+
 .axys-spacer {
   flex: 1 1 auto;
 }

@@ -65,13 +65,13 @@ const SCALE_PRESETS: readonly ScalePreset[] = [
 
 const SNAP_DIVISIONS: readonly { value: number; label: string }[] = [
   { value: 1, label: 'Bar' },
-  { value: 2, label: 'Half Note' },
-  { value: 4, label: 'Quarter Note' },
-  { value: 8, label: 'Eighth Note' },
-  { value: 12, label: 'Eighth Triplet' },
-  { value: 16, label: 'Sixteenth Note' },
-  { value: 24, label: 'Sixteenth Triplet' },
-  { value: 32, label: 'Thirty-Second' },
+  { value: 2, label: 'Minim (Half Note)' },
+  { value: 4, label: 'Crotchet (Quarter Note)' },
+  { value: 8, label: 'Quaver (Eighth Note)' },
+  { value: 12, label: 'Quaver Triplet (Eighth Triplet)' },
+  { value: 16, label: 'Semiquaver (Sixteenth Note)' },
+  { value: 24, label: 'Semiquaver Triplet (Sixteenth Triplet)' },
+  { value: 32, label: 'Demisemiquaver (Thirty-Second)' },
 ];
 
 const GUIDE_MODES: readonly { value: GuideMode; label: string }[] = [
