@@ -9,7 +9,7 @@ import {
 } from '../app/selection.js';
 import type { TimeRange } from '../app/selection.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
-import type { Blob, BlobId, Edge, EditOp, ViewState } from '../core/types.js';
+import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
 import { MIN_BLOB_SECONDS } from '../core/types.js';
 import {
   blobOutputEnd,
@@ -40,7 +40,6 @@ import {
   FINE_FACTOR,
   gestureAnchors,
   modifiersOf,
-  rampAnchors,
   simplifyGesture,
   snapMidi,
   SNAP_PIXELS,
@@ -74,8 +73,8 @@ type Gesture =
   | { kind: 'loop'; anchorTime: number }
   | { kind: 'pitch'; blobs: BlobId[]; semitones: number }
   | { kind: 'anchor'; blob: BlobId; index: number; time: number; midi: number }
-  | { kind: 'pen'; blob: BlobId; points: GesturePoint[] }
-  | { kind: 'line'; blob: BlobId; from: GesturePoint; to: GesturePoint; curved: boolean }
+  | { kind: 'pen'; points: GesturePoint[] }
+  | { kind: 'line'; from: GesturePoint; to: GesturePoint; curved: boolean }
   | { kind: 'smooth'; blob: BlobId; start: number; end: number; amount: number }
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
   | { kind: 'edge'; blob: BlobId; edge: Edge; sourceTime: number; scale: number | null }
@@ -703,16 +702,13 @@ export class EditorController {
         }
         return { kind: 'pitch', blobs: this.#dragSet(hit.blob), semitones: 0 };
       }
+      // Drawing starts wherever the pointer goes down, over a blob or over nothing, and the
+      // stroke belongs to whatever it crosses rather than to the blob it happened to start on.
       case 'pen':
-        return hit.blob === null
-          ? this.#beginScrub(hit)
-          : { kind: 'pen', blob: hit.blob, points: [{ time: hit.sourceTime, midi: hit.midi }] };
+        return { kind: 'pen', points: [{ time: hit.time, midi: hit.midi }] };
       case 'line': {
-        if (hit.blob === null) {
-          return this.#beginScrub(hit);
-        }
-        const from = { time: hit.sourceTime, midi: hit.midi };
-        return { kind: 'line', blob: hit.blob, from, to: from, curved: modifiers.fine };
+        const from = { time: hit.time, midi: hit.midi };
+        return { kind: 'line', from, to: from, curved: modifiers.fine };
       }
       case 'smooth':
         return hit.blob === null
@@ -804,38 +800,24 @@ export class EditorController {
         break;
       }
       case 'pen': {
-        const blob = this.#blob(gesture.blob);
-        if (blob === undefined) {
-          break;
-        }
-        const source = clamp(outputToSource(blob, time), blob.start, blob.end);
         const value = snapMidi(
           midi,
           this.#pitchSnap(modifiers),
           this.#store.state.edits?.scale ?? null,
         );
         const last = gesture.points[gesture.points.length - 1];
-        if (last === undefined || source > last.time) {
-          gesture.points.push({ time: source, midi: value });
+        if (last === undefined || time > last.time) {
+          gesture.points.push({ time, midi: value });
         } else {
           gesture.points[gesture.points.length - 1] = { time: last.time, midi: value };
         }
         break;
       }
       case 'line': {
-        const blob = this.#blob(gesture.blob);
-        if (blob === undefined) {
-          break;
-        }
-        const source = clamp(
-          outputToSource(blob, this.#snapTime(time, modifiers)),
-          blob.start,
-          blob.end,
-        );
         const value = modifiers.constrain
           ? gesture.from.midi
           : snapMidi(midi, this.#pitchSnap(modifiers), this.#store.state.edits?.scale ?? null);
-        gesture.to = { time: source, midi: value };
+        gesture.to = { time: this.#snapTime(time, modifiers), midi: value };
         gesture.curved = modifiers.fine;
         break;
       }
@@ -952,14 +934,12 @@ export class EditorController {
       case 'pen':
         return {
           kind: 'curve',
-          blob: gesture.blob,
           points: gesture.points,
           label: `Draw Curve ${gesture.points.length}`,
         };
       case 'line':
         return {
           kind: 'curve',
-          blob: gesture.blob,
           points: [gesture.from, gesture.to],
           label: `Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
         };
@@ -1041,23 +1021,19 @@ export class EditorController {
           viewport.secondsPerPixel * 2,
           viewport.semitonesPerPixel * 2,
         );
-        const anchors = gestureAnchors(simplified, 'smooth');
-        if (anchors.length >= 2) {
-          this.#commit(
-            { type: 'drawSpan', blob: gesture.blob, anchors },
-            `Draw Curve ${anchors.length}`,
-          );
-        }
+        this.#commitStroke(simplified, 'smooth', 'Draw Curve');
         break;
       }
       case 'line': {
-        const anchors = rampAnchors(gesture.from, gesture.to, gesture.curved);
-        if (anchors.length === 2) {
-          this.#commit(
-            { type: 'drawSpan', blob: gesture.blob, anchors },
-            `Draw Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
-          );
-        }
+        const [from, to] =
+          gesture.from.time <= gesture.to.time
+            ? [gesture.from, gesture.to]
+            : [gesture.to, gesture.from];
+        this.#commitStroke(
+          [from, to],
+          gesture.curved ? 'smooth' : 'linear',
+          `Draw Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
+        );
         break;
       }
       case 'smooth': {
@@ -1197,6 +1173,45 @@ export class EditorController {
       return;
     }
     this.#selectRange({ start: blobOutputStart(blob), end: blobOutputEnd(blob) }, additive, extend);
+  }
+
+  /**
+   * Commits a stroke drawn in output seconds onto every blob it crossed.
+   *
+   * @remarks A stroke is one gesture but several edits, one per blob, because a pitch curve
+   * belongs to a blob and the stroke belongs to the take. Each blob is given the part of the
+   * stroke that falls inside it, sampled at its own edges so a curve does not stop short of the
+   * boundary it was drawn across. Blobs the stroke only grazes are left alone.
+   */
+  #commitStroke(points: readonly GesturePoint[], interp: Interp, message: string): void {
+    if (points.length < 2) {
+      return;
+    }
+    let touched = 0;
+    for (const blob of this.#store.state.blobs) {
+      const start = blobOutputStart(blob);
+      const end = blobOutputEnd(blob);
+      const inside = clipToSpan(points, start, end);
+      if (inside.length < 2) {
+        continue;
+      }
+      const anchors = gestureAnchors(
+        inside.map((point) => ({
+          time: clamp(outputToSource(blob, point.time), blob.start, blob.end),
+          midi: point.midi,
+        })),
+        interp,
+      );
+      if (anchors.length < 2) {
+        continue;
+      }
+      this.#options.apply({ type: 'drawSpan', blob: blob.id, anchors });
+      touched += 1;
+    }
+    if (touched === 0) {
+      return;
+    }
+    this.#announce(touched === 1 ? message : `${message} Over ${String(touched)} Blobs`);
   }
 
   #dragSet(id: BlobId): BlobId[] {
@@ -1367,6 +1382,50 @@ function capturePointer(element: Element, pointerId: number): void {
   } catch {
     // The drag still tracks pointer events that reach the element.
   }
+}
+
+/**
+ * The part of a stroke that falls inside a span, with a point placed at each edge it crosses.
+ *
+ * @remarks The interpolated edge points are what keep a curve reaching the blob boundary instead
+ * of stopping at the last sample that happened to land inside it.
+ */
+function clipToSpan(points: readonly GesturePoint[], start: number, end: number): GesturePoint[] {
+  const inside: GesturePoint[] = [];
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (point === undefined) {
+      continue;
+    }
+    const previous = points[index - 1];
+    if (previous !== undefined) {
+      // Both edges, not the first one found: a single segment drawn across a whole blob crosses
+      // its start and its end, and taking only one of them leaves that blob a single point.
+      for (const edge of [start, end]) {
+        const crossing = crossPoint(previous, point, edge);
+        if (crossing !== null) {
+          inside.push(crossing);
+        }
+      }
+    }
+    if (point.time >= start && point.time <= end) {
+      inside.push(point);
+    }
+  }
+  inside.sort((a, b) => a.time - b.time);
+  return inside;
+}
+
+/** Where a segment crosses a time, or `null` when it does not. */
+function crossPoint(a: GesturePoint, b: GesturePoint, at: number): GesturePoint | null {
+  const low = Math.min(a.time, b.time);
+  const high = Math.max(a.time, b.time);
+  if (at <= low || at >= high) {
+    return null;
+  }
+  const span = b.time - a.time;
+  const t = span === 0 ? 0 : (at - a.time) / span;
+  return { time: at, midi: a.midi + (b.midi - a.midi) * t };
 }
 
 function clamp(value: number, low: number, high: number): number {

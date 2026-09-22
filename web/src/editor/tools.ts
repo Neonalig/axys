@@ -278,7 +278,13 @@ export function snapMidi(midi: number, mode: PitchSnap, scale: ScaleSettings | n
   return best;
 }
 
-/** One sampled point of a drawing gesture, in source seconds and fractional MIDI. */
+/**
+ * One sampled point of a drawing gesture, in fractional MIDI.
+ *
+ * @remarks A gesture is sampled in output seconds, because a stroke crosses whatever blobs lie
+ * under it and each of those reads a different source time at the same place on screen. The
+ * points are converted to source seconds per blob when the stroke is committed.
+ */
 export interface GesturePoint {
   time: number;
   midi: number;
@@ -377,18 +383,6 @@ export function gestureAnchors(points: readonly GesturePoint[], interp: Interp):
   return anchors;
 }
 
-/** Anchors for a straight or eased ramp between two points. */
-export function rampAnchors(from: GesturePoint, to: GesturePoint, curved: boolean): Anchor[] {
-  const [first, second] = from.time <= to.time ? [from, to] : [to, from];
-  if (second.time - first.time < 1e-4) {
-    return [];
-  }
-  return [
-    { time: first.time, midi: first.midi, interp: curved ? 'smooth' : 'linear' },
-    { time: second.time, midi: second.midi, interp: 'linear' },
-  ];
-}
-
 /** A gesture in progress, drawn over the committed state until it is released. */
 export type EditorPreview =
   | { kind: 'spanSelect'; x0: number; x1: number }
@@ -396,6 +390,6 @@ export type EditorPreview =
   | { kind: 'timeDrag'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
-  | { kind: 'curve'; blob: BlobId; points: readonly GesturePoint[]; label: string }
+  | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
   | { kind: 'span'; blob: BlobId | null; start: number; end: number; label: string }
   | { kind: 'split'; blob: BlobId; time: number; label: string };

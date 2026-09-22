@@ -225,8 +225,8 @@ export class EditorRenderer {
         });
         break;
       case 'curve':
-        drawCurvePreview(ctx, state, viewport, theme, preview.blob, preview.points);
-        labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(state, viewport, preview));
+        drawCurvePreview(ctx, viewport, theme, preview.points);
+        labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
         break;
       case 'span':
         drawSpanPreview(ctx, state, viewport, theme, preview.blob, preview.start, preview.end);
@@ -329,18 +329,14 @@ function ghostAnchor(
 }
 
 function curveAnchorPoint(
-  state: AppState,
   viewport: Viewport,
-  preview: { blob: BlobId; points: readonly { time: number; midi: number }[] },
+  points: readonly { time: number; midi: number }[],
 ): { x: number; y: number } {
-  const last = preview.points[preview.points.length - 1];
+  const last = points[points.length - 1];
   if (last === undefined) {
     return { x: viewport.width / 2, y: viewport.plotTop + 24 };
   }
-  return {
-    x: viewport.timeToX(outputTimeOf(state, preview.blob, last.time)),
-    y: viewport.midiToY(last.midi) - 16,
-  };
+  return { x: viewport.timeToX(last.time), y: viewport.midiToY(last.midi) - 16 };
 }
 
 /**
@@ -464,12 +460,11 @@ function drawAnchorPreview(
   ctx.restore();
 }
 
+/** Draws a stroke in progress, in output seconds, wherever it has reached. */
 function drawCurvePreview(
   ctx: CanvasRenderingContext2D,
-  state: AppState,
   viewport: Viewport,
   theme: Theme,
-  id: BlobId,
   points: readonly { time: number; midi: number }[],
 ): void {
   if (points.length === 0) {
@@ -482,7 +477,7 @@ function drawCurvePreview(
   ctx.beginPath();
   let started = false;
   for (const point of points) {
-    const x = viewport.timeToX(outputTimeOf(state, id, point.time));
+    const x = viewport.timeToX(point.time);
     const y = viewport.midiToY(point.midi);
     if (started) {
       ctx.lineTo(x, y);
@@ -496,13 +491,7 @@ function drawCurvePreview(
   if (last !== undefined) {
     ctx.fillStyle = theme.handleActive;
     ctx.beginPath();
-    ctx.arc(
-      viewport.timeToX(outputTimeOf(state, id, last.time)),
-      viewport.midiToY(last.midi),
-      4,
-      0,
-      Math.PI * 2,
-    );
+    ctx.arc(viewport.timeToX(last.time), viewport.midiToY(last.midi), 4, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
