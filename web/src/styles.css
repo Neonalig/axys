@@ -648,10 +648,22 @@ input[type='checkbox'] {
   touch-action: none;
 }
 
-/* While one is being dragged nothing is selectable, so the number is not highlighted behind it */
+/* While one is being dragged nothing is selectable, so the label is not highlighted behind it */
 
 body.is-adjusting * {
   user-select: none;
+}
+
+/* The field is dragged and typed, so the two-pixel arrows it would otherwise carry are not drawn */
+
+input.is-adjustable::-webkit-inner-spin-button,
+input.is-adjustable::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+input.is-adjustable {
+  appearance: textfield;
 }
 
 /* A field's explainer hangs off its label, so the tip never covers the control */

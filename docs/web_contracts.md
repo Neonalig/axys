@@ -466,8 +466,10 @@ scroll away with the settings.
 
 A number field is dragged sideways to set it, from the field or from its label, one step per pixel
 with Shift for ten and Alt for a tenth. The pointer is captured for the length of the drag and the
-cursor is left visible; pointer lock is not used. The drag commits once, on release, and gives focus
-back before it does.
+cursor is left visible; pointer lock is not used. A press on the field itself is taken over, so it
+never selects the field's own text, and a press that stays a press focuses the field with its whole
+value offered to be typed over; the spinner arrows are not drawn. The drag commits once, on release,
+and gives focus back before it does.
 
 A field's explainer hangs off its label, marked with an info icon, rather than off the control: a
 tooltip over the control covers the slider or the drop-down being reached for. The blob panel is

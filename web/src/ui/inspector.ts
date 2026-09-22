@@ -118,6 +118,16 @@ export function field(labelText: string, control: HTMLElement, guide: string): H
   return row;
 }
 
+/** Focuses a field and offers its whole value, for a press the drag took over and gave back. */
+function selectField(control: HTMLInputElement): void {
+  control.focus();
+  try {
+    control.select();
+  } catch {
+    // A field that will not report a selection is simply focused, which is what a click asks for.
+  }
+}
+
 /** Marks the page as being dragged, so nothing under the pointer is selected while it moves. */
 const ADJUSTING_CLASS = 'is-adjusting';
 
@@ -167,6 +177,11 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
 
   for (const handle of [control, ...handles]) {
     handle.classList.add('is-adjustable');
+    // The field itself needs the press taken over outright: a press inside a form control starts
+    // its own text selection, which `user-select` does not govern, so a drag back across the
+    // digits would select them however often the selection is cleared. Focus is given back on
+    // release instead, and the spinners it would otherwise swallow are not drawn.
+    const isField = handle === control;
     let dragging = false;
     /** Set while the click that ends a drag is still to arrive, so it is not taken as a click. */
     let dragged = false;
@@ -179,6 +194,7 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
       dragged = false;
       origin = event.clientX;
       last = event.clientX;
+      if (isField) event.preventDefault();
       handle.setPointerCapture(event.pointerId);
     });
 
@@ -203,7 +219,12 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
     const release = (event: PointerEvent): void => {
       if (!handle.hasPointerCapture(event.pointerId)) return;
       handle.releasePointerCapture(event.pointerId);
-      if (!dragging) return;
+      if (!dragging) {
+        // A press that stayed a press is a click on the field: it focuses it and offers the
+        // whole number, which is what is typed over.
+        if (isField) selectField(control);
+        return;
+      }
       dragging = false;
       document.body.classList.remove(ADJUSTING_CLASS);
       dragged = true;

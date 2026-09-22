@@ -1062,10 +1062,15 @@ by, so the field stops following the hand the moment the lock engages.
 Three details make it behave. The drag takes focus so the panel does not rewrite the field under the
 hand, and gives it back before committing, or the field goes on showing the number the drag wrote
 while the project holds another. The click that ends a drag is swallowed, because a label's click
-puts the keyboard back in the field it names. And a press inside a field starts selecting its text,
-so the drag drops that selection as it begins and the page stops selecting until it ends, rather
-than leaving the number highlighted behind the hand. A press that never becomes a drag is untouched,
-so clicking a field still puts the caret where it was clicked.
+puts the keyboard back in the field it names.
+
+And a press inside the field is taken over outright, with its default prevented. A press in a form
+control starts that control's own text selection, which `user-select` does not govern and clearing
+the selection does not stop: dragging back across the digits selected them again on every move.
+Focus is given instead on release, with the whole number offered, which is what a press on a
+scrubbable field is for: drag it, or type over it. The spinner arrows go with the default, and are
+not drawn; they were a two-pixel target on a field that is now dragged, and the arrow keys still
+step it.
 
 ### Pressing a menu button again closes its menu
 
