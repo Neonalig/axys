@@ -11,12 +11,18 @@
 
 import type { Theme } from '../../ui/theme.js';
 
-/** Face every readout is drawn in, so one character is one column. */
+/**
+ * Face every readout is drawn in, so one character is one column.
+ *
+ * @remarks Canvas 2D takes no `font-variant-numeric`, so the readout is set in the mono face,
+ * whose figures are one width already. The stack repeats `--axys-font-mono` because a canvas
+ * context cannot read a custom property.
+ */
 export const READOUT_FONT =
-  '11px ui-monospace, "Cascadia Mono", "SF Mono", menlo, consolas, monospace';
+  '12px "Atkinson Hyperlegible Mono", ui-monospace, "Cascadia Mono", consolas, monospace';
 
 /** Height in pixels of a readout chip. */
-export const CHIP_HEIGHT = 18;
+export const CHIP_HEIGHT = 20;
 
 /** Horizontal padding in pixels inside a chip. */
 const CHIP_PAD = 6;

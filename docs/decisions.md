@@ -1134,3 +1134,27 @@ falls straight through under `prefers-reduced-motion`.
 
 Nothing the editor draws per frame goes through it. The playhead, canvas drags, value scrubs and
 zoom are answered on the frame they are asked for; an eased delay on any of those reads as lag.
+
+### Atkinson Hyperlegible, one variable file per face
+
+Atkinson Hyperlegible Next and Atkinson Hyperlegible Mono replace `system-ui` and `ui-monospace`,
+which stay as fallbacks. Both ship as one variable Latin upright woff2 covering the whole weight
+axis: 34.0 KB and 17.8 KB against 37.5 KB for the three static sans weights alone, so the variable
+file is smaller than what it replaces and gives every weight in between for free. No italics and
+no `latin-ext` until localisation lands.
+
+The files sit in `web/src/fonts` rather than `web/public`, so the bundler hashes them and the
+service worker precaches them with the rest of the build. `font-display: swap`, because the shell
+paints before the WebAssembly core is ready and holding the text back would put a blank toolbar in
+front of that.
+
+The 11px floor goes. Hyperlegible is drawn for legibility at reading sizes and looks loose below
+12px, so the size scale starts at 12 and the canvas grid, ruler and readout labels come up with it.
+
+Figures are set tabular wherever a number is read or dragged. The sans defaults to proportional
+lining figures, so a readout jitters in width while its value changes. Canvas 2D takes no
+`font-variant-numeric`, so the readout layer is set in the mono face, whose figures are one width
+already.
+
+The face is wider than `system-ui`, so the inspector opens at 344px rather than 328 and may be
+dragged down to 256 rather than 240. The 640 maximum is unchanged.

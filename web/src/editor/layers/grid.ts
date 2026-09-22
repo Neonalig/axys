@@ -151,7 +151,7 @@ export function drawPitchLabels(
   ctx.lineTo(PITCH_LABEL_GUTTER + 0.5, viewport.plotTop + viewport.plotHeight);
   ctx.stroke();
 
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.font = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   for (let midi = low; midi <= high; midi += 1) {

@@ -35,6 +35,18 @@ These crates compile into the WebAssembly module in `dist/`.
 No JavaScript library is bundled into `dist/`. The application's own TypeScript is the only script
 that ships.
 
+### Fonts
+
+| Font                                | Licence | Files                                                              |
+| ----------------------------------- | ------- | ------------------------------------------------------------------ |
+| Atkinson Hyperlegible Next Variable | OFL 1.1 | `web/src/fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2` |
+| Atkinson Hyperlegible Mono Variable | OFL 1.1 | `web/src/fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2` |
+
+Both are from the Braille Institute of America and carry the SIL Open Font License 1.1, which the
+AGPL permits shipping alongside. The licence reserves the names "ATKINSON" and "HYPERLEGIBLE": a
+modified font may not use them. Neither restricts embedding or subsetting, and Axys ships the
+upstream Latin upright files unmodified.
+
 Run `cargo tree --workspace -e normal` for the exact resolved versions of the above, and
 `cargo metadata --format-version 1` for their licence fields as declared upstream.
 

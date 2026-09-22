@@ -1,6 +1,31 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 /*
+ * The two shipped faces, Latin upright only, one variable file each across the whole weight axis.
+ * A variable file is smaller here than the three static weights it replaces and gives the axis
+ * in between for free. No italics and no `latin-ext` until localisation lands.
+ *
+ * `swap` rather than `block`: the shell paints before the WebAssembly core is ready, and holding
+ * the text back for a font would put a blank toolbar in front of that.
+ */
+
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Atkinson Hyperlegible Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2') format('woff2');
+}
+
+/*
  * App shell layout and control styling. Every colour comes from a custom property written by
  * ui/theme.ts; this file declares no palette of its own.
  */
@@ -384,10 +409,6 @@ body {
   appearance: slider-vertical;
 }
 
-.axys-mixer-level {
-  font-variant-numeric: tabular-nums;
-}
-
 .axys-mixer-switches {
   display: flex;
   gap: 4px;
@@ -409,6 +430,20 @@ body {
 .axys-mixer-switch[aria-pressed='true'].is-solo {
   color: var(--axys-bg);
   background: var(--axys-accent);
+}
+
+/*
+ * Tabular figures wherever a number is read or dragged. The sans defaults to proportional lining
+ * figures, so a readout jitters in width while its value changes.
+ */
+
+.axys-status,
+.axys-mixer,
+.axys-readout,
+.axys-zoom-readout,
+.axys-field input[type='number'],
+.axys-note-toggle {
+  font-variant-numeric: tabular-nums;
 }
 
 #app > footer,
@@ -738,7 +773,6 @@ input.is-adjustable {
 
 .axys-readout {
   font-family: var(--axys-font-mono);
-  font-variant-numeric: tabular-nums;
 }
 
 .axys-control-pair {
@@ -775,7 +809,6 @@ input.is-adjustable {
   min-width: 0;
   padding: 0 8px;
   font-size: var(--axys-size-sm);
-  font-variant-numeric: tabular-nums;
   color: var(--axys-text-muted);
   background: var(--axys-surface-sunken);
   border: 1px solid var(--axys-border);

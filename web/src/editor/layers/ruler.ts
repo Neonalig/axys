@@ -65,7 +65,7 @@ export function drawRuler(
   const musical = state.view.timeDisplay === 'barsBeats' && timeline !== null;
 
   ctx.save();
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.font = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
   ctx.textBaseline = 'middle';
   if (musical && timeline !== null) {
     drawMusical(ctx, state, viewport, theme, timeline);
@@ -241,7 +241,7 @@ function drawMapMarkers(
   timeline: TimelineMap,
 ): void {
   ctx.textAlign = 'left';
-  ctx.font = '10px system-ui, sans-serif';
+  ctx.font = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
   const seen = new Set<number>();
   for (const event of timeline.tempo) {
     const seconds = tickToSeconds(timeline, event.tick);
