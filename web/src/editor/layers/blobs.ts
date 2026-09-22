@@ -18,15 +18,12 @@ const HANDLE_WIDTH = 5;
 const HANDLE_HEIGHT = 18;
 
 /**
- * Opacity an excluded blob is drawn at.
+ * Dash pattern an excluded blob's outline is drawn with.
  *
- * @remarks An excluded blob is still there and still sounds; it simply takes no correction. It
- * reads as a disabled control, which is what it is: dim, dotted, and without the marks that
- * invite an edit.
+ * @remarks The outline is the whole of it. An excluded blob sounds like any other and carries
+ * whatever was done to it by hand; only automatic correction passes it by. Dimming it as well
+ * said it was muted or disabled, which is the one thing exclusion does not mean.
  */
-const EXCLUDED_ALPHA = 0.4;
-
-/** Dash pattern an excluded blob's outline is drawn with. */
 const EXCLUDED_DASH: readonly number[] = [4, 3];
 
 /** Where a blob starts once its timing edits are applied, in output seconds. */
@@ -279,7 +276,7 @@ function drawBlob(
   const height = Math.max(4, bottom - top);
 
   ctx.save();
-  ctx.globalAlpha = alpha * (blob.excluded ? EXCLUDED_ALPHA : 1);
+  ctx.globalAlpha = alpha;
   ctx.fillStyle = isSelected ? theme.blobFillSelected : theme.blobFill;
   ctx.fillRect(x0, top, width, height);
 
@@ -294,13 +291,9 @@ function drawBlob(
     ctx.fillRect(rx0, top, Math.max(1, rx1 - rx0), height);
   }
 
-  ctx.globalAlpha = alpha * (blob.excluded ? EXCLUDED_ALPHA : 1);
+  ctx.globalAlpha = alpha;
   ctx.lineWidth = isSelected ? 2 : 1;
-  ctx.strokeStyle = blob.excluded
-    ? theme.textMuted
-    : isSelected
-      ? theme.selection
-      : theme.blobBounds;
+  ctx.strokeStyle = isSelected ? theme.selection : theme.blobBounds;
   if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
@@ -315,7 +308,7 @@ function drawBlob(
   const centreY = viewport.midiToY(blob.detectedCenter + blob.pitchOffset);
   ctx.beginPath();
   ctx.setLineDash([6, 4]);
-  ctx.strokeStyle = blob.excluded ? theme.textMuted : theme.blobBounds;
+  ctx.strokeStyle = theme.blobBounds;
   ctx.moveTo(x0, Math.round(centreY) + 0.5);
   ctx.lineTo(x0 + width, Math.round(centreY) + 0.5);
   ctx.stroke();
@@ -333,7 +326,7 @@ function drawBlob(
     );
   }
 
-  if (isSelected && !blob.excluded) {
+  if (isSelected) {
     ctx.beginPath();
     ctx.fillStyle = theme.handleActive;
     ctx.arc(x0 + width / 2, centreY, 4, 0, Math.PI * 2);
