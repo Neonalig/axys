@@ -43,6 +43,8 @@ import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import { exportProject, importProject, relink } from './persistence/project-io.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
+import { showContextMenu } from './ui/menu.js';
+import type { MenuEntry } from './ui/menu.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
@@ -672,6 +674,35 @@ function describe(error: unknown): string {
   return 'the reason was not reported';
 }
 
+/**
+ * The menu shown over the editor.
+ *
+ * @remarks Every entry runs a command, so the menu, the toolbar and the keyboard cannot drift
+ * apart, and each item carries the key that runs it while the menu is open. Over open canvas the
+ * blob entries are shown disabled rather than removed, so the menu keeps its shape.
+ */
+function blobMenu(onBlob: boolean, hooks: ShellHooks): MenuEntry[] {
+  const item = (id: string, label: string, key: string, needsBlob = true): MenuEntry => ({
+    label,
+    key,
+    enabled: (!needsBlob || onBlob) && hooks.isCommandEnabled(id),
+    run: () => {
+      hooks.runCommand(id);
+    },
+  });
+  return [
+    item('edit.reset', 'Reset To Origin', 'r'),
+    item('edit.splitBlob', 'Split Blob', 's'),
+    item('edit.joinBlobs', 'Join Blobs', 'j'),
+    { separator: true },
+    item('edit.bypassBlob', 'Bypass Blob', 'b'),
+    item('edit.excludeBlob', 'Exclude Blob', 'x'),
+    { separator: true },
+    item('transport.loopSelection', 'Loop Selection', 'l', false),
+    item('file.exportWav', 'Export WAV', 'e', false),
+  ];
+}
+
 /** Which import a dropped file is, from its name and media type. */
 function kindOf(file: File): 'project' | 'midi' | 'audio' {
   const name = file.name.toLowerCase();
@@ -1067,6 +1098,9 @@ async function start(): Promise<void> {
     },
     announce: (message: string) => {
       shell.announce(message);
+    },
+    contextMenu: (hit, at) => {
+      showContextMenu(blobMenu(hit.blob !== null, hooks), at);
     },
   });
   context = { store, editor, audio, toast, workspace };

@@ -344,6 +344,39 @@ input[type='checkbox'] {
 
 /* Inspector */
 
+.axys-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: var(--axys-pad);
+  padding: 2px;
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-sunken);
+}
+
+.axys-tab {
+  flex: 1 1 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-tab[aria-selected='true'] {
+  background: var(--axys-surface-raised);
+  color: var(--axys-text);
+}
+
+.axys-tab:disabled {
+  opacity: 0.4;
+}
+
+.axys-tab-pane[hidden] {
+  display: none;
+}
+
 .axys-panel + .axys-panel {
   margin-top: var(--axys-pad);
   padding-top: var(--axys-pad);
@@ -458,6 +491,63 @@ input[type='checkbox'] {
 
 .axys-error {
   color: var(--axys-danger);
+}
+
+/* Context menus */
+
+.axys-menu {
+  position: fixed;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-raised);
+  box-shadow: 0 8px 24px var(--axys-shadow);
+}
+
+.axys-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--axys-gap);
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: var(--axys-size-md);
+  text-align: left;
+}
+
+.axys-menu-item:hover:not(:disabled),
+.axys-menu-item:focus-visible {
+  background: var(--axys-accent);
+  color: var(--axys-accent-text);
+  outline: none;
+}
+
+.axys-menu-key {
+  padding: 0 4px;
+  border: 1px solid var(--axys-border);
+  border-radius: 3px;
+  color: var(--axys-text-muted);
+  font-family: var(--axys-font-mono);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-menu-item:hover:not(:disabled) .axys-menu-key,
+.axys-menu-item:focus-visible .axys-menu-key {
+  color: inherit;
+  border-color: currentcolor;
+}
+
+.axys-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--axys-border);
 }
 
 /* Tooltips: drawn by the page, so they appear on our delay and without window focus */

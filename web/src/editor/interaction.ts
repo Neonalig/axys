@@ -55,6 +55,8 @@ export interface EditorControllerOptions {
   seek?(seconds: number): void;
   /** Reports what a gesture did, for the live region. */
   announce?(message: string): void;
+  /** Opens the menu for what was right-clicked, at a viewport position. */
+  contextMenu?(hit: Hit, at: { x: number; y: number }): void;
 }
 
 type Point = { x: number; y: number };
@@ -113,6 +115,7 @@ export class EditorController {
     this.#canvas.addEventListener('pointerleave', this.#onPointerLeave);
     this.#canvas.addEventListener('wheel', this.#onWheel, { passive: false });
     this.#canvas.addEventListener('keydown', this.#onKeyDown);
+    this.#canvas.addEventListener('contextmenu', this.#onContextMenu);
 
     this.#unsubscribe = this.#store.subscribe(() => {
       this.render();
@@ -461,6 +464,7 @@ export class EditorController {
     this.#canvas.removeEventListener('pointerleave', this.#onPointerLeave);
     this.#canvas.removeEventListener('wheel', this.#onWheel);
     this.#canvas.removeEventListener('keydown', this.#onKeyDown);
+    this.#canvas.removeEventListener('contextmenu', this.#onContextMenu);
     this.#observer?.disconnect();
     this.#unsubscribe();
   }
@@ -548,6 +552,29 @@ export class EditorController {
       this.#hover = null;
       this.#renderer?.setHover(null);
     }
+  };
+
+  /**
+   * Opens the context menu for whatever was right-clicked.
+   *
+   * @remarks A right-click on a blob outside the selection selects it first, so the menu always
+   * acts on what was clicked rather than on an earlier selection the user has moved past.
+   */
+  #onContextMenu = (event: MouseEvent): void => {
+    const state = this.#store.state;
+    if (state.phase !== 'ready') {
+      return;
+    }
+    event.preventDefault();
+    const point = this.#pointOf(event);
+    const hit = this.hitTest(point.x, point.y);
+    if (hit.blob !== null && !state.selection.blobs.includes(hit.blob)) {
+      const blob = this.#blob(hit.blob);
+      if (blob !== undefined) {
+        this.#selectSpan(blobOutputStart(blob), blobOutputEnd(blob));
+      }
+    }
+    this.#options.contextMenu?.(hit, { x: event.clientX, y: event.clientY });
   };
 
   #onWheel = (event: WheelEvent): void => {
@@ -1264,7 +1291,7 @@ export class EditorController {
     this.render();
   }
 
-  #pointOf(event: PointerEvent | WheelEvent): Point {
+  #pointOf(event: PointerEvent | WheelEvent | MouseEvent): Point {
     const rect = this.#canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }

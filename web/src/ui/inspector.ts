@@ -199,6 +199,9 @@ function setChecked(input: HTMLInputElement, value: boolean): void {
   }
 }
 
+/** Which half of the inspector is showing. */
+export type InspectorTab = 'project' | 'properties';
+
 function panel(title: string): HTMLElement {
   const section = document.createElement('section');
   section.className = 'axys-panel';
@@ -267,8 +270,13 @@ export class Inspector {
   readonly #guideMuted: HTMLInputElement;
   readonly #guideHint: HTMLElement;
 
+  readonly #tabButtons = new Map<InspectorTab, HTMLButtonElement>();
+  readonly #tabPanes = new Map<InspectorTab, HTMLElement>();
+
   #blob: Blob | null = null;
   #state: AppState | null = null;
+  #tab: InspectorTab = 'project';
+  #hadSelection = false;
 
   constructor(hooks: InspectorHooks) {
     this.#hooks = hooks;
@@ -277,6 +285,15 @@ export class Inspector {
     element.className = 'axys-inspector';
     element.setAttribute('aria-label', 'Inspector');
     this.#element = element;
+
+    // Two tabs rather than one long column: the project settings are always meaningful, while
+    // the selection's fields have nothing to say until something is selected.
+    const tabs = document.createElement('div');
+    tabs.className = 'axys-tabs';
+    tabs.setAttribute('role', 'tablist');
+    const project = this.#buildTab(tabs, 'project', 'Project');
+    const properties = this.#buildTab(tabs, 'properties', 'Properties');
+    element.append(tabs, project, properties);
 
     // Blob panel.
     const blobPanel = panel('Selected Blob');
@@ -343,7 +360,7 @@ export class Inspector {
     );
     blobActions.append(this.#splitButton, this.#joinButton, this.#resetButton);
     blobPanel.append(blobActions);
-    element.append(blobPanel);
+    properties.append(blobPanel);
 
     // Scale panel.
     const scalePanel = panel('Key And Scale');
@@ -391,7 +408,7 @@ export class Inspector {
       excludedSet.append(wrapper);
     }
     scalePanel.append(excludedSet);
-    element.append(scalePanel);
+    project.append(scalePanel);
 
     // Modulation and formant panel.
     const voicePanel = panel('Voice Character');
@@ -432,7 +449,7 @@ export class Inspector {
         'Plays the source untouched so edits can be compared.',
       ),
     );
-    element.append(voicePanel);
+    project.append(voicePanel);
 
     // Display panel.
     const displayPanel = panel('Display');
@@ -471,7 +488,7 @@ export class Inspector {
         'Whether a following view jumps ahead a screen at a time or holds the playhead centred.',
       ),
     );
-    element.append(displayPanel);
+    project.append(displayPanel);
 
     // Guide panel.
     const guidePanel = panel('MIDI Guide');
@@ -496,8 +513,9 @@ export class Inspector {
       field('Mute Guide', this.#guideMuted, 'Hides the guide without discarding the mapping.'),
       this.#guideHint,
     );
-    element.append(guidePanel);
+    project.append(guidePanel);
 
+    this.#setTab('project');
     this.#bind();
   }
 
@@ -507,8 +525,54 @@ export class Inspector {
   }
 
   /** Refreshes every control from application state. */
+  /** Builds one tab button and its pane, and registers both. */
+  #buildTab(tabs: HTMLElement, name: InspectorTab, label: string): HTMLElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'axys-tab';
+    button.textContent = label;
+    button.setAttribute('role', 'tab');
+    button.addEventListener('click', () => {
+      this.#setTab(name);
+    });
+    tabs.append(button);
+
+    const pane = document.createElement('div');
+    pane.className = 'axys-tab-pane';
+    pane.setAttribute('role', 'tabpanel');
+    pane.setAttribute('aria-label', label);
+
+    this.#tabButtons.set(name, button);
+    this.#tabPanes.set(name, pane);
+    return pane;
+  }
+
+  /** Shows one tab and marks its button, ignoring a tab that has nothing to show. */
+  #setTab(name: InspectorTab): void {
+    const button = this.#tabButtons.get(name);
+    if (button?.disabled === true) {
+      return;
+    }
+    this.#tab = name;
+    for (const [id, pane] of this.#tabPanes) {
+      pane.hidden = id !== name;
+      this.#tabButtons.get(id)?.setAttribute('aria-selected', String(id === name));
+    }
+  }
+
   update(state: AppState): void {
     this.#state = state;
+
+    // Selecting something brings its fields forward; dropping the selection hands the panel
+    // back to the project, so the sidebar is never a page of blanks.
+    const hasSelection = state.selection.range !== null || state.selection.blobs.length > 0;
+    this.#tabButtons.get('properties')?.toggleAttribute('disabled', !hasSelection);
+    if (hasSelection !== this.#hadSelection) {
+      this.#hadSelection = hasSelection;
+      this.#setTab(hasSelection ? 'properties' : 'project');
+    } else if (!hasSelection && this.#tab === 'properties') {
+      this.#setTab('project');
+    }
     const edits = state.edits;
     const style = edits?.accidentals ?? 'sharps';
 
