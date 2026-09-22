@@ -43,7 +43,6 @@ interface BlobJson {
   subregions: { start: number; end: number; voicing: string }[];
   curve: { anchors: unknown[] };
   excluded: boolean;
-  bypassed: boolean;
 }
 
 /** `Session.planJson`, as `axys_core::target::RenderPlan` serialises. */
@@ -52,7 +51,6 @@ interface PlanJson {
   timeMap: { points: [number, number][] };
   pitchRatio: { start: number; hop: number; values: number[] };
   formant: unknown;
-  bypass: boolean;
 }
 
 /** `Session.historyJson`. */
@@ -249,11 +247,9 @@ describe('wasm boundary', () => {
       'mappings',
       'tuning',
       'accidentals',
-      'globalBypass',
     ]) {
       expect(state).toHaveProperty(key);
     }
-    expect(state['globalBypass']).toBe(false);
 
     const blobs = JSON.parse(session.blobsJson()) as BlobJson[];
     expect(Array.isArray(blobs)).toBe(true);
@@ -267,7 +263,6 @@ describe('wasm boundary', () => {
       expect(blob.subregions.length).toBeGreaterThan(0);
       expect(Array.isArray(blob.curve.anchors)).toBe(true);
       expect(blob.excluded).toBe(false);
-      expect(blob.bypassed).toBe(false);
     }
     // BlobSet is ordered and non-overlapping by contract.
     for (let i = 1; i < blobs.length; i += 1) {
@@ -276,7 +271,6 @@ describe('wasm boundary', () => {
 
     const plan = JSON.parse(session.planJson()) as PlanJson;
     expect(plan.sampleRate).toBe(sampleRate);
-    expect(plan.bypass).toBe(false);
     expect(plan.timeMap.points.length).toBeGreaterThanOrEqual(2);
     expect(plan.pitchRatio.hop).toBeGreaterThan(0);
     expect(plan.pitchRatio.values.length).toBeGreaterThan(0);

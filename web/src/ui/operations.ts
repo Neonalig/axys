@@ -109,12 +109,8 @@ function openOperation(options: {
   title: string;
   icon: 'correct' | 'voice';
   content: HTMLElement;
-  scope: EditOp[];
 }): Dialog {
   const { ctx } = options;
-  ctx.workspace.previewEdits(options.scope);
-  ctx.workspace.pinPreview();
-
   let settled = false;
   const dialog = Dialog.open({
     title: options.title,
@@ -223,7 +219,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
       strength: readNumber(strength, current.strength),
       excluded: boxes.flatMap((box, index) => (box.checked ? [index] : [])),
     };
-    ctx.workspace.previewEdits([{ type: 'setScale', scale: settings }]);
+    ctx.workspace.previewEdits([...scope.ops, { type: 'setScale', scale: settings }]);
   };
 
   strength.addEventListener('input', () => {
@@ -234,13 +230,8 @@ export function showCorrection(ctx: CommandContext): Dialog {
     control.addEventListener('change', apply);
   }
 
-  return openOperation({
-    ctx,
-    title: 'Correction',
-    icon: 'correct',
-    content,
-    scope: scope.ops,
-  });
+  apply();
+  return openOperation({ ctx, title: 'Correction', icon: 'correct', content });
 }
 
 /** Opens the Voice Character operation. */
@@ -253,7 +244,6 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   }
   const modulation = edits.modulation;
   const formant = edits.formant;
-  const scope = scopeOf(state);
 
   const content = document.createElement('div');
   content.className = 'axys-panel';
@@ -304,7 +294,9 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
     field('Vibrato Split', split, 'Boundary in Hz between drift and vibrato.'),
     field('Formant Mode', mode, 'How the vocal tract is treated while pitch moves.'),
     row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones.'),
-    hint(`${scope.label} Play while this is open to hear it.`),
+    // Drift, vibrato and formants are properties of the voice rather than of a span, and the
+    // core compiles them over the whole take, so this one has no selection to narrow it to.
+    hint('Applies to the whole project. Play while this is open to hear it.'),
   );
 
   const readouts = (): void => {
@@ -343,11 +335,5 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   mode.addEventListener('change', apply);
   split.addEventListener('change', apply);
 
-  return openOperation({
-    ctx,
-    title: 'Voice Character',
-    icon: 'voice',
-    content,
-    scope: scope.ops,
-  });
+  return openOperation({ ctx, title: 'Voice Character', icon: 'voice', content });
 }

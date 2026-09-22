@@ -273,7 +273,8 @@ pub struct Session {
     track: PitchTrack,
     state: EditState,
     /// Segmentation before any edit, resegmented on first use when reopening a project.
-    base_blobs: Option<BlobSet>,
+    /// The state the history replays from: the analysis, plus what no edit recorded.
+    base: EditState,
     history: History,
     midi: Option<MidiFile>,
     midi_bytes: Option<Vec<u8>>,
@@ -355,7 +356,7 @@ impl Session {
         };
 
         let state = EditState {
-            blobs: blobs.clone(),
+            blobs,
             scale: Default::default(),
             modulation: Default::default(),
             formant: FormantMode::default(),
@@ -364,7 +365,6 @@ impl Session {
             mappings: Vec::new(),
             tuning: Default::default(),
             accidentals: Default::default(),
-            global_bypass: false,
         };
 
         let mut session = Session {
@@ -374,8 +374,8 @@ impl Session {
             source,
             analysis: info,
             track,
+            base: state.clone(),
             state,
-            base_blobs: Some(blobs),
             history: History::new(),
             midi: None,
             midi_bytes: None,
@@ -426,8 +426,8 @@ impl Session {
             source: project.source.clone(),
             analysis: project.analysis.clone(),
             track,
+            base: project.base.clone(),
             state: project.edits.clone(),
-            base_blobs: None,
             history: project.history.clone(),
             midi,
             midi_bytes,
@@ -467,7 +467,6 @@ impl Session {
                 modulation: &self.state.modulation,
                 formant: self.state.formant,
                 guide,
-                bypass: self.state.global_bypass,
                 hop: self.plan_hop,
             };
             compile_plan(&inputs).map_err(to_js)?
@@ -483,7 +482,7 @@ impl Session {
         apply_with_baseline(
             &mut self.state,
             Some(&self.track),
-            self.base_blobs.as_ref(),
+            Some(&self.base.blobs),
             &op,
         )
         .map_err(to_js)?;
@@ -508,7 +507,7 @@ impl Session {
         apply_with_baseline(
             &mut self.state,
             Some(&self.track),
-            self.base_blobs.as_ref(),
+            Some(&self.base.blobs),
             &op,
         )
         .map_err(to_js)?;
@@ -516,45 +515,19 @@ impl Session {
         Ok(true)
     }
 
-    /// Rebuilds edit state from the immutable analysis by replaying the applied history.
+    /// Rebuilds edit state by replaying the applied history over the base state.
+    ///
+    /// The base is the analysis plus everything the history never recorded, such as the timeline
+    /// a MIDI import adopted. Rebuilding from a fresh default instead threw that away on every
+    /// undo, which moved the guide notes and the bar lines out from under the project.
     fn replay(&mut self) -> Result<(), JsValue> {
         let ops: Vec<EditOp> = self.history.applied().to_vec();
-        let timeline = TimelineMap {
-            sample_rate: self.sample_rate,
-            ..TimelineMap::default()
-        };
-        let blobs = match &self.base_blobs {
-            Some(blobs) => blobs.clone(),
-            None => {
-                let energy = analyse_energy(
-                    &self.samples,
-                    self.sample_rate,
-                    self.analysis.f0.frame_seconds,
-                    self.analysis.f0.hop_seconds,
-                )
-                .map_err(to_js)?;
-                let blobs = segment(&self.track, &energy, &self.analysis.segment).map_err(to_js)?;
-                self.base_blobs = Some(blobs.clone());
-                blobs
-            }
-        };
-        self.state = EditState {
-            blobs,
-            scale: Default::default(),
-            modulation: Default::default(),
-            formant: FormantMode::default(),
-            timeline,
-            guide: None,
-            mappings: Vec::new(),
-            tuning: Default::default(),
-            accidentals: Default::default(),
-            global_bypass: false,
-        };
+        self.state = self.base.clone();
         for op in &ops {
             apply_with_baseline(
                 &mut self.state,
                 Some(&self.track),
-                self.base_blobs.as_ref(),
+                Some(&self.base.blobs),
                 op,
             )
             .map_err(to_js)?;
@@ -617,6 +590,9 @@ impl Session {
         let timeline = file
             .to_timeline(self.sample_rate, self.state.timeline.origin_seconds)
             .map_err(to_js)?;
+        // An import is not an edit, so the base carries it too: otherwise the first undo would
+        // replay over a default timeline and lose the tempo and meter maps the file brought.
+        self.base.timeline = timeline.clone();
         self.state.timeline = timeline;
         let json = dump(&file)?;
         self.midi = Some(file);
@@ -641,7 +617,7 @@ impl Session {
         apply_with_baseline(
             &mut self.state,
             Some(&self.track),
-            self.base_blobs.as_ref(),
+            Some(&self.base.blobs),
             &op,
         )
         .map_err(to_js)?;
@@ -739,6 +715,7 @@ impl Session {
             analysis: self.analysis.clone(),
             track: Some(self.track.clone()),
             edits: self.state.clone(),
+            base: self.base.clone(),
             midi: self
                 .midi_bytes
                 .as_ref()
@@ -1054,6 +1031,96 @@ mod analysis_handoff_tests {
         assert!(session.undo().expect("undo"));
         assert_eq!(session.state_json().expect("state"), before);
         assert_eq!(session.plan_json().expect("plan"), plan_before);
+    }
+
+    /// A Standard MIDI File carrying a tempo and a division the defaults do not use.
+    fn smf_with_tempo() -> Vec<u8> {
+        let mut bytes = b"MThd".to_vec();
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.extend_from_slice(&960u16.to_be_bytes());
+        let mut track: Vec<u8> = Vec::new();
+        // 150 bpm, so the imported timeline cannot be mistaken for the default.
+        track.extend_from_slice(&[0x00, 0xFF, 0x51, 0x03, 0x06, 0x1A, 0x80]);
+        track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&track);
+        bytes
+    }
+
+    /// An undo used to replay over a default timeline, which threw away what a MIDI import had
+    /// adopted and moved every guide note and bar line.
+    #[test]
+    fn undo_keeps_the_timeline_a_midi_import_adopted() {
+        let (samples, analysis) = analysed();
+        let mut session = Session::create(samples, SAMPLE_RATE, "take".to_string(), &analysis, "")
+            .expect("session");
+        let fresh = session.state_json().expect("state");
+        session.load_midi(smf_with_tempo()).expect("midi");
+        let before = session.state_json().expect("state");
+        assert_ne!(before, fresh, "the import has to change the timeline");
+
+        let first = analysis.blobs.blobs().first().expect("a blob").id.0;
+        session
+            .apply_edit(&format!(
+                r#"{{"type":"setPitchOffset","blob":{first},"semitones":1.0}}"#
+            ))
+            .expect("edit");
+        assert!(session.undo().expect("undo"));
+
+        assert_eq!(session.state_json().expect("state"), before);
+    }
+
+    /// Reopening and undoing used to reset everything the history never recorded.
+    #[test]
+    fn undo_in_a_reopened_project_keeps_what_the_history_never_recorded() {
+        let (samples, analysis) = analysed();
+        let mut session = Session::create(
+            samples.clone(),
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis,
+            "",
+        )
+        .expect("session");
+        session.load_midi(smf_with_tempo()).expect("midi");
+        let project = session.project_json("").expect("project");
+
+        let mut reopened =
+            Session::open_project(&project, samples, SAMPLE_RATE).expect("reopened session");
+        let before = reopened.state_json().expect("state");
+        let first = analysis.blobs.blobs().first().expect("a blob").id.0;
+        reopened
+            .apply_edit(&format!(
+                r#"{{"type":"setPitchOffset","blob":{first},"semitones":-1.0}}"#
+            ))
+            .expect("edit");
+
+        assert!(reopened.undo().expect("undo"));
+        assert_eq!(reopened.state_json().expect("state"), before);
+    }
+
+    /// A group is one entry in the history however many operations it carries.
+    #[test]
+    fn a_group_undoes_in_one_step() {
+        let (samples, analysis) = analysed();
+        let mut session = Session::create(samples, SAMPLE_RATE, "take".to_string(), &analysis, "")
+            .expect("session");
+        let before = session.state_json().expect("state");
+        let first = analysis.blobs.blobs().first().expect("a blob").id.0;
+
+        session
+            .apply_edit(&format!(
+                r#"{{"type":"group","ops":[{{"type":"setExcluded","blob":{first},"excluded":true}},{{"type":"setTuning","tuning":{{"a4Hz":442.0}}}}]}}"#
+            ))
+            .expect("group");
+        assert_ne!(session.state_json().expect("state"), before);
+
+        assert!(session.undo().expect("undo"));
+        assert_eq!(session.state_json().expect("state"), before);
+        assert!(!session.undo().expect("undo"), "the group was one step");
     }
 
     #[test]

@@ -1178,20 +1178,19 @@ export class EditorController {
   /**
    * Commits a stroke drawn in output seconds onto every blob it crossed.
    *
-   * @remarks A stroke is one gesture but several edits, one per blob, because a pitch curve
-   * belongs to a blob and the stroke belongs to the take. Each blob is given the part of the
-   * stroke that falls inside it, sampled at its own edges so a curve does not stop short of the
-   * boundary it was drawn across. Blobs the stroke only grazes are left alone.
+   * @remarks A stroke is one gesture and one undo step, carrying one curve edit per blob,
+   * because a pitch curve belongs to a blob while the stroke belongs to the take. Each blob is
+   * given the part of the stroke that falls inside it, sampled at its own edges so a curve does
+   * not stop short of the boundary it was drawn across. Blobs the stroke only grazes are left
+   * alone.
    */
   #commitStroke(points: readonly GesturePoint[], interp: Interp, message: string): void {
     if (points.length < 2) {
       return;
     }
-    let touched = 0;
+    const ops: EditOp[] = [];
     for (const blob of this.#store.state.blobs) {
-      const start = blobOutputStart(blob);
-      const end = blobOutputEnd(blob);
-      const inside = clipToSpan(points, start, end);
+      const inside = clipToSpan(points, blobOutputStart(blob), blobOutputEnd(blob));
       if (inside.length < 2) {
         continue;
       }
@@ -1205,13 +1204,15 @@ export class EditorController {
       if (anchors.length < 2) {
         continue;
       }
-      this.#options.apply({ type: 'drawSpan', blob: blob.id, anchors });
-      touched += 1;
+      ops.push({ type: 'drawSpan', blob: blob.id, anchors });
     }
-    if (touched === 0) {
+    if (ops.length === 0) {
       return;
     }
-    this.#announce(touched === 1 ? message : `${message} Over ${String(touched)} Blobs`);
+    this.#commit(
+      grouped(ops),
+      ops.length === 1 ? message : `${message} Over ${String(ops.length)} Blobs`,
+    );
   }
 
   #dragSet(id: BlobId): BlobId[] {
@@ -1426,6 +1427,11 @@ function crossPoint(a: GesturePoint, b: GesturePoint, at: number): GesturePoint 
   const span = b.time - a.time;
   const t = span === 0 ? 0 : (at - a.time) / span;
   return { time: at, midi: a.midi + (b.midi - a.midi) * t };
+}
+
+/** One edit when there is one, and one group when there are several. */
+function grouped(ops: readonly EditOp[]): EditOp {
+  return ops.length === 1 && ops[0] !== undefined ? ops[0] : { type: 'group', ops: [...ops] };
 }
 
 function clamp(value: number, low: number, high: number): number {

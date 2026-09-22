@@ -119,12 +119,9 @@ export function evaluateCurve(curve: PitchCurve, seconds: number): number | null
  * Target pitch of a blob at a source time.
  *
  * @remarks Composes the blob's pitch offset with its drawn anchors, in the order the core
- * compiles them. A bypassed blob reports the detected pitch unchanged.
+ * compiles them.
  */
 export function targetMidiAt(blob: Blob, seconds: number, detected: number): number {
-  if (blob.bypassed) {
-    return detected;
-  }
   const drawn = evaluateCurve(blob.curve, seconds);
   return drawn ?? detected + blob.pitchOffset;
 }
@@ -172,8 +169,7 @@ export function blobPitchExtent(
   track: PitchTrackArrays | null,
 ): { low: number; high: number } {
   const extent = blobDetectedExtent(blob, track);
-  const shift = blob.bypassed ? 0 : blob.pitchOffset;
-  return { low: extent.low + shift, high: extent.high + shift };
+  return { low: extent.low + blob.pitchOffset, high: extent.high + blob.pitchOffset };
 }
 
 /**
@@ -316,7 +312,7 @@ function drawBlob(
   );
   ctx.setLineDash([]);
 
-  const centreY = viewport.midiToY(blob.detectedCenter + (blob.bypassed ? 0 : blob.pitchOffset));
+  const centreY = viewport.midiToY(blob.detectedCenter + blob.pitchOffset);
   ctx.beginPath();
   ctx.setLineDash([6, 4]);
   ctx.strokeStyle = blob.excluded ? theme.textMuted : theme.blobBounds;

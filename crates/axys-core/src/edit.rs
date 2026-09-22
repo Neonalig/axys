@@ -168,12 +168,6 @@ pub enum EditOp {
         end: f64,
     },
     /// Suppresses every edit on one blob without discarding it.
-    SetBypass {
-        /// Blob to bypass.
-        blob: BlobId,
-        /// New bypass state.
-        bypassed: bool,
-    },
     /// Excludes one blob from automatic scale correction and guidance.
     SetExcluded {
         /// Blob to exclude.
@@ -236,10 +230,10 @@ pub enum EditOp {
         /// New meter events.
         events: Vec<MeterEvent>,
     },
-    /// Suppresses every edit in the project.
-    SetGlobalBypass {
-        /// New global bypass state.
-        bypassed: bool,
+    /// Applies several operations as one undo step.
+    Group {
+        /// Operations in the order they are applied.
+        ops: Vec<EditOp>,
     },
 }
 
@@ -263,7 +257,6 @@ impl EditOp {
             EditOp::ResetSpan { .. } => "Reset Span",
             EditOp::ResetBlob { .. } => "Reset Blob",
             EditOp::ResetRange { .. } => "Reset Range",
-            EditOp::SetBypass { .. } => "Bypass Blob",
             EditOp::SetExcluded { .. } => "Exclude Blob",
             EditOp::SetScale { .. } => "Set Scale",
             EditOp::SetTuning { .. } => "Set Tuning",
@@ -276,7 +269,7 @@ impl EditOp {
             EditOp::SetTimelineOrigin { .. } => "Align Timeline",
             EditOp::SetTempoMap { .. } => "Set Tempo Map",
             EditOp::SetMeterMap { .. } => "Set Meter Map",
-            EditOp::SetGlobalBypass { .. } => "Global Bypass",
+            EditOp::Group { .. } => "Grouped Edit",
         }
     }
 }
@@ -472,7 +465,6 @@ pub fn apply_with_baseline(
             blob.time_scale = 1.0;
             blob.curve = PitchCurve::new();
             blob.excluded = false;
-            blob.bypassed = false;
         }
         EditOp::ResetRange { start, end } => {
             let (start, end) = finite_span(*start, *end)?;
@@ -487,9 +479,6 @@ pub fn apply_with_baseline(
             state
                 .mappings
                 .retain(|mapping| state.blobs.get(mapping.blob).is_some());
-        }
-        EditOp::SetBypass { blob, bypassed } => {
-            blob_mut(state, *blob)?.bypassed = *bypassed;
         }
         EditOp::SetExcluded { blob, excluded } => {
             blob_mut(state, *blob)?.excluded = *excluded;
@@ -557,8 +546,10 @@ pub fn apply_with_baseline(
         EditOp::SetMeterMap { events } => {
             state.timeline.set_meter(events.clone())?;
         }
-        EditOp::SetGlobalBypass { bypassed } => {
-            state.global_bypass = *bypassed;
+        EditOp::Group { ops } => {
+            for op in ops {
+                apply_with_baseline(state, track, baseline, op)?;
+            }
         }
     }
     Ok(())
@@ -789,7 +780,6 @@ mod tests {
             mappings: Vec::new(),
             tuning: Tuning::default(),
             accidentals: AccidentalStyle::default(),
-            global_bypass: false,
         }
     }
 
@@ -1515,9 +1505,9 @@ mod tests {
         apply(
             &mut s,
             None,
-            &EditOp::SetBypass {
+            &EditOp::SetExcluded {
                 blob: BlobId(1),
-                bypassed: true,
+                excluded: true,
             },
         )
         .unwrap();
@@ -1528,36 +1518,9 @@ mod tests {
         assert_eq!(b.time_offset, 0.0);
         assert_eq!(b.time_scale, 1.0);
         assert!(b.curve.is_empty());
-        assert!(!b.bypassed);
         assert!(!b.excluded);
         // Analysis evidence survives the reset.
         assert_eq!(b.detected_center, 60.0);
-    }
-
-    #[test]
-    fn bypass_and_exclude_flags_toggle() {
-        let mut s = state();
-        apply(
-            &mut s,
-            None,
-            &EditOp::SetBypass {
-                blob: BlobId(2),
-                bypassed: true,
-            },
-        )
-        .unwrap();
-        apply(
-            &mut s,
-            None,
-            &EditOp::SetExcluded {
-                blob: BlobId(2),
-                excluded: true,
-            },
-        )
-        .unwrap();
-        let b = s.blobs.get(BlobId(2)).unwrap();
-        assert!(b.bypassed);
-        assert!(b.excluded);
     }
 
     #[test]
@@ -1907,13 +1870,6 @@ mod tests {
     }
 
     #[test]
-    fn global_bypass_toggles() {
-        let mut s = state();
-        apply(&mut s, None, &EditOp::SetGlobalBypass { bypassed: true }).unwrap();
-        assert!(s.global_bypass);
-    }
-
-    #[test]
     fn blob_ops_report_a_missing_id() {
         let mut s = state();
         let missing = BlobId(404);
@@ -1983,10 +1939,6 @@ mod tests {
                 end: 0.5,
             },
             EditOp::ResetBlob { blob: missing },
-            EditOp::SetBypass {
-                blob: missing,
-                bypassed: true,
-            },
             EditOp::SetExcluded {
                 blob: missing,
                 excluded: true,
@@ -2070,10 +2022,6 @@ mod tests {
                 end: 1.0,
             },
             EditOp::ResetBlob { blob: BlobId(1) },
-            EditOp::SetBypass {
-                blob: BlobId(1),
-                bypassed: true,
-            },
             EditOp::SetExcluded {
                 blob: BlobId(1),
                 excluded: true,
@@ -2105,9 +2053,9 @@ mod tests {
             EditOp::SetTimelineOrigin { seconds: 0.0 },
             EditOp::SetTempoMap { events: vec![] },
             EditOp::SetMeterMap { events: vec![] },
-            EditOp::SetGlobalBypass { bypassed: false },
+            EditOp::Group { ops: Vec::new() },
         ];
-        assert_eq!(ops.len(), 28);
+        assert_eq!(ops.len(), 27);
         for op in &ops {
             let label = op.label();
             let words: Vec<&str> = label.split(' ').collect();
@@ -2136,7 +2084,9 @@ mod tests {
         assert!(h.undo().is_none());
         assert!(h.redo().is_none());
 
-        let a = EditOp::SetGlobalBypass { bypassed: true };
+        let a = EditOp::SetAccidentals {
+            accidentals: AccidentalStyle::Flats,
+        };
         let b = EditOp::SetTimelineOrigin { seconds: 1.0 };
         h.push(a.clone());
         h.push(b.clone());
@@ -2145,7 +2095,7 @@ mod tests {
 
         assert_eq!(h.undo(), Some(b.clone()));
         assert_eq!(h.applied(), std::slice::from_ref(&a));
-        assert_eq!(h.undo_label(), Some("Global Bypass"));
+        assert_eq!(h.undo_label(), Some("Set Accidentals"));
         assert_eq!(h.redo_label(), Some("Align Timeline"));
 
         assert_eq!(h.undo(), Some(a.clone()));
@@ -2160,10 +2110,10 @@ mod tests {
     #[test]
     fn push_clears_the_redo_stack() {
         let mut h = History::new();
-        h.push(EditOp::SetGlobalBypass { bypassed: true });
+        h.push(EditOp::SetTimelineOrigin { seconds: 2.0 });
         h.undo();
         assert!(h.can_redo());
-        h.push(EditOp::SetGlobalBypass { bypassed: false });
+        h.push(EditOp::SetTimelineOrigin { seconds: 3.0 });
         assert!(!h.can_redo());
         assert_eq!(h.redo_label(), None);
         assert_eq!(h.applied().len(), 1);
@@ -2172,8 +2122,8 @@ mod tests {
     #[test]
     fn clear_empties_both_stacks() {
         let mut h = History::new();
-        h.push(EditOp::SetGlobalBypass { bypassed: true });
-        h.push(EditOp::SetGlobalBypass { bypassed: false });
+        h.push(EditOp::SetTimelineOrigin { seconds: 2.0 });
+        h.push(EditOp::SetTimelineOrigin { seconds: 3.0 });
         h.undo();
         h.clear();
         assert!(!h.can_undo());
@@ -2206,7 +2156,7 @@ mod tests {
                 blob: BlobId(2),
                 anchor: Anchor::new(1.5, 64.0),
             },
-            EditOp::SetGlobalBypass { bypassed: true },
+            EditOp::SetTimelineOrigin { seconds: 4.0 },
         ];
         let mut history = History::new();
         let mut first = state();
@@ -2221,7 +2171,6 @@ mod tests {
             apply(&mut replayed, None, op).unwrap();
         }
         assert_ne!(replayed, first);
-        assert!(!replayed.global_bypass);
 
         history.redo();
         let mut replayed = state();

@@ -102,6 +102,13 @@ impl TimeMap {
         }
     }
 
+    /// Whether the map reads source time as output time everywhere.
+    pub fn is_identity(&self) -> bool {
+        self.points
+            .iter()
+            .all(|(output, source)| (output - source).abs() <= f64::EPSILON * output.abs().max(1.0))
+    }
+
     /// Builds a map from ascending points.
     ///
     /// Both coordinates must increase strictly, so the map stays invertible.
@@ -328,11 +335,22 @@ pub struct RenderPlan {
     pub pitch_ratio: SampledCurve,
     /// How the spectral envelope is treated while pitch moves.
     pub formant: FormantMode,
-    /// Suppresses every edit, so rendering returns the source.
-    pub bypass: bool,
 }
 
 impl RenderPlan {
+    /// Whether the plan asks for nothing: no time move, no repitch, no formant move.
+    ///
+    /// A project with no edits compiles to such a plan, and rendering one is a copy rather than
+    /// a resynthesis, so an untouched take comes back out of the editor as the take that went in.
+    /// Preserving formants is not a move: it only has an effect where pitch does.
+    pub fn is_identity(&self) -> bool {
+        let formant_moves =
+            matches!(self.formant, FormantMode::Shift(semitones) if semitones != 0.0);
+        !formant_moves
+            && self.time_map.is_identity()
+            && self.pitch_ratio.values.iter().all(|ratio| *ratio == 1.0)
+    }
+
     /// A plan that reproduces the source exactly.
     pub fn passthrough(sample_rate: f64, duration: f64) -> Self {
         let span = if duration.is_finite() && duration > 0.0 {
@@ -345,7 +363,6 @@ impl RenderPlan {
             time_map: TimeMap::identity(span),
             pitch_ratio: SampledCurve::constant(1.0, 0.0, span, 2),
             formant: FormantMode::default(),
-            bypass: false,
         }
     }
 }
@@ -369,8 +386,6 @@ pub struct PlanInputs<'a> {
     pub formant: FormantMode,
     /// MIDI guidance, when a guide is selected.
     pub guide: Option<GuideInputs<'a>>,
-    /// Suppresses every edit in the project.
-    pub bypass: bool,
     /// Plan resolution in seconds; 0.005 matches the analysis hop.
     pub hop: f64,
 }
@@ -392,17 +407,11 @@ pub struct GuideInputs<'a> {
 ///
 /// Intent composes in a fixed order, later stages seeing the result of the earlier ones:
 /// detected pitch, then scale correction, then MIDI pitch guidance, then blob pitch offset,
-/// then drawn curve anchors, then modulation. A blob's `bypassed` flag skips every stage for
-/// that blob and `excluded` skips only scale correction and MIDI guidance. Blob timing
-/// offsets and scales, plus MIDI timing guidance, build the time map.
+/// then drawn curve anchors, then modulation. A blob's `excluded` flag skips scale correction
+/// and MIDI guidance for that blob. Blob timing offsets and scales, plus MIDI timing guidance,
+/// build the time map.
 pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan> {
     validate(inputs)?;
-    if inputs.bypass {
-        let mut plan = RenderPlan::passthrough(inputs.sample_rate, inputs.duration);
-        plan.formant = inputs.formant;
-        plan.bypass = true;
-        return Ok(plan);
-    }
 
     let hop = inputs.hop;
     let count = ((inputs.duration / hop).floor() as usize).saturating_add(1);
@@ -413,9 +422,6 @@ pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan> {
     let mut ratios = vec![1.0f32; count];
     let mut pitch_edited = false;
     for blob in inputs.blobs.blobs() {
-        if blob.bypassed {
-            continue;
-        }
         if apply_blob_pitch(inputs, blob, hop, count, &mut ratios) {
             pitch_edited = true;
         }
@@ -436,7 +442,6 @@ pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan> {
         time_map: build_time_map(inputs)?,
         pitch_ratio,
         formant: inputs.formant,
-        bypass: false,
     })
 }
 
@@ -664,9 +669,6 @@ fn build_time_map(inputs: &PlanInputs<'_>) -> Result<TimeMap> {
 
 /// Output span of one blob after its own timing edits and any MIDI timing guidance.
 fn output_span(inputs: &PlanInputs<'_>, blob: &Blob) -> (f64, f64) {
-    if blob.bypassed {
-        return (blob.start, blob.end);
-    }
     let mut start = blob.edited_start();
     let mut end = blob.edited_end();
     if !start.is_finite() || !end.is_finite() || end <= start {
@@ -858,7 +860,6 @@ mod tests {
             modulation,
             formant: FormantMode::Preserve,
             guide: None,
-            bypass: false,
             hop: HOP,
         }
     }
@@ -943,7 +944,6 @@ mod tests {
         let modulation = ModulationSettings::default();
         let plan = compile_plan(&inputs(&track, &blobs, &scale, &modulation, 1.0)).expect("plan");
 
-        assert!(!plan.bypass);
         assert!(plan.pitch_ratio.values.iter().all(|r| *r == 1.0));
         for t in [0.0, 0.25, 0.5, 0.99] {
             assert_eq!(plan.pitch_ratio.at(t), 1.0);
@@ -1004,33 +1004,6 @@ mod tests {
 
         let expected = (1.0f64 / 12.0).exp2() as f32;
         assert!((plan.pitch_ratio.at(0.5) - expected).abs() < 1e-6);
-    }
-
-    #[test]
-    fn bypassed_blob_is_untouched_by_everything() {
-        let track = flat_track(60.6, 1.0);
-        let mut b = blob(1, 0.1, 0.9, 60.6);
-        b.bypassed = true;
-        b.pitch_offset = 3.0;
-        b.time_offset = 0.2;
-        b.curve = PitchCurve::from_anchors(vec![Anchor::new(0.2, 70.0), Anchor::new(0.8, 70.0)])
-            .expect("curve");
-        let blobs = BlobSet::from_blobs(vec![b]).expect("blobs");
-        let scale = ScaleSettings {
-            root: 0,
-            degrees: vec![0, 4, 7],
-            strength: 1.0,
-            excluded: Vec::new(),
-        };
-        let modulation = ModulationSettings {
-            drift: 0.0,
-            vibrato_depth: 0.0,
-            vibrato_split_hz: 3.0,
-        };
-        let plan = compile_plan(&inputs(&track, &blobs, &scale, &modulation, 1.0)).expect("plan");
-
-        assert!(plan.pitch_ratio.values.iter().all(|r| *r == 1.0));
-        assert_eq!(plan.time_map, TimeMap::identity(1.0));
     }
 
     #[test]
@@ -1126,24 +1099,6 @@ mod tests {
     }
 
     #[test]
-    fn global_bypass_returns_the_source() {
-        let track = flat_track(60.0, 1.0);
-        let mut b = blob(1, 0.1, 0.9, 60.0);
-        b.pitch_offset = 5.0;
-        b.time_offset = 0.3;
-        let blobs = BlobSet::from_blobs(vec![b]).expect("blobs");
-        let scale = ScaleSettings::default();
-        let modulation = ModulationSettings::default();
-        let mut i = inputs(&track, &blobs, &scale, &modulation, 1.0);
-        i.bypass = true;
-        let plan = compile_plan(&i).expect("plan");
-
-        assert!(plan.bypass);
-        assert_eq!(plan.pitch_ratio.at(0.5), 1.0);
-        assert!((plan.time_map.source_at(0.5) - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
     fn compile_plan_rejects_bad_inputs() {
         let track = flat_track(60.0, 1.0);
         let blobs = BlobSet::new();
@@ -1158,8 +1113,7 @@ mod tests {
         i.hop = 0.0;
         assert!(compile_plan(&i).is_err());
 
-        let mut i = inputs(&track, &blobs, &scale, &modulation, f64::NAN);
-        i.bypass = false;
+        let i = inputs(&track, &blobs, &scale, &modulation, f64::NAN);
         assert!(compile_plan(&i).is_err());
 
         let mut i = inputs(&track, &blobs, &scale, &modulation, 1.0);
@@ -1338,7 +1292,6 @@ mod tests {
     #[test]
     fn passthrough_plan_is_unity_everywhere() {
         let plan = RenderPlan::passthrough(48_000.0, 3.0);
-        assert!(!plan.bypass);
         for t in [-1.0, 0.0, 1.5, 3.0, 10.0] {
             assert_eq!(plan.pitch_ratio.at(t), 1.0);
         }

@@ -147,7 +147,6 @@ function uniformPlan(options: {
     },
     pitchRatio: { start: 0, hop: duration, values: [ratio, ratio] },
     formant: 'preserve',
-    bypass: false,
   });
 }
 
@@ -418,7 +417,6 @@ describe('DSP quality over the generated fixtures', () => {
         },
         pitchRatio: { start: 0, hop, values },
         formant: 'preserve',
-        bypass: false,
       });
       const renderer = core.PlaybackRenderer.create(
         vowel.samples,
@@ -582,7 +580,6 @@ describe('DSP quality over the generated fixtures', () => {
         },
         pitchRatio: { start: 0, hop: duration / 2, values: [1, 1.12, 0.94] },
         formant: 'preserve',
-        bypass: false,
       });
     });
 

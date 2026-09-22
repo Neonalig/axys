@@ -116,9 +116,8 @@ class AxysWorkspace implements Workspace {
   #autosave: Autosave | null = null;
   #pending: PendingProject | null = null;
   #importing = false;
-  /** Edits the open operation has applied for good, and the ones it replaces as it is used. */
-  #previewFixed = 0;
-  #previewTail = 0;
+  /** Whether an open operation has a group applied that Apply keeps and Discard takes back. */
+  #previewing = false;
   /** Where Save Project last wrote, so a later save needs no picker. */
   #projectFile: FileHandle | null = null;
 
@@ -176,63 +175,51 @@ class AxysWorkspace implements Workspace {
   }
 
   get previewing(): boolean {
-    return this.#previewFixed + this.#previewTail > 0;
+    return this.#previewing;
   }
 
   /**
    * Applies an operation's edits in place of the ones it applied last.
    *
-   * @remarks Each call unwinds the previous one before applying, so dragging a slider leaves the
-   * history with one entry rather than one per frame, and discarding leaves it as it was.
+   * @remarks One group, so however many operations an update carries it is one entry to unwind.
+   * Dragging a slider therefore leaves the history with one entry rather than one per frame, and
+   * discarding leaves it as it was.
    */
   previewEdits(ops: readonly EditOp[]): void {
     const session = this.#session;
     if (!session) return;
-    this.#unwind(this.#previewTail);
-    this.#previewTail = 0;
-    for (const op of ops) {
-      try {
-        session.applyEdit(op);
-      } catch (error) {
-        this.#fail('Apply Edit', error);
-        break;
+    try {
+      if (this.#previewing) session.undo();
+      if (ops.length > 0) {
+        session.applyEdit({ type: 'group', ops: [...ops] });
+        this.#previewing = true;
+      } else {
+        this.#previewing = false;
       }
-      this.#previewTail += 1;
+    } catch (error) {
+      this.#previewing = false;
+      this.#fail('Apply Edit', error);
+      return;
     }
     this.#publish();
-  }
-
-  pinPreview(): void {
-    this.#previewFixed += this.#previewTail;
-    this.#previewTail = 0;
   }
 
   commitPreview(): void {
-    this.#previewFixed = 0;
-    this.#previewTail = 0;
+    this.#previewing = false;
   }
 
   discardPreview(): void {
-    const applied = this.#previewFixed + this.#previewTail;
-    this.#previewFixed = 0;
-    this.#previewTail = 0;
-    if (applied === 0) return;
-    this.#unwind(applied);
-    this.#publish();
-  }
-
-  /** Steps the session back over the newest edits, without reporting a failure as an edit. */
-  #unwind(count: number): void {
+    if (!this.#previewing) return;
+    this.#previewing = false;
     const session = this.#session;
     if (!session) return;
-    for (let step = 0; step < count; step += 1) {
-      try {
-        if (!session.undo()) break;
-      } catch (error) {
-        this.#fail('Undo', error);
-        return;
-      }
+    try {
+      session.undo();
+    } catch (error) {
+      this.#fail('Undo', error);
+      return;
     }
+    this.#publish();
   }
 
   apply(op: EditOp): void {

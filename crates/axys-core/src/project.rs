@@ -99,9 +99,6 @@ pub struct EditState {
     /// How accidentals are spelled.
     #[serde(default)]
     pub accidentals: AccidentalStyle,
-    /// Suppresses every edit, so rendering returns the source.
-    #[serde(default)]
-    pub global_bypass: bool,
 }
 
 impl Default for EditState {
@@ -116,7 +113,6 @@ impl Default for EditState {
             mappings: Vec::new(),
             tuning: Tuning::default(),
             accidentals: AccidentalStyle::default(),
-            global_bypass: false,
         }
     }
 }
@@ -194,6 +190,9 @@ pub struct Project {
     /// Everything an edit operation may change.
     #[serde(default)]
     pub edits: EditState,
+    /// The state the history replays from, which is the analysis plus anything not an edit.
+    #[serde(default)]
+    pub base: EditState,
     /// Bytes of the imported MIDI file, base64, so the guide survives a reopen.
     #[serde(default)]
     pub midi: Option<String>,
@@ -222,6 +221,7 @@ impl Project {
             source,
             analysis,
             track: None,
+            base: edits.clone(),
             edits,
             midi: None,
             view: ViewState::default(),
@@ -501,7 +501,6 @@ mod tests {
         }];
         project.edits.tuning = Tuning { a4_hz: 442.0 };
         project.edits.accidentals = AccidentalStyle::Flats;
-        project.edits.global_bypass = true;
 
         project.track = Some(PitchTrack {
             sample_rate: 48_000.0,
@@ -522,7 +521,7 @@ mod tests {
         };
         project
             .history
-            .push(EditOp::SetGlobalBypass { bypassed: true });
+            .push(EditOp::SetTimelineOrigin { seconds: 0.25 });
         project.history.push(EditOp::SetPitchOffset {
             blob: BlobId(1),
             semitones: -1.5,
@@ -559,7 +558,6 @@ mod tests {
         assert_eq!(parsed.edits.mappings, project.edits.mappings);
         assert_eq!(parsed.edits.tuning, project.edits.tuning);
         assert_eq!(parsed.edits.accidentals, AccidentalStyle::Flats);
-        assert!(parsed.edits.global_bypass);
         assert_eq!(parsed.midi, project.midi);
         assert_eq!(parsed.view, project.view);
         assert_eq!(parsed.history, project.history);
@@ -571,7 +569,7 @@ mod tests {
         let json = full_project().to_json().expect("serialises");
         assert!(json.contains("\"schemaVersion\""));
         assert!(json.contains("\"sampleRate\""));
-        assert!(json.contains("\"globalBypass\""));
+        assert!(json.contains("\"pitchOffset\""));
         assert!(!json.contains("\"schema_version\""));
     }
 

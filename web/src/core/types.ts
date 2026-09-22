@@ -147,8 +147,6 @@ export interface Blob {
   curve: PitchCurve;
   /** Excludes the blob from automatic scale correction and guidance. */
   excluded: boolean;
-  /** Suppresses every edit on this blob without discarding it. */
-  bypassed: boolean;
 }
 
 /** An ordered, non-overlapping set of blobs. */
@@ -359,7 +357,6 @@ export interface RenderPlan {
   pitchRatio: SampledCurve;
   formant: FormantMode;
   /** Suppresses every edit, so rendering returns the source. */
-  bypass: boolean;
 }
 
 /** A serialisable user intent applied over immutable analysis. */
@@ -380,7 +377,6 @@ export type EditOp =
   | { type: 'resetSpan'; blob: BlobId; start: number; end: number }
   | { type: 'resetBlob'; blob: BlobId }
   | { type: 'resetRange'; start: number; end: number }
-  | { type: 'setBypass'; blob: BlobId; bypassed: boolean }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setScale'; scale: ScaleSettings }
   | { type: 'setTuning'; tuning: Tuning }
@@ -393,7 +389,7 @@ export type EditOp =
   | { type: 'setTimelineOrigin'; seconds: number }
   | { type: 'setTempoMap'; events: TempoEvent[] }
   | { type: 'setMeterMap'; events: MeterEvent[] }
-  | { type: 'setGlobalBypass'; bypassed: boolean };
+  | { type: 'group'; ops: EditOp[] };
 
 /** Undo and redo stacks over a project's edit history. */
 export interface History {
@@ -461,7 +457,6 @@ export interface EditState {
   mappings: NoteMapping[];
   tuning: Tuning;
   accidentals: AccidentalStyle;
-  globalBypass: boolean;
 }
 
 /** Whether the ruler reads in clock time or in bars and beats. */
@@ -490,6 +485,8 @@ export interface Project {
   /** Stored analysis output; rebuildable from the source and parameters. */
   track: PitchTrack | null;
   edits: EditState;
+  /** The state the history replays from: the analysis, plus what no edit recorded. */
+  base: EditState;
   /** Bytes of the imported MIDI file, base64. */
   midi: string | null;
   view: ViewState;

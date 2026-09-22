@@ -174,8 +174,7 @@ export function isBlob(value: unknown): value is Blob {
     Array.isArray(value.subregions) &&
     value.subregions.every(isSubregion) &&
     isPitchCurve(value.curve) &&
-    isBoolean(value.excluded) &&
-    isBoolean(value.bypassed)
+    isBoolean(value.excluded)
   );
 }
 
@@ -510,8 +509,7 @@ export function isRenderPlan(value: unknown): value is RenderPlan {
     isNumber(value.sampleRate) &&
     isTimeMap(value.timeMap) &&
     isSampledCurve(value.pitchRatio) &&
-    isFormantMode(value.formant) &&
-    isBoolean(value.bypass)
+    isFormantMode(value.formant)
   );
 }
 
@@ -535,7 +533,6 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   resetSpan: (op) => isNumber(op.blob) && isNumber(op.start) && isNumber(op.end),
   resetBlob: (op) => isNumber(op.blob),
   resetRange: (op) => isNumber(op.start) && isNumber(op.end),
-  setBypass: (op) => isNumber(op.blob) && isBoolean(op.bypassed),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
   setScale: (op) => isScaleSettings(op.scale),
   setTuning: (op) => isTuning(op.tuning),
@@ -548,7 +545,7 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   setTimelineOrigin: (op) => isNumber(op.seconds),
   setTempoMap: (op) => Array.isArray(op.events) && op.events.every(isTempoEvent),
   setMeterMap: (op) => Array.isArray(op.events) && op.events.every(isMeterEvent),
-  setGlobalBypass: (op) => isBoolean(op.bypassed),
+  group: (op) => Array.isArray(op.ops) && op.ops.every(isEditOp),
 };
 
 /** Accepts one edit operation of the tagged union. */
@@ -632,8 +629,7 @@ export function isEditState(value: unknown): value is EditState {
     Array.isArray(value.mappings) &&
     value.mappings.every(isNoteMapping) &&
     isTuning(value.tuning) &&
-    isLiteral(ACCIDENTAL_STYLES, value.accidentals) &&
-    isBoolean(value.globalBypass)
+    isLiteral(ACCIDENTAL_STYLES, value.accidentals)
   );
 }
 
@@ -664,6 +660,7 @@ export function isProject(value: unknown): value is Project {
     isAnalysisInfo(value.analysis) &&
     (value.track === null || isPitchTrack(value.track)) &&
     isEditState(value.edits) &&
+    isEditState(value.base) &&
     isNullableString(value.midi) &&
     isViewState(value.view) &&
     isHistory(value.history)

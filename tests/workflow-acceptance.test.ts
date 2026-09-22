@@ -5,7 +5,7 @@
  *
  * Everything here drives the compiled core through the real `Session` API over
  * `fixtures/audio/phrase.wav`: analysis, boundary repair, pitch, contour and timing edits,
- * processed against bypassed rendering, a save and reopen round trip, and a WAV export
+ * processed against unprocessed rendering, a save and reopen round trip, and a WAV export
  * decoded and re-analysed. Nothing is mocked and no expected value is fabricated; every
  * pitch and onset figure is measured from rendered audio with the code the app ships.
  */
@@ -38,7 +38,6 @@ interface BlobJson {
   timeOffset: number;
   timeScale: number;
   excluded: boolean;
-  bypassed: boolean;
   curve: { anchors: { time: number; midi: number }[] };
 }
 
@@ -55,7 +54,6 @@ interface PlanJson {
   timeMap: { points: [number, number][] };
   pitchRatio: SampledCurveJson;
   formant: unknown;
-  bypass: boolean;
 }
 
 /** One frame of the detected pitch track as `Session.trackJson` serialises it. */
@@ -321,7 +319,8 @@ describe('core workflow acceptance (design bible 13.4)', () => {
 
   /** Steps 4 to 6: one pitch edit and one timing edit, on different notes. */
   let edited: { session: CoreSession; plan: PlanJson; render: Float32Array };
-  let bypassedRender: Float32Array;
+  /** The source as the transport plays it with Compare showing the original. */
+  let originalRender: Float32Array;
   let exportedBytes: Uint8Array;
   let exportedSamples: Float32Array;
   let exportedTrack: F0Measurement;
@@ -411,16 +410,11 @@ describe('core workflow acceptance (design bible 13.4)', () => {
       render: renderAll(editedSession),
     };
 
-    // Bypass through the product's own control rather than by editing the plan text, so
-    // this is the render a listener gets from the bypass button.
-    const bypassedSession = sessionWith(
-      { type: 'movePitch', blobs: [first.id], semitones: PITCH_EDIT_SEMITONES },
-      { type: 'moveTime', blobs: [second.id], seconds: TIME_EDIT_SECONDS },
-      { type: 'setGlobalBypass', bypassed: true },
-    );
-    expect(json<PlanJson>(bypassedSession.planJson()).bypass).toBe(true);
-    bypassedRender = renderAll(bypassedSession);
-    bypassedSession.free();
+    // The unedited session, which is what Compare plays when it shows the original: the
+    // reference the processed render is judged against.
+    const originalSession = sessionWith();
+    originalRender = renderAll(originalSession);
+    originalSession.free();
 
     exportedBytes = editedSession.exportWav(0, -1, fixture.sampleRate, 'pcm16');
     const decoded = decodeWavBytes(exportedBytes);
@@ -703,42 +697,42 @@ describe('core workflow acceptance (design bible 13.4)', () => {
     });
   });
 
-  describe('4. processed and bypassed playback of the same region', () => {
+  describe('4. processed and original playback of the same region', () => {
     it('renders the same number of frames either way', () => {
-      expect(edited.render.length).toBe(bypassedRender.length);
+      expect(edited.render.length).toBe(originalRender.length);
       expect(edited.session.outputFrames()).toBe(edited.render.length);
     });
 
-    it('returns the untouched source when the edits are bypassed', () => {
-      // Bypass is defined as suppressing every edit so that rendering returns the source,
-      // which is what makes it the reference the processed render is compared against.
-      expect(bypassedRender.length).toBe(fixture.samples.length);
+    it('returns the untouched source when nothing has been edited', () => {
+      // An unedited project renders as the source, which is what makes it the reference the
+      // processed render is compared against.
+      expect(originalRender.length).toBe(fixture.samples.length);
       let largest = 0;
-      for (let i = 0; i < bypassedRender.length; i += 1) {
-        largest = Math.max(largest, Math.abs((bypassedRender[i] ?? 0) - (fixture.samples[i] ?? 0)));
+      for (let i = 0; i < originalRender.length; i += 1) {
+        largest = Math.max(largest, Math.abs((originalRender[i] ?? 0) - (fixture.samples[i] ?? 0)));
       }
       // Only the float arithmetic of the copy path may differ, nothing audible.
       expect(largest).toBeLessThan(1e-6);
     });
 
-    it('a looped region differs between processed and bypassed playback', () => {
+    it('a looped region differs between processed and original playback', () => {
       // The loop covers the pitch-edited note and the timing-moved note after it.
       const second = sourceBlobs[1];
       if (!second) throw new Error('phrase.wav must have two blobs');
       const to = Math.round((second.end + TIME_EDIT_SECONDS) * fixture.sampleRate);
 
       const processedLoop = edited.render.slice(0, to);
-      const bypassedLoop = bypassedRender.slice(0, to);
-      expect(processedLoop.length).toBe(bypassedLoop.length);
+      const originalLoop = originalRender.slice(0, to);
+      expect(processedLoop.length).toBe(originalLoop.length);
 
-      const residual = difference(processedLoop, bypassedLoop);
+      const residual = difference(processedLoop, originalLoop);
       // A three-semitone shift replaces that note's waveform outright, so the residual is
       // the same order as the signal itself; a quarter of it is a floor far above any
       // rounding, not a number chosen to make the run pass.
-      expect(rms(residual)).toBeGreaterThan(0.25 * rms(bypassedLoop));
-      expect(peak(residual)).toBeGreaterThan(0.1 * peak(bypassedLoop));
+      expect(rms(residual)).toBeGreaterThan(0.25 * rms(originalLoop));
+      expect(peak(residual)).toBeGreaterThan(0.1 * peak(originalLoop));
       // Decorrelated rather than merely rescaled: a gain change would leave this near 1.
-      expect(correlation(processedLoop, bypassedLoop)).toBeLessThan(0.5);
+      expect(correlation(processedLoop, originalLoop)).toBeLessThan(0.5);
     });
 
     it('renders the same output twice from the same plan', () => {

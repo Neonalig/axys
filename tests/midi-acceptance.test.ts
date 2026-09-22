@@ -92,7 +92,6 @@ interface RenderPlan {
   timeMap: { points: [number, number][] };
   pitchRatio: { start: number; hop: number; values: number[] };
   formant: unknown;
-  bypass: boolean;
 }
 
 /**
@@ -599,7 +598,6 @@ describe('13.5 step 5: guide mode changes the plan in exactly one dimension', ()
       [0, 0],
       [sourceDuration, sourceDuration],
     ]);
-    expect(plan.bypass).toBe(false);
   });
 
   it('pitchOnly moves pitch_ratio to the guide note and leaves the time map identity', () => {

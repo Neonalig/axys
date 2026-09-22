@@ -57,19 +57,11 @@ export interface Workspace {
   /**
    * Applies edits as the outstanding preview of an operation.
    *
-   * @remarks Replaces whatever the previous call applied, so an operation whose sliders are
-   * being dragged leaves one entry in the history rather than one per frame. Ends with
-   * {@link Workspace.commitPreview} or {@link Workspace.discardPreview}.
+   * @remarks One group, replacing whatever the previous call applied, so an operation whose
+   * sliders are being dragged leaves one entry in the history rather than one per frame. Ends
+   * with {@link Workspace.commitPreview} or {@link Workspace.discardPreview}.
    */
   previewEdits(ops: readonly EditOp[]): void;
-
-  /**
-   * Fixes what the preview has applied so far, so later previews replace only what follows.
-   *
-   * @remarks For the part of an operation that does not change as its controls are moved, such
-   * as which blobs it applies to.
-   */
-  pinPreview(): void;
 
   /** Keeps the outstanding preview and ends the run. */
   commitPreview(): void;
@@ -159,6 +151,11 @@ const SMOOTH_AMOUNT = 0.5;
 const FIT_MARGIN = 3;
 
 const COMPARE_ORDER: readonly CompareMode[] = ['processed', 'original', 'split'];
+
+/** One edit when there is one, and one group when there are several. */
+function grouped(ops: readonly EditOp[]): EditOp {
+  return ops.length === 1 && ops[0] !== undefined ? ops[0] : { type: 'group', ops: [...ops] };
+}
 
 /** Blobs the selection covers, in time order. */
 function selectedBlobs(state: AppState): Blob[] {
@@ -500,12 +497,17 @@ export function buildCommands(): Command[] {
         const selected = selectedBlobs(ctx.store.state);
         if (selected.length >= 2) {
           // Each join folds the next blob into the first, so the survivor stays addressable and
-          // the whole selection ends up as one blob however many were covered.
+          // the whole selection ends up as one blob however many were covered. One group, so
+          // undoing a join of six blobs is one press rather than five.
           const first = selected[0];
           if (first === undefined) return;
-          for (const blob of selected.slice(1)) {
-            ctx.workspace.apply({ type: 'joinBlobs', first: first.id, second: blob.id });
-          }
+          ctx.workspace.apply(
+            grouped(
+              selected
+                .slice(1)
+                .map((blob) => ({ type: 'joinBlobs', first: first.id, second: blob.id })),
+            ),
+          );
           return;
         }
         const pair = joinPair(ctx.store.state);
@@ -565,10 +567,10 @@ export function buildCommands(): Command[] {
         const blobs = targetBlobs(ctx.store.state);
         if (blobs.length === 0) return;
         const excluded = !blobs.every((blob) => blob.excluded);
-        for (const blob of blobs) {
-          if (blob.excluded === excluded) continue;
-          ctx.workspace.apply({ type: 'setExcluded', blob: blob.id, excluded });
-        }
+        const ops = blobs
+          .filter((blob) => blob.excluded !== excluded)
+          .map((blob): EditOp => ({ type: 'setExcluded', blob: blob.id, excluded }));
+        if (ops.length > 0) ctx.workspace.apply(grouped(ops));
       },
     },
 

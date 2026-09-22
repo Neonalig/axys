@@ -280,9 +280,6 @@ function sampleCurve(curve: SampledCurve, seconds: number): number {
  * of the detected line rather than a second line over the same pixels.
  */
 export function planTargetMidi(plan: RenderPlan, seconds: number, detected: number): number | null {
-  if (plan.bypass) {
-    return null;
-  }
   const ratio = sampleCurve(plan.pitchRatio, seconds);
   if (!(ratio > 0) || ratio === 1) {
     return null;

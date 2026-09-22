@@ -134,8 +134,10 @@ impl Renderer {
         if out.is_empty() || self.source.is_empty() {
             return;
         }
-        if self.plan.bypass {
-            self.render_bypass(out_start, out);
+        // A plan that asks for nothing is a copy: resynthesising an unedited take would return
+        // something inaudibly but measurably different from the file that was imported.
+        if self.plan.is_identity() {
+            self.render_copy(out_start, out);
             return;
         }
         match self.quality {
@@ -189,7 +191,7 @@ impl Renderer {
     }
 
     /// Copies the source through the time map with interpolation and no repitching.
-    fn render_bypass(&self, out_start: u64, out: &mut [f32]) {
+    fn render_copy(&self, out_start: u64, out: &mut [f32]) {
         for (i, slot) in out.iter_mut().enumerate() {
             let out_seconds = (out_start.saturating_add(i as u64)) as f64 / self.sample_rate;
             let source_seconds = self.plan.time_map.source_at(out_seconds);
@@ -643,21 +645,6 @@ mod tests {
             (detected / 200.0).log2().abs() < 0.05,
             "detected {detected}"
         );
-    }
-
-    #[test]
-    fn bypass_returns_the_source() {
-        let duration = 0.2;
-        let source = saw(240.0, (SR * duration) as usize);
-        let track = flat_track(duration, 240.0);
-        let mut bypassed = plan(duration, 2.0);
-        bypassed.bypass = true;
-        let renderer = Renderer::new(source.clone(), &track, bypassed, Quality::Offline);
-        let out = renderer.render_all(None);
-        assert_eq!(out.len(), source.len());
-        for (i, (a, b)) in source.iter().zip(&out).enumerate() {
-            assert!((a - b).abs() < 1e-5, "sample {i}: {a} vs {b}");
-        }
     }
 
     #[test]
