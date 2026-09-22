@@ -9,10 +9,13 @@
 //! period the target asks for.
 //!
 //! Every grain is a function of its output sample position alone. The grain phase is
-//! recomputed by integrating the target period from output sample 0 on each call rather
-//! than carried in state, so rendering `[a, b)` as one call and as many calls yields
-//! byte-identical samples. The cost of that guarantee is a seek proportional to
-//! `out_start`; see [`Psola::render`].
+//! defined by integrating the target period from output sample 0 rather than carried in
+//! playback state, so rendering `[a, b)` as one call and as many calls yields
+//! byte-identical samples.
+//!
+//! [`MarkState`] names a position in that integration. A caller that keeps states it has
+//! already reached can seed a block from one instead of walking the sequence from zero,
+//! which is a memo of a pure function and cannot change a rendered sample.
 
 use std::f64::consts::TAU;
 
@@ -227,6 +230,47 @@ impl SquaredPrefix {
     }
 }
 
+/// Position in the deterministic grain-mark sequence.
+///
+/// The sequence is fixed by the source, the epoch map and the plan closures, so a state
+/// stands for one mark in it and resuming from a state gives the same marks, in the same
+/// order, as integrating from output sample 0. A state is only meaningful to the [`Psola`]
+/// and the closures that produced it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkState {
+    /// Output sample position of the mark, fractional.
+    mark: f64,
+    /// Index of the last epoch reached by the monotone scan over the epoch map.
+    epoch_cursor: usize,
+}
+
+/// What resolving one mark against the epoch map yields.
+struct MarkStep {
+    epoch: usize,
+    voiced: bool,
+    period: f64,
+    ratio: f64,
+    advance: f64,
+}
+
+// Counts marks stepped through, so tests can show a seek is bounded.
+#[cfg(test)]
+thread_local! {
+    static MARKS_VISITED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Sets the mark-visit count back to zero.
+#[cfg(test)]
+pub(crate) fn reset_marks_visited() {
+    MARKS_VISITED.with(|count| count.set(0));
+}
+
+/// Marks stepped through on this thread since the last reset.
+#[cfg(test)]
+pub(crate) fn marks_visited() -> u64 {
+    MARKS_VISITED.with(|count| count.get())
+}
+
 /// A deterministic time-domain PSOLA synthesiser.
 ///
 /// Rendering any output range produces the same samples regardless of how the range is
@@ -261,10 +305,85 @@ impl<'a> Psola<'a> {
     /// repitching so consonants keep their character.
     ///
     /// The grain phase is integrated from output sample 0 on every call, so the work done
-    /// grows with `out_start`. An empty source, an empty epoch map or a zero-length request
-    /// falls back to silence or to a plain interpolated copy rather than failing.
+    /// grows with `out_start`. A caller that renders many blocks should keep [`MarkState`]s
+    /// and use [`Psola::render_from`] instead. An empty source, an empty epoch map or a
+    /// zero-length request falls back to silence or to a plain interpolated copy rather
+    /// than failing.
     pub fn render(
         &self,
+        out_start: u64,
+        out: &mut [f32],
+        source_at: &dyn Fn(u64) -> f64,
+        pitch_ratio_at: &dyn Fn(u64) -> f64,
+        formant: FormantMode,
+    ) {
+        let origin = self.mark_origin(source_at);
+        let start = self.advance_marks(origin, out_start as f64, source_at, pitch_ratio_at);
+        self.render_from(start, out_start, out, source_at, pitch_ratio_at, formant);
+    }
+
+    /// The first mark of the sequence, before any output has been covered.
+    ///
+    /// `source_at` must be the same closure the render will be given, because the first
+    /// mark is the source's first pitch mark read back through the time map.
+    pub fn mark_origin(&self, source_at: &dyn Fn(u64) -> f64) -> MarkState {
+        let mut state = MarkState {
+            mark: 0.0,
+            epoch_cursor: 0,
+        };
+        if !self.epochs.is_usable() {
+            return state;
+        }
+        let origin = finite(source_at(0));
+        let step = {
+            let delta = finite(source_at(1)) - origin;
+            if delta.is_finite() && delta > 1e-6 {
+                delta
+            } else {
+                1.0
+            }
+        };
+        let seed = (self.epochs.positions[0] as f64 - origin) / step;
+        if seed.is_finite() {
+            state.mark = seed.max(0.0);
+        }
+        state
+    }
+
+    /// Integrates the mark sequence forward from `from` towards output sample `until_out`.
+    ///
+    /// The returned state is the earliest mark whose grain can still reach `until_out`, so
+    /// it is a valid seed for [`Psola::render_from`] at that output position or any later
+    /// one. No grain is synthesised, and a state already at or past that point is returned
+    /// unchanged.
+    pub fn advance_marks(
+        &self,
+        from: MarkState,
+        until_out: f64,
+        source_at: &dyn Fn(u64) -> f64,
+        pitch_ratio_at: &dyn Fn(u64) -> f64,
+    ) -> MarkState {
+        let mut state = from;
+        if !self.epochs.is_usable() || !until_out.is_finite() {
+            return state;
+        }
+        let max_half = self.max_half();
+        let horizon = until_out - max_half;
+        while state.mark < horizon {
+            let step = self.step_at(&mut state, max_half, source_at, pitch_ratio_at);
+            state.mark += step.advance;
+        }
+        state
+    }
+
+    /// Renders `out.len()` samples starting at output sample `out_start`, seeded by `start`.
+    ///
+    /// `start` must come from [`Psola::mark_origin`] or [`Psola::advance_marks`] for an
+    /// output position at or before `out_start`, with the same closures. Given that, the
+    /// samples are the ones [`Psola::render`] would produce for the same range.
+    pub fn render_from(
+        &self,
+        start: MarkState,
         out_start: u64,
         out: &mut [f32],
         source_at: &dyn Fn(u64) -> f64,
@@ -285,65 +404,23 @@ impl<'a> Psola<'a> {
             return;
         }
 
-        let max_half = (MAX_GRAIN_HALF_SECONDS * self.sample_rate).max(MIN_PERIOD_SAMPLES * 2.0);
+        let max_half = self.max_half();
         let positions = &self.epochs.positions;
         let mut weights = vec![0.0f32; out.len()];
 
         let block_start = out_start as i64;
         let block_end = block_start.saturating_add(out.len() as i64);
 
-        let origin = finite(source_at(0));
-        let step = {
-            let delta = finite(source_at(1)) - origin;
-            if delta.is_finite() && delta > 1e-6 {
-                delta
-            } else {
-                1.0
-            }
-        };
-        let mut mark = {
-            let seed = (positions[0] as f64 - origin) / step;
-            if seed.is_finite() {
-                seed.max(0.0)
-            } else {
-                0.0
-            }
-        };
-
         let limit = block_end as f64 + max_half;
-        let mut cursor = 0usize;
+        let mut state = start;
 
-        while mark < limit {
-            let mark_index = mark.clamp(0.0, u64::MAX as f64).round() as u64;
-            let position = finite(source_at(mark_index));
+        while state.mark < limit {
+            let mark = state.mark;
+            let step = self.step_at(&mut state, max_half, source_at, pitch_ratio_at);
 
-            while cursor + 1 < positions.len() && (positions[cursor + 1] as f64) <= position {
-                cursor += 1;
-            }
-            let mut epoch = cursor;
-            if cursor + 1 < positions.len() {
-                let here = (position - positions[cursor] as f64).abs();
-                let next = (positions[cursor + 1] as f64 - position).abs();
-                if next < here {
-                    epoch = cursor + 1;
-                }
-            }
-
-            let voiced = self.epochs.voiced[epoch];
-            let period = clamp_finite(
-                self.epochs.periods[epoch] as f64,
-                MIN_PERIOD_SAMPLES,
-                max_half,
-                MIN_PERIOD_SAMPLES,
-            );
-            let ratio = if voiced {
-                clamp_finite(pitch_ratio_at(mark_index), MIN_RATIO, MAX_RATIO, 1.0)
-            } else {
-                1.0
-            };
-            let content_step = if voiced {
+            let content_step = if step.voiced {
                 let raw = match formant {
-                    FormantMode::Follow => ratio,
+                    FormantMode::Follow => step.ratio,
                     FormantMode::Preserve => 1.0,
                     FormantMode::Shift(semitones) => clamp_finite(
                         2.0f64.powf(semitones / 12.0),
@@ -358,12 +435,12 @@ impl<'a> Psola<'a> {
             };
 
             let half = clamp_finite(
-                period / content_step,
+                step.period / content_step,
                 MIN_PERIOD_SAMPLES,
                 max_half,
                 MIN_PERIOD_SAMPLES,
             );
-            let centre = positions[epoch] as f64;
+            let centre = positions[step.epoch] as f64;
 
             let lo = (mark - half).ceil().clamp(i64::MIN as f64, i64::MAX as f64) as i64;
             let hi = (mark + half)
@@ -389,13 +466,7 @@ impl<'a> Psola<'a> {
                 }
             }
 
-            let advance = clamp_finite(
-                if voiced { period / ratio } else { period },
-                MIN_PERIOD_SAMPLES,
-                max_half * 2.0,
-                MIN_PERIOD_SAMPLES,
-            );
-            mark += advance;
+            state.mark += step.advance;
         }
 
         for (slot, weight) in out.iter_mut().zip(weights.iter()) {
@@ -403,6 +474,72 @@ impl<'a> Psola<'a> {
                 *slot /= *weight;
             }
             *slot = sanitise(*slot);
+        }
+    }
+
+    /// Widest grain half-width this synthesiser will use, in samples.
+    fn max_half(&self) -> f64 {
+        (MAX_GRAIN_HALF_SECONDS * self.sample_rate).max(MIN_PERIOD_SAMPLES * 2.0)
+    }
+
+    /// Resolves the mark `state` sits on against the epoch map and moves its epoch cursor.
+    ///
+    /// Leaves `state.mark` alone; the caller adds the returned advance once it has done
+    /// whatever it wants with the mark.
+    fn step_at(
+        &self,
+        state: &mut MarkState,
+        max_half: f64,
+        source_at: &dyn Fn(u64) -> f64,
+        pitch_ratio_at: &dyn Fn(u64) -> f64,
+    ) -> MarkStep {
+        #[cfg(test)]
+        MARKS_VISITED.with(|count| count.set(count.get().saturating_add(1)));
+
+        let positions = &self.epochs.positions;
+        let mark_index = state.mark.clamp(0.0, u64::MAX as f64).round() as u64;
+        let position = finite(source_at(mark_index));
+
+        let mut cursor = state.epoch_cursor;
+        while cursor + 1 < positions.len() && (positions[cursor + 1] as f64) <= position {
+            cursor += 1;
+        }
+        state.epoch_cursor = cursor;
+
+        let mut epoch = cursor;
+        if cursor + 1 < positions.len() {
+            let here = (position - positions[cursor] as f64).abs();
+            let next = (positions[cursor + 1] as f64 - position).abs();
+            if next < here {
+                epoch = cursor + 1;
+            }
+        }
+
+        let voiced = self.epochs.voiced[epoch];
+        let period = clamp_finite(
+            self.epochs.periods[epoch] as f64,
+            MIN_PERIOD_SAMPLES,
+            max_half,
+            MIN_PERIOD_SAMPLES,
+        );
+        let ratio = if voiced {
+            clamp_finite(pitch_ratio_at(mark_index), MIN_RATIO, MAX_RATIO, 1.0)
+        } else {
+            1.0
+        };
+        let advance = clamp_finite(
+            if voiced { period / ratio } else { period },
+            MIN_PERIOD_SAMPLES,
+            max_half * 2.0,
+            MIN_PERIOD_SAMPLES,
+        );
+
+        MarkStep {
+            epoch,
+            voiced,
+            period,
+            ratio,
+            advance,
         }
     }
 }
@@ -712,6 +849,73 @@ mod tests {
             );
         }
         assert_eq!(whole, pieced);
+    }
+
+    #[test]
+    fn a_resumed_seed_renders_the_same_samples() {
+        let frames = 40_000usize;
+        let source = saw(190.0, SR, frames);
+        let map = build_epochs(&source, SR, &track(SR, 0.9, 190.0, true), 0.01);
+        let psola = Psola::new(&source, &map);
+        let ratio = |n: u64| 1.0 + 0.4 * ((n as f64) / 5_000.0).sin();
+
+        let mut direct = vec![0.0f32; 512];
+        psola.render(30_000, &mut direct, &identity, &ratio, FormantMode::Follow);
+
+        // Seed through a chain of intermediate stops rather than one walk.
+        let mut state = psola.mark_origin(&identity);
+        for stop in [4_000.0, 9_000.0, 17_500.0, 29_000.0, 30_000.0] {
+            state = psola.advance_marks(state, stop, &identity, &ratio);
+        }
+        let mut resumed = vec![0.0f32; 512];
+        psola.render_from(
+            state,
+            30_000,
+            &mut resumed,
+            &identity,
+            &ratio,
+            FormantMode::Follow,
+        );
+        assert_eq!(direct, resumed);
+    }
+
+    #[test]
+    fn resuming_costs_far_fewer_marks_than_seeking_from_zero() {
+        let frames = 96_000usize;
+        let source = saw(200.0, SR, frames);
+        let map = build_epochs(&source, SR, &track(SR, 2.0, 200.0, true), 0.01);
+        let psola = Psola::new(&source, &map);
+
+        let near = psola.advance_marks(psola.mark_origin(&identity), 90_000.0, &identity, &|_| 1.0);
+
+        reset_marks_visited();
+        let mut cold = vec![0.0f32; 128];
+        psola.render(
+            92_000,
+            &mut cold,
+            &identity,
+            &|_| 1.0,
+            FormantMode::Preserve,
+        );
+        let cold_marks = marks_visited();
+
+        reset_marks_visited();
+        let mut warm = vec![0.0f32; 128];
+        psola.render_from(
+            near,
+            92_000,
+            &mut warm,
+            &identity,
+            &|_| 1.0,
+            FormantMode::Preserve,
+        );
+        let warm_marks = marks_visited();
+
+        assert_eq!(cold, warm);
+        assert!(
+            warm_marks * 10 < cold_marks,
+            "warm {warm_marks} against cold {cold_marks}"
+        );
     }
 
     #[test]

@@ -11,11 +11,13 @@
 //! [`Quality::Offline`] adds a short-time envelope pass on top, aligned to a frame grid
 //! anchored at output sample 0 so that purity survives it.
 
+use std::cell::RefCell;
+
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::PitchTrack;
 use crate::dsp::formant::{warp_envelope, FormantMode, FormantProcessor};
-use crate::dsp::psola::{build_epochs, EpochMap, Psola};
+use crate::dsp::psola::{build_epochs, EpochMap, MarkState, Psola};
 use crate::dsp::resample::sample_at;
 use crate::dsp::window::hann;
 use crate::limits::MAX_AUDIO_SECONDS;
@@ -43,6 +45,14 @@ const NORM_FLOOR: f32 = 1e-4;
 const MAX_FORMANT_RATIO: f64 = 2.0;
 /// Absolute ceiling on a rendered sample, matching the synthesiser's own guard.
 const OUTPUT_CLAMP: f32 = 4.0;
+/// Output samples between grain-phase checkpoints.
+///
+/// Roughly a third of a second at 48 kHz. A checkpoint is 24 bytes, so an hour of output
+/// costs about 250 kB, and the walk from one checkpoint to the block that follows it is
+/// around 70 mark steps at ordinary speech periods, each of them a handful of arithmetic
+/// operations and no grain synthesis. The hard ceiling is half the interval, reached only
+/// if every local period sits on the synthesiser's two-sample floor.
+const CHECKPOINT_INTERVAL: u64 = 16_384;
 
 /// Quality tier of a render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +75,7 @@ pub struct Renderer {
     plan: RenderPlan,
     quality: Quality,
     sample_rate: f64,
+    checkpoints: RefCell<Vec<(u64, MarkState)>>,
 }
 
 impl Renderer {
@@ -81,12 +92,16 @@ impl Renderer {
             plan,
             quality,
             sample_rate,
+            checkpoints: RefCell::new(Vec::new()),
         }
     }
 
     /// Replaces the plan without rebuilding the epoch map.
     pub fn set_plan(&mut self, plan: RenderPlan) {
         self.plan = plan;
+        // The grain-mark sequence is a function of the plan, so the checkpoints no longer
+        // describe anything.
+        self.checkpoints.borrow_mut().clear();
     }
 
     /// The plan this renderer is currently interpreting.
@@ -191,13 +206,52 @@ impl Renderer {
             let source_seconds = plan.time_map.source_at(index as f64 / rate);
             f64::from(plan.pitch_ratio.at(source_seconds))
         };
-        Psola::new(&self.source, &self.epochs).render(
+        let psola = Psola::new(&self.source, &self.epochs);
+        let start = self.seed_marks(&psola, out_start, &source_at, &pitch_ratio_at);
+        psola.render_from(
+            start,
             out_start,
             out,
             &source_at,
             &pitch_ratio_at,
             plan.formant,
         );
+    }
+
+    /// Grain-mark state to start a block at, extending the checkpoint table to cover it.
+    ///
+    /// The table memoises an integration that depends only on the plan and the epoch map,
+    /// so seeding a block from it cannot change a rendered sample. It grows to the furthest
+    /// output position rendered so far and is dropped whenever the plan changes.
+    fn seed_marks(
+        &self,
+        psola: &Psola<'_>,
+        out_start: u64,
+        source_at: &dyn Fn(u64) -> f64,
+        pitch_ratio_at: &dyn Fn(u64) -> f64,
+    ) -> MarkState {
+        let mut table = self.checkpoints.borrow_mut();
+        if table.is_empty() {
+            table.push((0, psola.mark_origin(source_at)));
+        }
+        let ceiling = self.frame_ceiling();
+        while let Some(&(at, state)) = table.last() {
+            let next = at.saturating_add(CHECKPOINT_INTERVAL);
+            if next > out_start || next > ceiling {
+                break;
+            }
+            table.push((
+                next,
+                psola.advance_marks(state, next as f64, source_at, pitch_ratio_at),
+            ));
+        }
+        let index = (out_start / CHECKPOINT_INTERVAL) as usize;
+        match table.get(index).or_else(|| table.last()) {
+            Some(&(_, state)) => {
+                psola.advance_marks(state, out_start as f64, source_at, pitch_ratio_at)
+            }
+            None => psola.mark_origin(source_at),
+        }
     }
 
     /// Synthesises the block, then re-imposes the source spectral envelope frame by frame.
@@ -680,6 +734,119 @@ mod tests {
         let mut half = vec![0.0f32; out.len() / 2];
         renderer.render_range(0, &mut half);
         assert_eq!(&out[..half.len()], &half[..]);
+    }
+
+    /// Builds two renderers over the same several-second buffer and plan.
+    fn pair(duration: f64, ratio: f32, quality: Quality) -> (Renderer, Renderer) {
+        let source = saw(200.0, (SR * duration) as usize);
+        let track = flat_track(duration, 200.0);
+        (
+            Renderer::new(source.clone(), &track, plan(duration, ratio), quality),
+            Renderer::new(source, &track, plan(duration, ratio), quality),
+        )
+    }
+
+    #[test]
+    fn a_cold_render_matches_a_warmed_one() {
+        let (cold, warm) = pair(1.0, 1.3, Quality::Preview);
+        let mut scratch = vec![0.0f32; 4_000];
+        for start in (0..40_000u64).step_by(4_000) {
+            warm.render_range(start, &mut scratch);
+        }
+
+        let mut from_cold = vec![0.0f32; 3_000];
+        let mut from_warm = vec![0.0f32; 3_000];
+        cold.render_range(44_000, &mut from_cold);
+        warm.render_range(44_000, &mut from_warm);
+        assert_eq!(from_cold, from_warm);
+    }
+
+    #[test]
+    fn worklet_sized_blocks_match_one_render_all() {
+        let duration = 1.0;
+        let (whole, blocked) = pair(duration, 1.4, Quality::Preview);
+        let expected = whole.render_all(None);
+
+        let mut got = vec![0.0f32; expected.len()];
+        for (index, block) in got.chunks_mut(128).enumerate() {
+            blocked.render_range((index * 128) as u64, block);
+        }
+        assert_eq!(expected, got);
+    }
+
+    #[test]
+    fn scattered_blocks_match_blocks_rendered_in_order() {
+        let duration = 1.0;
+        let (ordered, scattered) = pair(duration, 0.8, Quality::Preview);
+        let blocks = 300usize;
+
+        let mut forwards = vec![0.0f32; blocks * 128];
+        for (index, block) in forwards.chunks_mut(128).enumerate() {
+            ordered.render_range((index * 128) as u64, block);
+        }
+
+        // A fixed permutation, so a failure is reproducible.
+        let mut backwards = vec![0.0f32; blocks * 128];
+        let mut index = 0usize;
+        for _ in 0..blocks {
+            index = (index + 173) % blocks;
+            let at = index * 128;
+            scattered.render_range(at as u64, &mut backwards[at..at + 128]);
+        }
+        assert_eq!(forwards, backwards);
+    }
+
+    #[test]
+    fn set_plan_drops_the_checkpoints() {
+        let duration = 1.0;
+        let (mut reused, mut fresh) = pair(duration, 1.0, Quality::Preview);
+        let mut scratch = vec![0.0f32; 4_000];
+        for start in (0..40_000u64).step_by(4_000) {
+            reused.render_range(start, &mut scratch);
+        }
+
+        reused.set_plan(plan(duration, 1.75));
+        let mut after = vec![0.0f32; 2_000];
+        reused.render_range(45_000, &mut after);
+
+        fresh.set_plan(plan(duration, 1.75));
+        let mut expected = vec![0.0f32; 2_000];
+        fresh.render_range(45_000, &mut expected);
+        assert_eq!(expected, after);
+    }
+
+    #[test]
+    fn seeking_late_in_a_long_buffer_is_bounded() {
+        use crate::dsp::psola::{marks_visited, reset_marks_visited};
+
+        let duration = 6.0;
+        let (cold, warm) = pair(duration, 1.2, Quality::Preview);
+        let last = (SR * duration) as u64 - 128;
+
+        reset_marks_visited();
+        let mut from_cold = vec![0.0f32; 128];
+        cold.render_range(last, &mut from_cold);
+        let cold_marks = marks_visited();
+
+        let mut scratch = vec![0.0f32; 128];
+        for start in (0..last).step_by(128) {
+            warm.render_range(start, &mut scratch);
+        }
+        reset_marks_visited();
+        let mut from_warm = vec![0.0f32; 128];
+        warm.render_range(last, &mut from_warm);
+        let warm_marks = marks_visited();
+
+        assert_eq!(from_cold, from_warm);
+        assert!(
+            warm_marks * 8 < cold_marks,
+            "warm {warm_marks} against cold {cold_marks}"
+        );
+        // The plan asks for 200 Hz at a 1.2 ratio, so 200 output samples per mark, and the
+        // warm walk starts at the checkpoint below the block. That ceiling is a property of
+        // the interval alone: it does not move as the block gets further into the output.
+        let ceiling = CHECKPOINT_INTERVAL / 200 * 2;
+        assert!(warm_marks < ceiling, "warm {warm_marks} against {ceiling}");
     }
 
     #[test]
