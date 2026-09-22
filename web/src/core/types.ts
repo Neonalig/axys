@@ -355,8 +355,9 @@ export interface RenderPlan {
   timeMap: TimeMap;
   /** Frequency multiplier indexed by source time; 1 leaves pitch unchanged. */
   pitchRatio: SampledCurve;
+  /** Pitch the plan produces in fractional MIDI, indexed by source time; 0 where it leaves it. */
+  targetMidi: SampledCurve;
   formant: FormantMode;
-  /** Suppresses every edit, so rendering returns the source. */
 }
 
 /** A serialisable user intent applied over immutable analysis. */

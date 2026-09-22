@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../../app/store.js';
-import type { PitchTrackArrays, RenderPlan, SampledCurve } from '../../core/types.js';
+import type { PitchTrackArrays, RenderPlan } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { blobOutputEnd, blobOutputStart, outputToSource, targetMidiAt } from './blobs.js';
@@ -251,40 +251,35 @@ export function detectedAt(track: PitchTrackArrays, seconds: number): number | n
   return Number.isFinite(midi) ? midi : null;
 }
 
-function sampleCurve(curve: SampledCurve, seconds: number): number {
-  const last = curve.values.length - 1;
-  const first = curve.values[0];
-  if (first === undefined) {
-    return 1;
-  }
-  if (!Number.isFinite(seconds) || !Number.isFinite(curve.hop) || curve.hop <= 0) {
-    return first;
-  }
-  const position = (seconds - curve.start) / curve.hop;
-  if (position <= 0) {
-    return first;
-  }
-  if (position >= last) {
-    return curve.values[last] ?? first;
-  }
-  const index = Math.floor(position);
-  const a = curve.values[index] ?? first;
-  const b = curve.values[index + 1] ?? a;
-  return a + (b - a) * (position - index);
-}
-
 /**
  * Pitch the compiled plan produces at a source time, in fractional MIDI.
  *
- * @remarks Returns null where the plan leaves the pitch alone, so the caller draws nothing on top
- * of the detected line rather than a second line over the same pixels.
+ * @remarks Read straight from the plan rather than rebuilt from the ratio and this module's own
+ * detected track: the two disagree wherever detection is uncertain, and the difference showed up
+ * as spikes in the drawn target. Returns null where the plan leaves the pitch alone, so the
+ * caller draws nothing on top of the detected line rather than a second line over the same
+ * pixels. Samples either side of an edited span are never mixed with the zeros beyond it, which
+ * would otherwise draw a line plunging towards MIDI zero at every span edge.
  */
-export function planTargetMidi(plan: RenderPlan, seconds: number, detected: number): number | null {
-  const ratio = sampleCurve(plan.pitchRatio, seconds);
-  if (!(ratio > 0) || ratio === 1) {
+export function planTargetMidi(plan: RenderPlan, seconds: number): number | null {
+  const curve = plan.targetMidi;
+  const last = curve.values.length - 1;
+  if (last < 0 || !Number.isFinite(seconds) || !(curve.hop > 0)) {
     return null;
   }
-  return detected + 12 * Math.log2(ratio);
+  const position = (seconds - curve.start) / curve.hop;
+  if (position < -0.5 || position > last + 0.5) {
+    return null;
+  }
+  const index = Math.floor(position);
+  const low = curve.values[Math.max(0, Math.min(last, index))] ?? 0;
+  const high = curve.values[Math.max(0, Math.min(last, index + 1))] ?? 0;
+  if (low > 0 && high > 0) {
+    const fraction = position - index;
+    return low + (high - low) * Math.min(1, Math.max(0, fraction));
+  }
+  const nearest = position - index < 0.5 ? low : high;
+  return nearest > 0 ? nearest : null;
 }
 
 function drawTarget(
@@ -302,36 +297,40 @@ function drawTarget(
   ctx.strokeStyle = theme.pitchTarget;
   ctx.lineWidth = 2;
   ctx.lineJoin = 'round';
+  // Sampled on a grid anchored at time zero rather than at the left edge of the view, so a
+  // following view slides the line past rather than resampling it into a different shape on
+  // every frame.
+  const step = viewport.secondsPerPixel;
   for (const blob of state.blobs) {
     const start = Math.max(blobOutputStart(blob), viewport.view.visibleStart);
     const end = Math.min(blobOutputEnd(blob), viewport.view.visibleEnd);
     if (!(end > start)) {
       continue;
     }
-    const from = Math.floor(viewport.timeToX(start));
-    const to = Math.ceil(viewport.timeToX(end));
+    const from = Math.floor(start / step);
+    const to = Math.ceil(end / step);
     ctx.beginPath();
     let open = false;
     for (let column = from; column <= to; column += 1) {
-      const sourceTime = outputToSource(blob, viewport.xToTime(column + 0.5));
+      const outputTime = column * step;
+      const sourceTime = outputToSource(blob, outputTime);
       const detected = detectedAt(track, sourceTime);
       if (detected === null) {
         open = false;
         continue;
       }
       const target =
-        plan === null
-          ? targetMidiAt(blob, sourceTime, detected)
-          : planTargetMidi(plan, sourceTime, detected);
+        plan === null ? targetMidiAt(blob, sourceTime, detected) : planTargetMidi(plan, sourceTime);
       if (target === null) {
         open = false;
         continue;
       }
+      const x = viewport.timeToX(outputTime);
       const y = viewport.midiToY(target);
       if (open) {
-        ctx.lineTo(column + 0.5, y);
+        ctx.lineTo(x, y);
       } else {
-        ctx.moveTo(column + 0.5, y);
+        ctx.moveTo(x, y);
         open = true;
       }
     }

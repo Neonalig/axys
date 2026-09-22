@@ -509,6 +509,7 @@ export function isRenderPlan(value: unknown): value is RenderPlan {
     isNumber(value.sampleRate) &&
     isTimeMap(value.timeMap) &&
     isSampledCurve(value.pitchRatio) &&
+    isSampledCurve(value.targetMidi) &&
     isFormantMode(value.formant)
   );
 }

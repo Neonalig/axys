@@ -16,6 +16,7 @@ function plan(ratio: number): RenderPlan {
       ],
     },
     pitchRatio: { start: 0, hop: 0.01, values: [ratio, ratio] },
+    targetMidi: { start: 0, hop: 0.01, values: [0, 0] },
     formant: 'preserve',
   };
 }

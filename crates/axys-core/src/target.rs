@@ -28,7 +28,7 @@ const TIME_EPS: f64 = 1e-9;
 const MAX_RATIO: f64 = 4.0;
 
 /// A curve sampled on a uniform grid in source seconds.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SampledCurve {
     /// Source seconds of the first sample.
@@ -333,6 +333,15 @@ pub struct RenderPlan {
     pub time_map: TimeMap,
     /// Frequency multiplier indexed by **source** time. 1.0 leaves pitch unchanged.
     pub pitch_ratio: SampledCurve,
+    /// Pitch the plan produces, in fractional MIDI, indexed by **source** time.
+    ///
+    /// 0.0 where the plan leaves pitch alone, which no sung target ever is. Published so the
+    /// editor can draw what will be heard instead of reconstructing it from its own copy of the
+    /// detected track, which disagrees with this one wherever the detection is uncertain.
+    ///
+    /// Read by the editor and never by the renderer, so a plan written by hand may omit it.
+    #[serde(default)]
+    pub target_midi: SampledCurve,
     /// How the spectral envelope is treated while pitch moves.
     pub formant: FormantMode,
 }
@@ -362,6 +371,7 @@ impl RenderPlan {
             sample_rate,
             time_map: TimeMap::identity(span),
             pitch_ratio: SampledCurve::constant(1.0, 0.0, span, 2),
+            target_midi: SampledCurve::constant(0.0, 0.0, span, 2),
             formant: FormantMode::default(),
         }
     }
@@ -420,27 +430,40 @@ pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan> {
     }
 
     let mut ratios = vec![1.0f32; count];
+    let mut targets = vec![0.0f32; count];
     let mut pitch_edited = false;
     for blob in inputs.blobs.blobs() {
-        if apply_blob_pitch(inputs, blob, hop, count, &mut ratios) {
+        if apply_blob_pitch(inputs, blob, hop, count, &mut ratios, &mut targets) {
             pitch_edited = true;
         }
     }
 
-    let pitch_ratio = if pitch_edited {
-        SampledCurve {
-            start: 0.0,
-            hop,
-            values: ratios,
-        }
+    let (pitch_ratio, target_midi) = if pitch_edited {
+        (
+            SampledCurve {
+                start: 0.0,
+                hop,
+                values: ratios,
+            },
+            SampledCurve {
+                start: 0.0,
+                hop,
+                values: targets,
+            },
+        )
     } else {
-        SampledCurve::constant(1.0, 0.0, hop.max(inputs.duration), 2)
+        let span = hop.max(inputs.duration);
+        (
+            SampledCurve::constant(1.0, 0.0, span, 2),
+            SampledCurve::constant(0.0, 0.0, span, 2),
+        )
     };
 
     Ok(RenderPlan {
         sample_rate: inputs.sample_rate,
         time_map: build_time_map(inputs)?,
         pitch_ratio,
+        target_midi,
         formant: inputs.formant,
     })
 }
@@ -509,6 +532,7 @@ fn apply_blob_pitch(
     hop: f64,
     count: usize,
     ratios: &mut [f32],
+    targets: &mut [f32],
 ) -> bool {
     let Some((lo, hi)) = index_range(blob.start, blob.end, hop, count) else {
         return false;
@@ -557,6 +581,7 @@ fn apply_blob_pitch(
         }
         let ratio = (delta / 12.0).exp2().clamp(1.0 / MAX_RATIO, MAX_RATIO);
         ratios[index] = ratio as f32;
+        targets[index] = target as f32;
         moved = true;
     }
     moved
