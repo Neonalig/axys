@@ -297,3 +297,63 @@ export class Dialog {
 function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
 }
+
+/** One answer to a confirmation. */
+export type Confirmation = 'confirm' | 'alternative' | 'cancel';
+
+/**
+ * Asks a question that has to be answered before anything else happens.
+ *
+ * @remarks Resolves with what was chosen, and with `cancel` when the panel was dismissed, so
+ * closing it by Escape or by pressing outside is the answer that changes nothing.
+ */
+export function confirm(options: {
+  title: string;
+  message: string;
+  /** The action that goes ahead, such as Discard. */
+  confirm: string;
+  /** A second way forward, such as saving first. Omitted when there is only one. */
+  alternative?: string;
+  icon?: IconName;
+}): Promise<Confirmation> {
+  return new Promise((resolve) => {
+    let answer: Confirmation = 'cancel';
+    const body = document.createElement('p');
+    body.className = 'axys-hint';
+    body.textContent = options.message;
+    const actions: DialogAction[] = [
+      {
+        label: 'Cancel',
+        onSelect: (dialog) => {
+          dialog.close();
+        },
+      },
+    ];
+    if (options.alternative !== undefined) {
+      actions.push({
+        label: options.alternative,
+        onSelect: (dialog) => {
+          answer = 'alternative';
+          dialog.close();
+        },
+      });
+    }
+    actions.push({
+      label: options.confirm,
+      kind: 'danger',
+      onSelect: (dialog) => {
+        answer = 'confirm';
+        dialog.close();
+      },
+    });
+    Dialog.open({
+      title: options.title,
+      ...(options.icon === undefined ? {} : { icon: options.icon }),
+      content: body,
+      actions,
+      onClose: () => {
+        resolve(answer);
+      },
+    });
+  });
+}

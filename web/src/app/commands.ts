@@ -82,13 +82,13 @@ export interface Workspace {
   readonly importing: boolean;
 
   /** Decodes, analyses and opens an audio file, replacing the open project. */
-  openAudioFile(file: File): Promise<void>;
+  openAudioFile(file: File, ask?: boolean): Promise<void>;
 
   /** Imports a Standard MIDI File as the guide, adopting its tempo and meter maps. */
   openMidiFile(file: File): Promise<void>;
 
   /** Opens a `.axys.json` project document. */
-  openProjectFile(file: File): Promise<void>;
+  openProjectFile(file: File, ask?: boolean): Promise<void>;
 
   /**
    * Writes the project document.
@@ -558,6 +558,8 @@ export function buildCommands(): Command[] {
       // Acts on every selected blob, so the key does what the menu on any one of them does,
       // whether or not the menu is open. Mixed selections are excluded rather than toggled one
       // by one, because half a selection changing state is not a result anybody asked for.
+      // Exclusion is about automatic correction only: the blob still sounds, and the edits made
+      // on it by hand still apply.
       id: 'edit.excludeBlob',
       label: 'Exclude Blob',
       group: 'Edit',
@@ -738,6 +740,12 @@ export function buildCommands(): Command[] {
       enabled: (ctx) => (ctx.store.state.edits?.guide ?? null) !== null,
       run: (ctx) => {
         ctx.workspace.alignGuide();
+        // Mapping blobs to notes changes nothing that can be seen or heard while the guide is
+        // only being shown, which is what made Align look like it had done nothing.
+        const mode = ctx.store.state.edits?.guide?.mode ?? 'visualOnly';
+        if (mode === 'visualOnly') {
+          ctx.toast.warn('Guide Mode is Visual Only, so the mapping does not move the vocal yet.');
+        }
       },
     },
 

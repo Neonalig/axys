@@ -53,6 +53,7 @@ import {
 import type { FileHandle } from './persistence/file-access.js';
 import { importProject, relink } from './persistence/project-io.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
+import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
 import type { MenuEntry } from './ui/menu.js';
 import type { IconName } from './ui/icons.js';
@@ -153,6 +154,7 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running.');
       return;
     }
+    if (!(await this.#mayReplaceProject())) return;
     let picked;
     try {
       picked = await openFile(OPENABLE);
@@ -271,11 +273,12 @@ class AxysWorkspace implements Workspace {
     return redone;
   }
 
-  async openAudioFile(file: File): Promise<void> {
+  async openAudioFile(file: File, ask = false): Promise<void> {
     if (this.#pending) {
       await this.#relinkPending(file);
       return;
     }
+    if (ask && !(await this.#mayReplaceProject())) return;
     // One import at a time. A second would race the first onto the same session and leave
     // whichever finished last in charge, which is not a choice anybody made.
     if (this.#importing) {
@@ -321,6 +324,31 @@ class AxysWorkspace implements Workspace {
     this.#analysis.cancel();
   }
 
+  /**
+   * Whether opening something else may replace what is open.
+   *
+   * @remarks Opening replaces the whole project, so unsaved work would go without a word. The
+   * question offers to save first, because that is what someone who did not mean to discard it
+   * wants next.
+   */
+  async #mayReplaceProject(): Promise<boolean> {
+    if (!this.#session || !this.#store.state.dirty) return true;
+    const answer = await confirmAction({
+      title: 'Unsaved Changes',
+      message: `${this.#name} has edits that are not saved. Opening something else discards them.`,
+      confirm: 'Discard And Open',
+      alternative: 'Save First',
+      icon: 'warning',
+    });
+    if (answer === 'cancel') return false;
+    if (answer === 'alternative') {
+      await this.saveProject();
+      // A save that was cancelled or failed leaves the work unsaved, so it is not discarded.
+      return !this.#store.state.dirty;
+    }
+    return true;
+  }
+
   /** Asks for a MIDI file and imports it into the open project. */
   async importMidi(): Promise<void> {
     if (!this.#session) {
@@ -357,7 +385,8 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  async openProjectFile(file: File): Promise<void> {
+  async openProjectFile(file: File, ask = false): Promise<void> {
+    if (ask && !(await this.#mayReplaceProject())) return;
     try {
       const imported = await importProject(file);
       await this.#openProject(imported.json, imported.project);
@@ -902,8 +931,9 @@ async function openDropped(
   const project = files.find((file) => kindOf(file) === 'project');
   const audio = files.find((file) => kindOf(file) === 'audio');
   const midi = files.find((file) => kindOf(file) === 'midi');
-  if (project) await workspace.openProjectFile(project);
-  else if (audio) await workspace.openAudioFile(audio);
+  // A drop replaces the project as surely as Open does, so it asks the same question.
+  if (project) await workspace.openProjectFile(project, true);
+  else if (audio) await workspace.openAudioFile(audio, true);
   if (midi) {
     if (!project && !audio && !workspace.ready) {
       toast.warn('Open a vocal before a MIDI guide.');

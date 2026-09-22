@@ -291,7 +291,11 @@ export class Inspector {
       ),
       field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch.'),
       field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents.'),
-      field('Exclude', this.#excluded, 'Leaves this blob out of scale correction and guidance.'),
+      field(
+        'Exclude',
+        this.#excluded,
+        'Leaves this blob out of scale correction and MIDI guidance. It still sounds, and edits made on it by hand still apply.',
+      ),
     );
     properties.append(blobPanel);
 
