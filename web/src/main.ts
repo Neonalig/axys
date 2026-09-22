@@ -14,7 +14,7 @@ import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { bindShortcuts } from './app/shortcuts.js';
 import { loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
-import { selectionForRange } from './app/selection.js';
+import { emptySelection, selectionForRanges } from './app/selection.js';
 import { AppStore, initialState } from './app/store.js';
 import type { CompareMode, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile } from './audio/decode.js';
@@ -546,7 +546,7 @@ class AxysWorkspace implements Workspace {
       mappingReport: null,
       guideOverlaps: session.guideOverlaps(),
       drift: session.drift(),
-      selection: { blobs: [], anchors: [], range: null },
+      selection: emptySelection(),
       view: { ...framed, playhead: 0 },
       transport: { ...this.#store.state.transport, playing: false, position: 0, loop: null },
       analysis: { running: false, progress: 1, stage: '' },
@@ -631,7 +631,7 @@ class AxysWorkspace implements Workspace {
         edits: session.state(),
         // An edit can split, join or replace blobs, so what the selected span amounts to is
         // worked out again rather than left naming blobs the edit may have just removed.
-        selection: selectionForRange(blobs, this.#store.state.selection.range),
+        selection: selectionForRanges(blobs, this.#store.state.selection.ranges),
         dirty: true,
       });
     } catch (error) {

@@ -8,6 +8,7 @@
  * here because they act on the current selection rather than on a fixed object.
  */
 
+import { emptySelection } from './selection.js';
 import type { Command, CommandContext } from './commands.js';
 import type { AppState } from './store.js';
 import type { EditOp } from '../core/types.js';
@@ -130,11 +131,11 @@ function clearSelection(ctx: CommandContext): void {
   if (
     state.selection.blobs.length === 0 &&
     state.selection.anchors.length === 0 &&
-    state.selection.range === null
+    state.selection.ranges.length === 0
   ) {
     return;
   }
-  ctx.store.update({ selection: { blobs: [], anchors: [], range: null } });
+  ctx.store.update({ selection: emptySelection() });
 }
 
 /** Binds keyboard shortcuts for a command list to a target element. Returns a disposer. */

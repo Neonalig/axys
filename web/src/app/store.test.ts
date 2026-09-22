@@ -43,7 +43,7 @@ describe('initialState', () => {
     expect(state.midi).toBeNull();
     expect(state.mappingReport).toBeNull();
     expect(state.drift).toBeNull();
-    expect(state.selection).toEqual({ blobs: [], anchors: [], range: null });
+    expect(state.selection).toEqual({ blobs: [], anchors: [], ranges: [] });
     expect(state.tool).toBe('select');
     expect(state.transport).toEqual({
       playing: false,

@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { selectionForRange } from '../app/selection.js';
+import {
+  emptySelection,
+  selectionForRange,
+  selectionForRanges,
+  selectionSpan,
+  withRange,
+} from '../app/selection.js';
+import type { TimeRange } from '../app/selection.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, ViewState } from '../core/types.js';
 import { MIN_BLOB_SECONDS } from '../core/types.js';
@@ -62,7 +69,7 @@ export interface EditorControllerOptions {
 type Point = { x: number; y: number };
 
 type Gesture =
-  | { kind: 'rubberBand'; additive: boolean }
+  | { kind: 'rubberBand'; additive: boolean; extend: boolean }
   | { kind: 'scrub' }
   | { kind: 'loop'; anchorTime: number }
   | { kind: 'pitch'; blobs: BlobId[]; semitones: number }
@@ -244,22 +251,44 @@ export class EditorController {
     this.#applyCursor(this.#hover);
   }
 
-  /** Replaces or extends the blob selection. */
+  /**
+   * Replaces or extends the blob selection.
+   *
+   * @remarks Each blob contributes its own span, so an additive selection of blobs that are not
+   * neighbours stays two regions rather than swallowing everything between them.
+   */
   selectBlobs(ids: readonly BlobId[], additive = false): void {
-    const current = this.#store.state.selection;
-    const blobs = additive ? [...new Set([...current.blobs, ...ids])] : [...ids];
-    this.#setSelection({ blobs, anchors: additive ? current.anchors : [], range: current.range });
+    const wanted = new Set(ids);
+    let ranges = additive ? [...this.#store.state.selection.ranges] : [];
+    for (const blob of this.#store.state.blobs) {
+      if (!wanted.has(blob.id)) {
+        continue;
+      }
+      ranges = withRange(ranges, { start: blobOutputStart(blob), end: blobOutputEnd(blob) });
+    }
+    this.#setSelection(selectionForRanges(this.#store.state.blobs, ranges));
   }
 
   /** Selects every blob. */
   selectAll(): void {
-    this.selectBlobs(this.#store.state.blobs.map((blob) => blob.id));
+    const blobs = this.#store.state.blobs;
+    if (blobs.length === 0) {
+      return;
+    }
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const blob of blobs) {
+      start = Math.min(start, blobOutputStart(blob));
+      end = Math.max(end, blobOutputEnd(blob));
+    }
+    this.#setSelection(selectionForRange(blobs, { start, end }));
+    this.#announce(`${String(blobs.length)} selected`);
   }
 
-  /** Drops the current selection and any selected range. */
+  /** Drops the current selection and every selected span. */
   clearSelection(): void {
     this.#cancelGesture();
-    this.#setSelection({ blobs: [], anchors: [], range: null });
+    this.#setSelection(emptySelection());
   }
 
   /** Moves the selection in pitch by a relative amount. */
@@ -653,7 +682,9 @@ export class EditorController {
 
     switch (state.tool) {
       case 'select':
-        return { kind: 'rubberBand', additive: modifiers.constrain };
+        // Ctrl adds a region of its own, Shift stretches the existing one: the pair every
+        // editor with a multi-selection uses, and the pair Melodyne uses.
+        return { kind: 'rubberBand', additive: modifiers.snap, extend: modifiers.constrain };
       case 'split':
         return hit.blob === null
           ? this.#beginScrub(hit)
@@ -973,9 +1004,9 @@ export class EditorController {
     switch (gesture.kind) {
       case 'rubberBand':
         if (this.#moved) {
-          this.#commitBand(gesture.additive);
+          this.#commitBand(gesture.additive, gesture.extend);
         } else {
-          this.#commitClick(gesture.additive);
+          this.#commitClick(gesture.additive, gesture.extend);
         }
         break;
       case 'split':
@@ -1096,22 +1127,43 @@ export class EditorController {
    * region on screen says is selected, and a drag along one pitch does not miss the blob above
    * it. Operations that care how much of a blob was covered read the span itself.
    */
-  #commitBand(additive: boolean): void {
+  #commitBand(additive: boolean, extend: boolean): void {
     const viewport = this.viewport;
     const left = viewport.xToTime(Math.min(this.#origin.x, this.#current.x));
     const right = viewport.xToTime(Math.max(this.#origin.x, this.#current.x));
-    const previous = additive ? this.#store.state.selection.range : null;
-    this.#selectSpan(
-      Math.min(left, previous?.start ?? left),
-      Math.max(right, previous?.end ?? right),
-    );
+    this.#selectRange({ start: left, end: right }, additive, extend);
+  }
+
+  /**
+   * Selects what a span of output time covers.
+   *
+   * @remarks `additive` keeps the existing spans and adds this one beside them, which is what
+   * makes a selection of two phrases with untouched material between them possible. `extend`
+   * stretches the selection to reach the new span instead, so the result stays one region.
+   */
+  #selectRange(range: TimeRange, additive: boolean, extend: boolean): void {
+    const blobs = this.#store.state.blobs;
+    const existing = this.#store.state.selection.ranges;
+    let ranges: TimeRange[];
+    if (additive) {
+      ranges = withRange(existing, range);
+    } else if (extend) {
+      const hull = selectionSpan(existing);
+      ranges =
+        hull === null
+          ? [range]
+          : [{ start: Math.min(hull.start, range.start), end: Math.max(hull.end, range.end) }];
+    } else {
+      ranges = [range];
+    }
+    const selection = selectionForRanges(blobs, ranges);
+    this.#setSelection(selection);
+    this.#announce(`${String(selection.blobs.length)} selected`);
   }
 
   /** Replaces the selection with the blobs and anchors a span of output time covers. */
   #selectSpan(start: number, end: number): void {
-    const selection = selectionForRange(this.#store.state.blobs, { start, end });
-    this.#setSelection(selection);
-    this.#announce(`${String(selection.blobs.length)} selected`);
+    this.#selectRange({ start, end }, false, false);
   }
 
   /**
@@ -1120,7 +1172,7 @@ export class EditorController {
    * @remarks Clicking a blob selects the span that blob occupies, so a click and a drag produce
    * the same kind of selection. Open canvas clears the selection and places the playhead.
    */
-  #commitClick(additive: boolean): void {
+  #commitClick(additive: boolean, extend: boolean): void {
     const hit = this.hitTest(this.#current.x, this.#current.y);
     const previous = this.#store.state.selection;
     if (hit.kind === 'anchor' && hit.blob !== null && hit.anchor !== null) {
@@ -1129,15 +1181,15 @@ export class EditorController {
       this.#setSelection({
         blobs: owner === undefined ? previous.blobs : [owner.id],
         anchors: additive ? [...previous.anchors, entry] : [entry],
-        range:
+        ranges:
           owner === undefined
-            ? previous.range
-            : { start: blobOutputStart(owner), end: blobOutputEnd(owner) },
+            ? previous.ranges
+            : [{ start: blobOutputStart(owner), end: blobOutputEnd(owner) }],
       });
       return;
     }
     if (hit.blob === null) {
-      this.#setSelection({ blobs: [], anchors: [], range: null });
+      this.#setSelection(emptySelection());
       this.#scrubTo(hit.time);
       return;
     }
@@ -1145,10 +1197,7 @@ export class EditorController {
     if (blob === undefined) {
       return;
     }
-    const start = blobOutputStart(blob);
-    const end = blobOutputEnd(blob);
-    const range = additive ? previous.range : null;
-    this.#selectSpan(Math.min(start, range?.start ?? start), Math.max(end, range?.end ?? end));
+    this.#selectRange({ start: blobOutputStart(blob), end: blobOutputEnd(blob) }, additive, extend);
   }
 
   #dragSet(id: BlobId): BlobId[] {
@@ -1156,7 +1205,16 @@ export class EditorController {
     if (selection.blobs.includes(id)) {
       return [...selection.blobs];
     }
-    this.#setSelection({ blobs: [id], anchors: [], range: selection.range });
+    const blob = this.#blob(id);
+    if (blob === undefined) {
+      return [id];
+    }
+    this.#setSelection(
+      selectionForRange(this.#store.state.blobs, {
+        start: blobOutputStart(blob),
+        end: blobOutputEnd(blob),
+      }),
+    );
     return [id];
   }
 

@@ -10,6 +10,7 @@
 import '../styles.css';
 
 import type { ThemeChoice } from '../app/preferences.js';
+import { selectionSpan } from '../app/selection.js';
 import type { AppState, CompareMode, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
@@ -119,6 +120,8 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'edit.bypassAll',
   // Cancelling an import belongs under the progress it is cancelling.
   'file.cancelImport',
+  // Selecting everything is a keyboard action; a button for it would say nothing a drag does not.
+  'edit.selectAll',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
@@ -217,17 +220,16 @@ function statusItem(
  * would be a lie, and a blob count alone never says where.
  */
 function describeSelection(state: AppState): string {
-  const range = state.selection.range;
-  if (range === null) {
+  const ranges = state.selection.ranges;
+  const hull = selectionSpan(ranges);
+  if (hull === null) {
     return 'None';
   }
-  const start = formatClock(Math.min(range.start, range.end));
-  const end = formatClock(Math.max(range.start, range.end));
+  const span = `${formatClock(hull.start)} to ${formatClock(hull.end)}`;
   const count = state.selection.blobs.length;
-  if (count === 0) {
-    return `${start} to ${end}`;
-  }
-  return `${start} to ${end} (${String(count)} ${count === 1 ? 'blob' : 'blobs'})`;
+  const blobs = count === 0 ? '' : ` (${String(count)} ${count === 1 ? 'blob' : 'blobs'})`;
+  const spans = ranges.length > 1 ? ` in ${String(ranges.length)} spans` : '';
+  return `${span}${spans}${blobs}`;
 }
 
 function formatClock(seconds: number): string {
@@ -645,13 +647,15 @@ export class AppShell {
 
   #announceSelection(state: AppState): void {
     const ids = state.selection.blobs;
-    const range = state.selection.range;
-    const key = `${ids.join(',')}|${range ? `${String(range.start)}-${String(range.end)}` : ''}`;
+    const ranges = state.selection.ranges;
+    const key = `${ids.join(',')}|${ranges
+      .map((range) => `${String(range.start)}-${String(range.end)}`)
+      .join(' ')}`;
     if (key === this.#lastSelection) {
       return;
     }
     this.#lastSelection = key;
-    if (ids.length === 0 && !range) {
+    if (ids.length === 0 && ranges.length === 0) {
       this.announce('Selection cleared.');
       return;
     }
@@ -667,7 +671,7 @@ export class AppShell {
     } else if (ids.length > 1) {
       parts.push(`${String(ids.length)} blobs selected.`);
     }
-    if (range) {
+    for (const range of ranges) {
       parts.push(`Range ${range.start.toFixed(2)} to ${range.end.toFixed(2)} seconds.`);
     }
     this.announce(parts.join(' '));

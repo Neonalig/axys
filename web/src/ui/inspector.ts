@@ -565,7 +565,7 @@ export class Inspector {
 
     // Selecting something brings its fields forward; dropping the selection hands the panel
     // back to the project, so the sidebar is never a page of blanks.
-    const hasSelection = state.selection.range !== null || state.selection.blobs.length > 0;
+    const hasSelection = state.selection.ranges.length > 0 || state.selection.blobs.length > 0;
     this.#tabButtons.get('properties')?.toggleAttribute('disabled', !hasSelection);
     if (hasSelection !== this.#hadSelection) {
       this.#hadSelection = hasSelection;

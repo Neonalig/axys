@@ -8,6 +8,7 @@
  * drive the workspace, the audio engine and the editor they are handed.
  */
 
+import { selectionSpan } from './selection.js';
 import type { AppState, AppStore, CompareMode } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
 import { MIN_BLOB_SECONDS } from '../core/types.js';
@@ -146,13 +147,16 @@ function targetBlob(state: AppState): Blob | undefined {
   return selectedBlobs(state)[0] ?? blobAtPlayhead(state);
 }
 
-/** The selected span in output seconds, or `null` when nothing is selected. */
+/**
+ * The span the selection reaches across, in output seconds, or `null` when nothing is selected.
+ *
+ * @remarks Disjoint spans report their hull. Commands that act blob by blob read the blob list
+ * instead, so a gap between two selected phrases is never edited on their behalf.
+ */
 function selectedRange(state: AppState): { start: number; end: number } | null {
-  const range = state.selection.range;
-  if (!range) return null;
-  const start = Math.min(range.start, range.end);
-  const end = Math.max(range.start, range.end);
-  return end > start ? { start, end } : null;
+  const hull = selectionSpan(state.selection.ranges);
+  if (hull === null) return null;
+  return hull.end > hull.start ? hull : null;
 }
 
 /** The span a span command acts on, clipped to the blob that holds it, in source seconds. */
@@ -191,6 +195,11 @@ function resetTarget(state: AppState): EditOp | null {
   }
   const blob = targetBlob(state);
   return blob === undefined ? null : { type: 'resetBlob', blob: blob.id };
+}
+
+/** Whether two output spans name the same region, within a millisecond. */
+function sameRange(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+  return Math.abs(a.start - b.start) < 1e-3 && Math.abs(a.end - b.end) < 1e-3;
 }
 
 /** A source time held inside the span a blob was analysed over. */
@@ -334,14 +343,14 @@ export function buildCommands(): Command[] {
       enabled: ready,
       run: (ctx) => {
         const state = ctx.store.state;
-        const selection = state.selection.range;
+        const selection = selectedRange(state);
         showExportDialog({
           selection:
             selection === null
               ? null
               : {
-                  start: ctx.workspace.outputAt(Math.min(selection.start, selection.end)),
-                  end: ctx.workspace.outputAt(Math.max(selection.start, selection.end)),
+                  start: ctx.workspace.outputAt(selection.start),
+                  end: ctx.workspace.outputAt(selection.end),
                 },
           sourceRate: state.source?.sampleRate ?? 48_000,
           preview: (range) => ctx.workspace.exportPreview(range),
@@ -361,6 +370,16 @@ export function buildCommands(): Command[] {
       },
     },
 
+    {
+      id: 'edit.selectAll',
+      label: 'Select All',
+      group: 'Edit',
+      shortcut: 'Ctrl+A',
+      enabled: (ctx) => ready(ctx) && ctx.store.state.blobs.length > 0,
+      run: (ctx) => {
+        ctx.editor.selectAll();
+      },
+    },
     {
       id: 'edit.undo',
       label: 'Undo',
@@ -531,27 +550,35 @@ export function buildCommands(): Command[] {
       },
     },
     {
+      // Looping follows the selection while there is one to follow. Selecting somewhere else and
+      // pressing L again moves the loop there rather than switching it off, because switching it
+      // off is what pressing L over the span already looping means.
       id: 'transport.loopSelection',
       label: 'Loop Selection',
       group: 'Transport',
       shortcut: 'L',
       enabled: (ctx) =>
-        ctx.store.state.selection.range !== null || ctx.store.state.transport.loop !== null,
+        selectedRange(ctx.store.state) !== null || ctx.store.state.transport.loop !== null,
       run: (ctx) => {
         const state = ctx.store.state;
-        if (state.transport.loop) {
+        const range = selectedRange(state);
+        const wanted =
+          range === null
+            ? null
+            : {
+                start: ctx.workspace.outputAt(range.start),
+                end: ctx.workspace.outputAt(range.end),
+              };
+        const loop = state.transport.loop;
+        if (loop !== null && (wanted === null || sameRange(loop, wanted))) {
           ctx.audio.setLoop(null);
           return;
         }
-        const range = state.selection.range;
-        if (!range) {
+        if (wanted === null) {
           ctx.toast.warn('Select a span to loop.');
           return;
         }
-        ctx.audio.setLoop({
-          start: ctx.workspace.outputAt(Math.min(range.start, range.end)),
-          end: ctx.workspace.outputAt(Math.max(range.start, range.end)),
-        });
+        ctx.audio.setLoop(wanted);
       },
     },
     {

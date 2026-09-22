@@ -43,11 +43,16 @@ export interface AppState {
   dirty: boolean;
 }
 
-/** What the user currently has selected. */
+/**
+ * What the user currently has selected.
+ *
+ * @remarks `ranges` holds one span per disjoint region, in time order and never overlapping.
+ * `blobs` and `anchors` are what those spans cover, derived by `app/selection.ts`.
+ */
 export interface Selection {
   blobs: number[];
   anchors: { blob: number; index: number }[];
-  range: { start: number; end: number } | null;
+  ranges: { start: number; end: number }[];
 }
 
 /** Editor tool in use. */
@@ -168,7 +173,7 @@ export function initialState(): AppState {
     mappingReport: null,
     guideOverlaps: [],
     drift: null,
-    selection: { blobs: [], anchors: [], range: null },
+    selection: { blobs: [], anchors: [], ranges: [] },
     tool: 'select',
     transport: {
       playing: false,

@@ -48,23 +48,28 @@ function drawSelection(
   viewport: Viewport,
   theme: Theme,
 ): void {
-  const range = state.selection.range;
-  if (range === null) {
+  const ranges = state.selection.ranges;
+  if (ranges.length === 0) {
     return;
   }
-  const x0 = viewport.timeToX(range.start);
-  const x1 = viewport.timeToX(range.end);
   ctx.save();
-  ctx.fillStyle = theme.selectionFill;
-  ctx.fillRect(x0, viewport.plotTop, Math.max(1, x1 - x0), viewport.plotHeight);
-  ctx.strokeStyle = theme.selection;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(Math.round(x0) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x0) + 0.5, viewport.height);
-  ctx.moveTo(Math.round(x1) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x1) + 0.5, viewport.height);
-  ctx.stroke();
+  for (const range of ranges) {
+    const x0 = viewport.timeToX(range.start);
+    const x1 = viewport.timeToX(range.end);
+    if (x1 < 0 || x0 > viewport.width) {
+      continue;
+    }
+    ctx.fillStyle = theme.selectionFill;
+    ctx.fillRect(x0, viewport.plotTop, Math.max(1, x1 - x0), viewport.plotHeight);
+    ctx.strokeStyle = theme.selection;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(x0) + 0.5, viewport.plotTop);
+    ctx.lineTo(Math.round(x0) + 0.5, viewport.height);
+    ctx.moveTo(Math.round(x1) + 0.5, viewport.plotTop);
+    ctx.lineTo(Math.round(x1) + 0.5, viewport.height);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
