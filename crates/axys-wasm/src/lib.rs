@@ -17,7 +17,7 @@ use axys_core::analysis::energy::{analyse_energy, EnergyTrack};
 use axys_core::analysis::f0::{detect_f0, F0Params, PitchTrack};
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
-use axys_core::blob::BlobSet;
+use axys_core::blob::{Blob, BlobSet};
 use axys_core::dsp::formant::FormantMode;
 use axys_core::edit::{apply, EditOp, History};
 use axys_core::midi::{measure_drift, parse_smf, propose_mappings, MidiFile};
@@ -59,6 +59,62 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, JsValue> {
 
 fn dump<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, JsValue> {
     serde_json::to_string(value).map_err(json_err)
+}
+
+/// The analyser settings the boundary accepts as one JSON object.
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct AnalysisParams {
+    f0: F0Params,
+    segment: SegmentParams,
+}
+
+impl AnalysisParams {
+    /// Parses the settings, taking every default when the text is blank.
+    fn from_json(json: &str) -> Result<Self, JsValue> {
+        if json.trim().is_empty() {
+            Ok(Self::default())
+        } else {
+            parse(json)
+        }
+    }
+}
+
+/// Rejects an analysis that cannot have come from the given audio.
+fn check_fits_audio(
+    track: &PitchTrack,
+    blobs: &BlobSet,
+    sample_rate: f64,
+    frames: usize,
+) -> Result<(), String> {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return Err(format!(
+            "sample rate {sample_rate} is not a positive number"
+        ));
+    }
+    if track.sample_rate != sample_rate {
+        return Err(format!(
+            "the analysis ran at {} Hz but the audio is {sample_rate} Hz",
+            track.sample_rate
+        ));
+    }
+    let duration = frames as f64 / sample_rate;
+    let slack = (track.hop_seconds.max(0.0) * 2.0).max(0.05);
+    if track.duration() > duration + slack {
+        return Err(format!(
+            "the analysis covers {:.3}s but the audio is {duration:.3}s",
+            track.duration()
+        ));
+    }
+    if let Some(last) = blobs.blobs().last() {
+        if last.end > duration + slack {
+            return Err(format!(
+                "a blob ends at {:.3}s, past the end of the {duration:.3}s audio",
+                last.end
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Converts a frequency in Hz to a fractional MIDI note number.
@@ -139,19 +195,7 @@ impl Analysis {
 /// take its default.
 #[wasm_bindgen]
 pub fn analyse(samples: &[f32], sample_rate: f64, params_json: &str) -> Result<Analysis, JsValue> {
-    #[derive(serde::Deserialize, Default)]
-    #[serde(rename_all = "camelCase", default)]
-    struct Params {
-        f0: F0Params,
-        segment: SegmentParams,
-    }
-
-    let params: Params = if params_json.trim().is_empty() {
-        Params::default()
-    } else {
-        parse(params_json)?
-    };
-
+    let params = AnalysisParams::from_json(params_json)?;
     let track = detect_f0(samples, sample_rate, &params.f0).map_err(to_js)?;
     let energy = analyse_energy(
         samples,
@@ -168,6 +212,31 @@ pub fn analyse(samples: &[f32], sample_rate: f64, params_json: &str) -> Result<A
     })
 }
 
+/// What an export of one output range would produce, measured before encoding.
+///
+/// Times are output seconds and `peak` is the largest magnitude the render reaches, so a
+/// caller can warn about clipping, silence or unresolved timing before a file is written.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportPreview {
+    /// Start of the range in output seconds.
+    start: f64,
+    /// End of the range in output seconds.
+    end: f64,
+    /// Frames the range would write per channel, at the project sample rate.
+    frames: usize,
+    /// Length of the range in seconds.
+    duration: f64,
+    /// Largest sample magnitude in the range.
+    peak: f32,
+    /// Whether the peak exceeds full scale and a fixed-point export would clamp.
+    clips: bool,
+    /// Timing conflicts whose span overlaps the source audio the range reads.
+    conflicts: usize,
+    /// Seconds of the range that map outside the source and render as silence.
+    silent: f64,
+}
+
 /// An editing session over one source vocal.
 ///
 /// Owns the immutable analysis, the mutable edit state and the undo history, and
@@ -182,6 +251,8 @@ pub struct Session {
     analysis: AnalysisInfo,
     track: PitchTrack,
     state: EditState,
+    /// Segmentation before any edit, resegmented on first use when reopening a project.
+    base_blobs: Option<BlobSet>,
     history: History,
     midi: Option<MidiFile>,
     midi_bytes: Option<Vec<u8>>,
@@ -200,18 +271,48 @@ impl Session {
         analysis: &Analysis,
         params_json: &str,
     ) -> Result<Session, JsValue> {
-        #[derive(serde::Deserialize, Default)]
-        #[serde(rename_all = "camelCase", default)]
-        struct Params {
-            f0: F0Params,
-            segment: SegmentParams,
-        }
-        let params: Params = if params_json.trim().is_empty() {
-            Params::default()
-        } else {
-            parse(params_json)?
-        };
+        let params = AnalysisParams::from_json(params_json)?;
+        Session::assemble(
+            samples,
+            sample_rate,
+            name,
+            analysis.track.clone(),
+            analysis.blobs.clone(),
+            params,
+        )
+    }
 
+    /// Builds a session from an analysis a worker has already produced.
+    ///
+    /// `track_json` is a `PitchTrack` and `blobs_json` an array of `Blob`, as
+    /// [`Analysis::track_json`] and [`Analysis::blobs_json`] write them. Errors when the
+    /// analysis does not fit the audio.
+    #[wasm_bindgen(js_name = createFromAnalysis)]
+    pub fn create_from_analysis(
+        samples: Vec<f32>,
+        sample_rate: f64,
+        name: String,
+        track_json: &str,
+        blobs_json: &str,
+        params_json: &str,
+    ) -> Result<Session, JsValue> {
+        let params = AnalysisParams::from_json(params_json)?;
+        let track: PitchTrack = parse(track_json)?;
+        let blobs: Vec<Blob> = parse(blobs_json)?;
+        let blobs = BlobSet::from_blobs(blobs).map_err(to_js)?;
+        check_fits_audio(&track, &blobs, sample_rate, samples.len())
+            .map_err(|message| JsValue::from_str(&message))?;
+        Session::assemble(samples, sample_rate, name, track, blobs, params)
+    }
+
+    fn assemble(
+        samples: Vec<f32>,
+        sample_rate: f64,
+        name: String,
+        track: PitchTrack,
+        blobs: BlobSet,
+        params: AnalysisParams,
+    ) -> Result<Session, JsValue> {
         let duration = samples.len() as f64 / sample_rate;
         let source = SourceInfo {
             name: name.clone(),
@@ -233,7 +334,7 @@ impl Session {
         };
 
         let state = EditState {
-            blobs: analysis.blobs.clone(),
+            blobs: blobs.clone(),
             scale: Default::default(),
             modulation: Default::default(),
             formant: FormantMode::default(),
@@ -251,8 +352,9 @@ impl Session {
             name,
             source,
             analysis: info,
-            track: analysis.track.clone(),
+            track,
             state,
+            base_blobs: Some(blobs),
             history: History::new(),
             midi: None,
             midi_bytes: None,
@@ -304,6 +406,7 @@ impl Session {
             analysis: project.analysis.clone(),
             track,
             state: project.edits.clone(),
+            base_blobs: None,
             history: project.history.clone(),
             midi,
             midi_bytes,
@@ -387,14 +490,21 @@ impl Session {
             sample_rate: self.sample_rate,
             ..TimelineMap::default()
         };
-        let energy = analyse_energy(
-            &self.samples,
-            self.sample_rate,
-            self.analysis.f0.frame_seconds,
-            self.analysis.f0.hop_seconds,
-        )
-        .map_err(to_js)?;
-        let blobs = segment(&self.track, &energy, &self.analysis.segment).map_err(to_js)?;
+        let blobs = match &self.base_blobs {
+            Some(blobs) => blobs.clone(),
+            None => {
+                let energy = analyse_energy(
+                    &self.samples,
+                    self.sample_rate,
+                    self.analysis.f0.frame_seconds,
+                    self.analysis.f0.hop_seconds,
+                )
+                .map_err(to_js)?;
+                let blobs = segment(&self.track, &energy, &self.analysis.segment).map_err(to_js)?;
+                self.base_blobs = Some(blobs.clone());
+                blobs
+            }
+        };
         self.state = EditState {
             blobs,
             scale: Default::default(),
@@ -617,6 +727,74 @@ impl Session {
         Ok(bytes)
     }
 
+    /// Describes what exporting an output range would produce, without encoding a file.
+    ///
+    /// `start` and `end` are output seconds; pass a negative `end` for the whole output.
+    /// Returns an [`ExportPreview`] as JSON so the range can be reviewed before the user
+    /// commits to a file.
+    #[wasm_bindgen(js_name = exportPreview)]
+    pub fn export_preview(&self, start: f64, end: f64) -> Result<String, JsValue> {
+        let renderer = Renderer::new(
+            self.samples.clone(),
+            &self.track,
+            self.plan.clone(),
+            Quality::Offline,
+        );
+        let ranged = end > start && end > 0.0;
+        let range = if ranged {
+            Some((start.max(0.0), end))
+        } else {
+            None
+        };
+        let rendered = renderer.render_all(range);
+
+        let first = if ranged {
+            (start.max(0.0) * self.sample_rate).round().max(0.0)
+        } else {
+            0.0
+        };
+        let from = first / self.sample_rate;
+        let duration = rendered.len() as f64 / self.sample_rate;
+        let to = from + duration;
+
+        let mut peak = 0.0f32;
+        for sample in &rendered {
+            peak = peak.max(sample.abs());
+        }
+
+        let last = self.samples.len() as f64;
+        let silent = (0..rendered.len())
+            .filter(|i| {
+                let seconds = from + *i as f64 / self.sample_rate;
+                let position = self.plan.time_map.source_at(seconds) * self.sample_rate;
+                !position.is_finite() || position < -1.0 || position >= last
+            })
+            .count();
+
+        let (src_from, src_to) = (
+            self.plan.time_map.source_at(from),
+            self.plan.time_map.source_at(to),
+        );
+        let conflicts = self
+            .state
+            .blobs
+            .timing_conflicts()
+            .iter()
+            .filter(|c| c.end >= src_from && c.start <= src_to)
+            .count();
+
+        dump(&ExportPreview {
+            start: from,
+            end: to,
+            frames: rendered.len(),
+            duration,
+            peak,
+            clips: peak > 1.0,
+            conflicts,
+            silent: silent as f64 / self.sample_rate,
+        })
+    }
+
     /// Report from the most recent export, as JSON, or `null` before any export.
     #[wasm_bindgen(js_name = lastExportReport)]
     pub fn last_export_report(&self) -> Result<String, JsValue> {
@@ -687,5 +865,216 @@ impl PlaybackRenderer {
         let mut out = vec![0.0f32; len];
         self.inner.render_range(out_start as u64, &mut out);
         out
+    }
+}
+
+#[cfg(test)]
+mod analysis_handoff_tests {
+    use super::*;
+
+    const SAMPLE_RATE: f64 = 16_000.0;
+
+    /// A one second tone with a gap in the middle, so segmentation yields two blobs.
+    fn tone() -> Vec<f32> {
+        let frames = SAMPLE_RATE as usize;
+        (0..frames)
+            .map(|i| {
+                let t = i as f64 / SAMPLE_RATE;
+                if (0.45..0.55).contains(&t) {
+                    return 0.0;
+                }
+                (std::f64::consts::TAU * 220.0 * t).sin() as f32 * 0.5
+            })
+            .collect()
+    }
+
+    fn analysed() -> (Vec<f32>, Analysis) {
+        let samples = tone();
+        let analysis = analyse(&samples, SAMPLE_RATE, "").expect("analysis");
+        (samples, analysis)
+    }
+
+    #[test]
+    fn create_from_analysis_matches_create() {
+        let (samples, analysis) = analysed();
+        let direct = Session::create(
+            samples.clone(),
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis,
+            "",
+        )
+        .expect("session");
+        let rebuilt = Session::create_from_analysis(
+            samples,
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis.track_json().expect("track json"),
+            &analysis.blobs_json().expect("blobs json"),
+            "",
+        )
+        .expect("session");
+
+        assert_eq!(
+            direct.state_json().expect("a"),
+            rebuilt.state_json().expect("b")
+        );
+        assert_eq!(
+            direct.blobs_json().expect("a"),
+            rebuilt.blobs_json().expect("b")
+        );
+        assert_eq!(
+            direct.plan_json().expect("a"),
+            rebuilt.plan_json().expect("b")
+        );
+        assert_eq!(
+            direct.source_json().expect("a"),
+            rebuilt.source_json().expect("b")
+        );
+    }
+
+    #[test]
+    fn inconsistent_analysis_is_rejected() {
+        let (samples, analysis) = analysed();
+        let half = samples.len() / 2;
+        let message = check_fits_audio(&analysis.track, &analysis.blobs, SAMPLE_RATE, half)
+            .expect_err("half the audio cannot hold the whole analysis");
+        assert!(message.contains("covers"), "{message}");
+
+        assert!(check_fits_audio(
+            &analysis.track,
+            &analysis.blobs,
+            SAMPLE_RATE * 2.0,
+            samples.len()
+        )
+        .is_err());
+        assert!(
+            check_fits_audio(&analysis.track, &analysis.blobs, SAMPLE_RATE, samples.len()).is_ok()
+        );
+    }
+
+    #[test]
+    fn undo_restores_the_pre_edit_state() {
+        let (samples, analysis) = analysed();
+        let mut session = Session::create_from_analysis(
+            samples,
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis.track_json().expect("track json"),
+            &analysis.blobs_json().expect("blobs json"),
+            "",
+        )
+        .expect("session");
+        let before = session.state_json().expect("state");
+        let plan_before = session.plan_json().expect("plan");
+
+        let first = analysis.blobs.blobs().first().expect("a blob").id.0;
+        session
+            .apply_edit(&format!(
+                r#"{{"type":"setPitchOffset","blob":{first},"semitones":2.5}}"#
+            ))
+            .expect("edit");
+        assert_ne!(session.state_json().expect("state"), before);
+
+        assert!(session.undo().expect("undo"));
+        assert_eq!(session.state_json().expect("state"), before);
+        assert_eq!(session.plan_json().expect("plan"), plan_before);
+    }
+
+    #[test]
+    fn undo_in_a_reopened_project_resegments_to_the_same_state() {
+        let (samples, analysis) = analysed();
+        let session = Session::create(
+            samples.clone(),
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis,
+            "",
+        )
+        .expect("session");
+        let project = session.project_json("").expect("project");
+
+        let mut reopened =
+            Session::open_project(&project, samples, SAMPLE_RATE).expect("reopened session");
+        let before = reopened.state_json().expect("state");
+        let first = analysis.blobs.blobs().first().expect("a blob").id.0;
+        reopened
+            .apply_edit(&format!(
+                r#"{{"type":"setPitchOffset","blob":{first},"semitones":-1.0}}"#
+            ))
+            .expect("edit");
+
+        assert!(reopened.undo().expect("undo"));
+        assert_eq!(reopened.state_json().expect("state"), before);
+    }
+}
+
+#[cfg(test)]
+mod export_preview_tests {
+    use super::*;
+
+    const RATE: f64 = 48_000.0;
+
+    /// A one-second 220 Hz tone, loud enough to segment and analyse.
+    fn tone() -> Vec<f32> {
+        (0..RATE as usize)
+            .map(|i| {
+                let t = i as f64 / RATE;
+                (0.5 * (std::f64::consts::TAU * 220.0 * t).sin()) as f32
+            })
+            .collect()
+    }
+
+    fn session() -> Session {
+        let samples = tone();
+        let analysis = analyse(&samples, RATE, "").expect("analysis");
+        Session::create(samples, RATE, "tone".into(), &analysis, "").expect("session")
+    }
+
+    fn preview(session: &Session, start: f64, end: f64) -> serde_json::Value {
+        let json = session.export_preview(start, end).expect("preview");
+        serde_json::from_str(&json).expect("preview json")
+    }
+
+    #[test]
+    fn export_preview_reports_the_range_it_would_write() {
+        let session = session();
+        let whole = preview(&session, 0.0, -1.0);
+        for key in [
+            "start",
+            "end",
+            "frames",
+            "duration",
+            "peak",
+            "clips",
+            "conflicts",
+            "silent",
+        ] {
+            assert!(whole.get(key).is_some(), "{key} is missing from {whole}");
+        }
+        assert_eq!(
+            whole["frames"].as_u64(),
+            Some(session.output_frames() as u64)
+        );
+        assert_eq!(whole["clips"].as_bool(), Some(false));
+        assert_eq!(whole["conflicts"].as_u64(), Some(0));
+        assert!(whole["peak"].as_f64().unwrap_or(0.0) > 0.0);
+        assert!((whole["duration"].as_f64().unwrap_or(0.0) - 1.0).abs() < 0.01);
+
+        let half = preview(&session, 0.25, 0.75);
+        assert_eq!(half["frames"].as_u64(), Some(RATE as u64 / 2));
+        assert!((half["start"].as_f64().unwrap_or(-1.0) - 0.25).abs() < 1e-9);
+        assert!((half["end"].as_f64().unwrap_or(-1.0) - 0.75).abs() < 1e-9);
+        assert_eq!(half["silent"].as_f64(), Some(0.0));
+    }
+
+    #[test]
+    fn a_range_past_the_end_previews_as_silence() {
+        let session = session();
+        let past = preview(&session, 5.0, 6.0);
+        assert_eq!(past["frames"].as_u64(), Some(RATE as u64));
+        assert_eq!(past["peak"].as_f64(), Some(0.0));
+        assert_eq!(past["clips"].as_bool(), Some(false));
+        assert!((past["silent"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-9);
     }
 }

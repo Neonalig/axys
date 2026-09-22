@@ -16,6 +16,7 @@ use crate::midi::{GuideSelection, NoteMapping};
 use crate::project::EditState;
 use crate::target::{ModulationSettings, ScaleSettings};
 use crate::timeline::{MeterEvent, TempoEvent};
+use crate::units::{AccidentalStyle, Tuning};
 use crate::{limits, AxysError, Result};
 
 /// Longest undo history kept before the oldest operation is discarded.
@@ -23,6 +24,12 @@ pub const MAX_HISTORY_OPS: usize = 10_000;
 
 /// Widest formant shift accepted, in semitones.
 pub const MAX_FORMANT_SHIFT: f64 = 24.0;
+
+/// Lowest concert reference tuning accepted, in Hz.
+pub const MIN_A4_HZ: f64 = 380.0;
+
+/// Highest concert reference tuning accepted, in Hz.
+pub const MAX_A4_HZ: f64 = 480.0;
 
 /// Spacing of the anchors a smoothing pass materialises from detected pitch, in seconds.
 const SMOOTH_SAMPLE_SECONDS: f64 = 0.02;
@@ -172,6 +179,16 @@ pub enum EditOp {
         /// New scale settings.
         scale: ScaleSettings,
     },
+    /// Replaces the concert reference tuning.
+    SetTuning {
+        /// New tuning.
+        tuning: Tuning,
+    },
+    /// Replaces the convention note names are spelled with.
+    SetAccidentals {
+        /// New accidental style.
+        accidentals: AccidentalStyle,
+    },
     /// Replaces the drift and vibrato controls.
     SetModulation {
         /// New modulation settings.
@@ -236,6 +253,8 @@ impl EditOp {
             EditOp::SetBypass { .. } => "Bypass Blob",
             EditOp::SetExcluded { .. } => "Exclude Blob",
             EditOp::SetScale { .. } => "Set Scale",
+            EditOp::SetTuning { .. } => "Set Tuning",
+            EditOp::SetAccidentals { .. } => "Set Accidentals",
             EditOp::SetModulation { .. } => "Set Modulation",
             EditOp::SetFormant { .. } => "Set Formant",
             EditOp::SetGuide { .. } => "Set Guide",
@@ -436,6 +455,13 @@ pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> 
         EditOp::SetScale { scale } => {
             validate_scale(scale)?;
             state.scale = scale.clone();
+        }
+        EditOp::SetTuning { tuning } => {
+            validate_tuning(tuning)?;
+            state.tuning = *tuning;
+        }
+        EditOp::SetAccidentals { accidentals } => {
+            state.accidentals = *accidentals;
         }
         EditOp::SetModulation { modulation } => {
             validate_modulation(modulation)?;
@@ -654,6 +680,17 @@ fn validate_scale(scale: &ScaleSettings) -> Result<()> {
     if !(0.0..=1.0).contains(&strength) {
         return Err(AxysError::Invalid(format!(
             "scale strength {strength} is outside 0..=1"
+        )));
+    }
+    Ok(())
+}
+
+/// Rejects a reference tuning outside [`MIN_A4_HZ`]..=[`MAX_A4_HZ`].
+fn validate_tuning(tuning: &Tuning) -> Result<()> {
+    let a4 = finite(tuning.a4_hz, "reference tuning")?;
+    if !(MIN_A4_HZ..=MAX_A4_HZ).contains(&a4) {
+        return Err(AxysError::Invalid(format!(
+            "reference tuning {a4} Hz is outside {MIN_A4_HZ}..={MAX_A4_HZ}"
         )));
     }
     Ok(())
@@ -1388,6 +1425,92 @@ mod tests {
     }
 
     #[test]
+    fn set_tuning_stores_and_validates() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetTuning {
+                tuning: Tuning { a4_hz: 432.0 },
+            },
+        )
+        .unwrap();
+        assert_eq!(s.tuning, Tuning { a4_hz: 432.0 });
+
+        for bad in [379.0, 481.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                apply(
+                    &mut s,
+                    None,
+                    &EditOp::SetTuning {
+                        tuning: Tuning { a4_hz: bad },
+                    },
+                )
+                .is_err(),
+                "{bad} was accepted"
+            );
+        }
+        assert_eq!(s.tuning, Tuning { a4_hz: 432.0 });
+
+        for edge in [MIN_A4_HZ, MAX_A4_HZ] {
+            apply(
+                &mut s,
+                None,
+                &EditOp::SetTuning {
+                    tuning: Tuning { a4_hz: edge },
+                },
+            )
+            .unwrap();
+            assert_eq!(s.tuning.a4_hz, edge);
+        }
+    }
+
+    #[test]
+    fn set_accidentals_stores_the_style() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetAccidentals {
+                accidentals: AccidentalStyle::Flats,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.accidentals, AccidentalStyle::Flats);
+    }
+
+    #[test]
+    fn tuning_and_accidentals_survive_a_replay() {
+        let ops = [
+            EditOp::SetTuning {
+                tuning: Tuning { a4_hz: 442.0 },
+            },
+            EditOp::SetAccidentals {
+                accidentals: AccidentalStyle::Flats,
+            },
+        ];
+        let mut history = History::new();
+        let mut s = state();
+        for op in &ops {
+            apply(&mut s, None, op).unwrap();
+            history.push(op.clone());
+        }
+        assert_eq!(history.undo_label(), Some("Set Accidentals"));
+
+        history.undo();
+        let mut replayed = state();
+        for op in history.applied() {
+            apply(&mut replayed, None, op).unwrap();
+        }
+        assert_eq!(replayed.tuning, Tuning { a4_hz: 442.0 });
+        assert_eq!(replayed.accidentals, AccidentalStyle::Sharps);
+
+        let json = serde_json::to_string(&ops[0]).unwrap();
+        assert!(json.contains("\"type\":\"setTuning\""), "{json}");
+        assert!(json.contains("\"a4Hz\":442.0"), "{json}");
+    }
+
+    #[test]
     fn set_modulation_stores_and_validates() {
         let mut s = state();
         let good = ModulationSettings {
@@ -1736,6 +1859,12 @@ mod tests {
             EditOp::SetScale {
                 scale: ScaleSettings::default(),
             },
+            EditOp::SetTuning {
+                tuning: Tuning::default(),
+            },
+            EditOp::SetAccidentals {
+                accidentals: AccidentalStyle::default(),
+            },
             EditOp::SetModulation {
                 modulation: ModulationSettings::default(),
             },
@@ -1756,7 +1885,7 @@ mod tests {
             EditOp::SetMeterMap { events: vec![] },
             EditOp::SetGlobalBypass { bypassed: false },
         ];
-        assert_eq!(ops.len(), 26);
+        assert_eq!(ops.len(), 28);
         for op in &ops {
             let label = op.label();
             let words: Vec<&str> = label.split(' ').collect();

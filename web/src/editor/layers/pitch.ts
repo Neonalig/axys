@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../../app/store.js';
-import type { PitchTrackArrays } from '../../core/types.js';
+import type { PitchTrackArrays, RenderPlan, SampledCurve } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { blobOutputEnd, blobOutputStart, outputToSource, targetMidiAt } from './blobs.js';
@@ -79,7 +79,9 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
  *
  * @remarks Detected pitch is reduced to one column per pixel before drawing. Unvoiced frames
  * are drawn as a strip along the bottom rather than as a pitch, and uncertain frames are shaded
- * rather than dropped, so the display never invents a stable note the analysis did not find.
+ * rather than dropped, so the display never invents a stable note the analysis did not find. The
+ * target follows the compiled plan when the state carries one, so scale correction and MIDI
+ * guidance show as well as drawn pitch, and falls back to the blob edits alone until then.
  */
 export function drawPitch(
   ctx: CanvasRenderingContext2D,
@@ -225,6 +227,45 @@ export function detectedAt(track: PitchTrackArrays, seconds: number): number | n
   return Number.isFinite(midi) ? midi : null;
 }
 
+function sampleCurve(curve: SampledCurve, seconds: number): number {
+  const last = curve.values.length - 1;
+  const first = curve.values[0];
+  if (first === undefined) {
+    return 1;
+  }
+  if (!Number.isFinite(seconds) || !Number.isFinite(curve.hop) || curve.hop <= 0) {
+    return first;
+  }
+  const position = (seconds - curve.start) / curve.hop;
+  if (position <= 0) {
+    return first;
+  }
+  if (position >= last) {
+    return curve.values[last] ?? first;
+  }
+  const index = Math.floor(position);
+  const a = curve.values[index] ?? first;
+  const b = curve.values[index + 1] ?? a;
+  return a + (b - a) * (position - index);
+}
+
+/**
+ * Pitch the compiled plan produces at a source time, in fractional MIDI.
+ *
+ * @remarks Returns null where the plan leaves the pitch alone, so the caller draws nothing on top
+ * of the detected line rather than a second line over the same pixels.
+ */
+export function planTargetMidi(plan: RenderPlan, seconds: number, detected: number): number | null {
+  if (plan.bypass) {
+    return null;
+  }
+  const ratio = sampleCurve(plan.pitchRatio, seconds);
+  if (!(ratio > 0) || ratio === 1) {
+    return null;
+  }
+  return detected + 12 * Math.log2(ratio);
+}
+
 function drawTarget(
   ctx: CanvasRenderingContext2D,
   state: AppState,
@@ -235,6 +276,7 @@ function drawTarget(
     return;
   }
   const track = state.track;
+  const plan = state.plan;
   ctx.save();
   ctx.strokeStyle = theme.pitchTarget;
   ctx.lineWidth = 2;
@@ -256,7 +298,15 @@ function drawTarget(
         open = false;
         continue;
       }
-      const y = viewport.midiToY(targetMidiAt(blob, sourceTime, detected));
+      const target =
+        plan === null
+          ? targetMidiAt(blob, sourceTime, detected)
+          : planTargetMidi(plan, sourceTime, detected);
+      if (target === null) {
+        open = false;
+        continue;
+      }
+      const y = viewport.midiToY(target);
       if (open) {
         ctx.lineTo(column + 0.5, y);
       } else {

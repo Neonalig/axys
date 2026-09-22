@@ -55,6 +55,12 @@ const DEGRADED_NOTICE_KEY = 'axys.degraded.notice';
 /** Playhead movement below this, in seconds, is not worth a store update. */
 const PLAYHEAD_EPSILON = 1e-4;
 
+/** How often the engine's underrun count is read, and the shortest gap between its warnings. */
+const UNDERRUN_INTERVAL_MS = 10_000;
+
+/** What a user whose browser holds audio until a gesture has to do. */
+const BLOCKED_HINT = 'Press Play to start audio in this browser.';
+
 /** Local key holding the theme the user last chose. */
 const THEME_KEY = 'axys.theme';
 
@@ -787,9 +793,50 @@ function startPlayheadLoop(
   };
 }
 
-function reportEngine(report: EngineReport, toast: ToastHost): void {
-  if (report.status === 'failed' && report.message !== null) toast.error(report.message);
-  else if (report.status === 'blocked' && report.message !== null) toast.info(report.message);
+/**
+ * Shows the audio engine's own status wherever it affects the user.
+ *
+ * @remarks The engine reports through its own subscription rather than the store, and its
+ * underrun count rises without a status change, so it is polled on {@link UNDERRUN_INTERVAL_MS}.
+ * That interval is also the shortest gap between underrun warnings.
+ */
+function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () => void {
+  let blockedShown = false;
+  let reportedFailure: string | null = null;
+  let seenUnderruns = audio.report.underruns;
+
+  const show = (report: EngineReport): void => {
+    shell.setEngineReport(report);
+    if (report.status === 'failed') {
+      const message = report.message ?? 'Playback failed and the browser gave no reason.';
+      if (message !== reportedFailure) toast.error(message);
+      reportedFailure = message;
+      return;
+    }
+    reportedFailure = null;
+    if (report.status !== 'blocked' || blockedShown) return;
+    blockedShown = true;
+    const reason = report.message === null ? '' : `${report.message} `;
+    toast.info(`${reason}${BLOCKED_HINT}`);
+  };
+
+  show(audio.report);
+  const release = audio.subscribe(show);
+  const timer = window.setInterval(() => {
+    const report = audio.report;
+    if (report.underruns <= seenUnderruns) return;
+    const missed = report.underruns - seenUnderruns;
+    seenUnderruns = report.underruns;
+    shell.setEngineReport(report);
+    toast.warn(
+      `Playback dropped ${String(missed)} audio blocks. Close other heavy tabs and play again.`,
+    );
+  }, UNDERRUN_INTERVAL_MS);
+
+  return () => {
+    release();
+    window.clearInterval(timer);
+  };
 }
 
 /** Theme the user last chose on this device, or the one the system asks for. */
@@ -930,10 +977,7 @@ async function start(): Promise<void> {
   });
   context = { store, editor, audio, toast, workspace };
 
-  audio.subscribe((report) => {
-    shell.setEngineReport(report);
-    reportEngine(report, toast);
-  });
+  const releaseEngine = watchEngine(audio, shell, toast);
   const releaseStore = store.subscribe((state) => {
     shell.update(state);
   });
@@ -956,6 +1000,7 @@ async function start(): Promise<void> {
       releaseShortcuts();
       releaseDrop();
       releaseStore();
+      releaseEngine();
       stopPlayhead();
       open.dispose();
       editor.dispose();

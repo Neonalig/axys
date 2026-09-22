@@ -293,6 +293,75 @@ input[type='checkbox'] {
   font-variant-numeric: tabular-nums;
 }
 
+.axys-control-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--axys-gap);
+  min-width: 0;
+}
+
+.axys-note-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 2px;
+  margin: var(--axys-gap) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.axys-note-grid > legend {
+  grid-column: 1 / -1;
+  padding: 0 0 4px;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+}
+
+.axys-note-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 0;
+  font-size: var(--axys-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--axys-text-muted);
+  background: var(--axys-surface-sunken);
+  border: 1px solid var(--axys-border);
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--axys-motion) ease,
+    color var(--axys-motion) ease;
+}
+
+.axys-note-toggle > input[type='checkbox'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.axys-note-toggle:hover {
+  border-color: var(--axys-border-strong);
+  color: var(--axys-text);
+}
+
+.axys-note-toggle:has(> input:checked) {
+  color: var(--axys-accent-text);
+  background: var(--axys-accent);
+  border-color: var(--axys-accent);
+  font-weight: 600;
+}
+
+.axys-note-toggle:has(> input:focus-visible) {
+  outline: 2px solid var(--axys-focus);
+  outline-offset: 1px;
+}
+
 .axys-hint {
   margin: 4px 0 0;
   font-size: var(--axys-size-sm);

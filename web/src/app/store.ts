@@ -7,6 +7,7 @@ import type {
   MappingReport,
   MidiFile,
   PitchTrackArrays,
+  RenderPlan,
   SourceInfo,
   TimingConflict,
   ViewState,
@@ -21,6 +22,8 @@ export interface AppState {
   blobs: Blob[];
   conflicts: TimingConflict[];
   edits: EditState | null;
+  /** The plan the core last compiled from the edits, or null before a project is open. */
+  plan: RenderPlan | null;
   view: ViewState;
   midi: MidiFile | null;
   mappingReport: MappingReport | null;
@@ -143,6 +146,7 @@ export function initialState(): AppState {
     blobs: [],
     conflicts: [],
     edits: null,
+    plan: null,
     view: initialView(),
     midi: null,
     mappingReport: null,

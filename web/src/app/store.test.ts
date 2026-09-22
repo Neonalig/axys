@@ -4,6 +4,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppStore, batchUpdate, initialState } from './store.js';
 import type { AppState } from './store.js';
+import type { RenderPlan } from '../core/types.js';
+
+function plan(ratio: number): RenderPlan {
+  return {
+    sampleRate: 48000,
+    timeMap: {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    },
+    pitchRatio: { start: 0, hop: 0.01, values: [ratio, ratio] },
+    formant: 'preserve',
+    bypass: false,
+  };
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -23,6 +39,7 @@ describe('initialState', () => {
     expect(state.blobs).toEqual([]);
     expect(state.conflicts).toEqual([]);
     expect(state.edits).toBeNull();
+    expect(state.plan).toBeNull();
     expect(state.midi).toBeNull();
     expect(state.mappingReport).toBeNull();
     expect(state.drift).toBeNull();
@@ -93,6 +110,18 @@ describe('AppStore.update', () => {
     expect(s.state.phase).toBe('error');
     expect(s.state.message).toBe('Decode failed');
     expect(s.state.dirty).toBe(true);
+  });
+
+  it('carries a compiled plan and replaces it on recompile', () => {
+    const s = store();
+    const first = plan(1.5);
+    s.update({ plan: first });
+    expect(s.state.plan).toBe(first);
+    const second = plan(2);
+    s.update({ plan: second });
+    expect(s.state.plan).toBe(second);
+    s.update({ plan: null });
+    expect(s.state.plan).toBeNull();
   });
 
   it('notifies every subscriber exactly once with the new state', () => {
