@@ -41,6 +41,11 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
   const step = viewport.secondsPerPixel;
   const firstColumn = Math.floor(viewport.view.visibleStart / step);
   const originX = viewport.timeToX(firstColumn * step);
+  // One frame of margin at each edge, so a frame just off screen still contributes the segment
+  // that reaches the edge rather than leaving the line short of it.
+  const hop = frameHop(track);
+  const from = viewport.view.visibleStart - hop;
+  const to = viewport.view.visibleEnd + hop;
   const columns: Columns = {
     count,
     originX,
@@ -53,10 +58,10 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
   const weight = new Float32Array(count);
   for (let i = 0; i < track.times.length; i += 1) {
     const time = track.times[i] ?? 0;
-    if (time < viewport.view.visibleStart) {
+    if (time < from) {
       continue;
     }
-    if (time > viewport.view.visibleEnd) {
+    if (time > to) {
       break;
     }
     const column = Math.floor(time / step) - firstColumn;
@@ -87,7 +92,56 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
       columns.confidence[column] = (columns.confidence[column] ?? 0) / total;
     }
   }
+  bridge(columns, hop / step);
   return columns;
+}
+
+/** Seconds between analysis frames, which is what a column can hold at most one of. */
+function frameHop(track: PitchTrackArrays): number {
+  const first = track.times[0];
+  const second = track.times[1];
+  if (first === undefined || second === undefined) {
+    return 0;
+  }
+  return Math.max(0, second - first);
+}
+
+/**
+ * Fills the columns a zoom leaves between two frames.
+ *
+ * @remarks Zoomed in past one frame per pixel, most columns hold no frame at all, and the line
+ * fell apart into ticks with the gaps between them widening as the zoom went further in. A gap
+ * no wider than the frame spacing is the zoom rather than an unvoiced stretch, so the two frames
+ * either side of it are joined; anything wider is material with no pitch in it and stays open.
+ */
+function bridge(columns: Columns, framePixels: number): void {
+  if (!(framePixels > 1)) {
+    return;
+  }
+  const span = Math.ceil(framePixels) + 1;
+  let previous = -1;
+  for (let column = 0; column < columns.count; column += 1) {
+    if (columns.voiced[column] !== 1) {
+      continue;
+    }
+    const gap = column - previous;
+    if (previous >= 0 && gap > 1 && gap <= span) {
+      const lowFrom = columns.low[previous] ?? 0;
+      const highFrom = columns.high[previous] ?? 0;
+      const confidenceFrom = columns.confidence[previous] ?? 0;
+      const lowTo = columns.low[column] ?? 0;
+      const highTo = columns.high[column] ?? 0;
+      const confidenceTo = columns.confidence[column] ?? 0;
+      for (let between = previous + 1; between < column; between += 1) {
+        const t = (between - previous) / gap;
+        columns.voiced[between] = 1;
+        columns.low[between] = lowFrom + (lowTo - lowFrom) * t;
+        columns.high[between] = highFrom + (highTo - highFrom) * t;
+        columns.confidence[between] = confidenceFrom + (confidenceTo - confidenceFrom) * t;
+      }
+    }
+    previous = column;
+  }
 }
 
 /**
