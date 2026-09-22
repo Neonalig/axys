@@ -458,3 +458,81 @@ session exists to ask. Relink decodes through an `OfflineAudioContext` at the pr
 rate, so no hardware device is opened and the digest is comparable. `MediaStore` picks OPFS or
 IndexedDB once at `open()` and keeps it, so a project never has half its audio in one and half in
 the other.
+
+## Editor interaction, after the first testing round
+
+### The playhead is one object, reachable anywhere
+
+`view.playhead`, `transport.position` and a separate audition tool were three ways of saying where
+the editor is looking. Clicking anywhere that is not a hot control now places the playhead, and
+Alt over open canvas or the ruler plays a snippet without moving it. The audition tool is gone: it
+existed only to do what a plain click should already have done, and its presence made the playhead
+unreachable everywhere else. "Play from the start" is Stop then Play rather than a modifier,
+because Stop returns to the beginning.
+
+Limitation: the snippet gesture is Alt, which is also fine adjustment on a blob. The two never
+overlap because the snippet is only offered where there is no blob to adjust.
+
+### Transport commands carry a sequence number
+
+The renderer reports its position on a timer, so a report posted just before a pause arrives just
+after it and used to restore the transport the pause had stopped. Every transport message now
+carries a monotonic `seq` the renderer echoes, and a report older than the newest command issued is
+ignored for transport state. Underruns and failures are still taken from stale reports, because
+those are counts rather than state.
+
+### Selection is a span
+
+A selection is a range of output time. Which blobs and anchors it amounts to is derived from that
+span by `app/selection.ts` rather than stored beside it, and is recomputed whenever an edit changes
+the blob set, so a selection can never name a blob a split or join has removed. Pitch is not part
+of a selection: a drag along one pitch selects everything it passes under, which is what the shaded
+region on screen already showed.
+
+### One Reset, and a structural reset in the core
+
+`EditOp::ResetRange` restores the analysed segmentation across a span, which is the only way a
+split or a join is undone by anything other than undo. `EditState` does not carry the analysed
+blobs; the baseline lives in the wasm `Session`, which already reconstructed it for history replay,
+and reaches `edit::apply_with_baseline` as a parameter. A blob the span only partly covers is
+restored whole, because a segmentation cannot be half undone.
+
+Limitation: a curve-only reset over part of a blob is no longer reachable from the UI. `ResetSpan`
+remains in the core for callers that want it.
+
+### The development wasm is optimised
+
+`npm run dev` builds the core with `--dev`, and an unoptimised analysis pass is what a contributor
+measures import against. `[profile.dev] opt-level = 2` with `opt-level = 3` for dependencies brings
+a take's analysis back into the seconds it takes in release while leaving debug assertions and
+incremental builds on. Measured on the project's own test suite: 51.6 s to 2.9 s.
+
+### Tooltips and menus are drawn by the page
+
+A host tooltip appears only after a delay the page cannot set and only while the window holds
+focus, which is exactly when a control's name is least readable. `ui/tooltip.ts` owns one delegated
+tooltip layer keyed on a `data-axys-tip` attribute, and no control carries `title`. The canvas
+carries none either: the renderer draws its own readout, and both together showed two tooltips that
+disagreed about when to appear. Accessible names stay on the controls, and the shown tooltip is
+pointed at by `aria-describedby`.
+
+### File access prefers the host's own picker
+
+`persistence/file-access.ts` uses the File System Access API where it exists, which gives one picker
+listing every kind Axys opens and a handle to write back to, so a second Save needs no dialog.
+Firefox and Safari fall back to a hidden input and a download, where every save asks again. The
+project document is also mirrored into device storage on every save, so a lost file is not a lost
+session.
+
+Limitation: dropping an audio file replaces the whole project. The drop marker names what would
+open rather than implying a position it would land at, because a project is one source and placing
+a clip at an offset would be a timeline feature the core does not have.
+
+### What the canvas says about itself
+
+The waveform is drawn inside each blob, in that blob's own vertical extent and over its own source
+span, so it moves with the blob rather than floating behind the material it belongs to. Compare
+draws what is being heard solid and what is not transient, with the analysed positions in their own
+colour, so the picture and the monitoring choice cannot disagree. Guide notes are hatched and
+borderless: a guide is read, never edited, so it must not carry the border that means "grab this"
+on a blob.

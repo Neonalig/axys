@@ -132,15 +132,25 @@ export interface AppState {
   analysis: { running: boolean; progress: number; stage: string };
   compare: CompareMode;
   follow: boolean;
+  followMode: FollowMode;
   dirty: boolean;
 }
 
-/** What the user currently has selected. */
+/**
+ * What the user currently has selected.
+ *
+ * A selection is the span in `range`. `blobs` and `anchors` are what that span covers, derived by
+ * `selectionForRange` in `app/selection.ts` and recomputed whenever an edit changes the blob set,
+ * never stored independently of the span.
+ */
 export interface Selection {
   blobs: number[];
   anchors: { blob: number; index: number }[];
   range: { start: number; end: number } | null;
 }
+
+/** How the view keeps up with a playing playhead. */
+export type FollowMode = 'page' | 'centre';
 
 /** Editor tool in use. */
 export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time';
@@ -200,11 +210,15 @@ export function buildCommands(): Command[];
 export function findCommand(commands: Command[], id: string): Command | undefined;
 ```
 
-Commands must cover, at minimum: Open Audio, Open MIDI, Open Project, Save Project, Export WAV,
-Cancel Import,
-Undo, Redo, Split Blob, Join Blobs, Reset Blob, Reset Span, Smooth Span, Bypass Blob, Exclude Blob,
-Play, Stop, Loop Selection, Toggle Compare, Zoom In, Zoom Out, Zoom Fit, Toggle Bars Beats,
-Toggle Metronome, Align Guide, Show Diagnostics, Show Source Code.
+Commands must cover, at minimum: Open, Save Project, Save A Copy, Export Audio, Cancel Import,
+Undo, Redo, Split Blob, Join Blobs, Reset, Smooth Span, Bypass Blob, Exclude Blob, Bypass Edits,
+Play, Stop, Loop Selection, Toggle Metronome, Toggle Compare, Zoom In, Zoom Out, Zoom Fit,
+Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
+
+One Open covers every kind Axys reads; the picker lists them. Reset is one command whose extent
+comes from the selected span. Not every command is drawn in the toolbar: zoom lives in the footer,
+the bars-and-beats toggle and the project-wide bypass live in the inspector, and Cancel Import
+lives under the import progress it cancels. Each keeps its shortcut wherever it is presented.
 
 ## Shortcuts: `app/shortcuts.ts`
 
@@ -296,6 +310,11 @@ range, hover readout, drag preview).
 
 `editor/interaction.ts` exports `class EditorController` owning pointer handling. Requirements:
 
+- A click anywhere that is not a hot control places the playhead; the middle button pans; Alt over
+  open canvas or the ruler plays a snippet without moving the playhead.
+- A right-click opens the context menu for what is under it, selecting it first when it was not
+  already selected.
+
 - Dragging previews on the dragged object itself before commitment.
 - Modifiers: Shift constrains, Alt is fine adjustment, Ctrl/Cmd toggles snap.
 - Every gesture commits exactly one `EditOp` so undo is one step.
@@ -303,6 +322,23 @@ range, hover readout, drag preview).
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 
 ## UI: `ui/`
+
+`app/preferences.ts` holds the settings that belong to the person rather than to the project: the
+theme choice including `system`, the follow mode and the time display. They live in local storage
+and never in the project document.
+
+`app/selection.ts` exports `selectionForRange(blobs, range)`, the one place a span is turned into
+the blobs and anchors it covers.
+
+`persistence/file-access.ts` opens and writes files through the File System Access API where the
+host has one, and through a hidden input and a download where it does not. It exports `openFile`,
+`saveFileAs`, `writeFile`, `downloadFile`, `hasFileSystemAccess` and the `OPENABLE`, `PROJECT_KIND`
+and `EXPORT_KIND` type lists.
+
+`ui/tooltip.ts` exports `TooltipHost` and `setTooltip`. Nothing in the application sets `title`:
+the host tooltip appears only after its own delay and only while the window holds focus. `ui/menu.ts`
+exports `showContextMenu`, whose items each name the key that runs them while the menu is open.
+`ui/scrollbar.ts` and `ui/zoom-control.ts` are the navigation controls around and below the canvas.
 
 `ui/shell.ts` builds the whole DOM chrome with semantic elements: a `<header>` toolbar of
 `<button>` elements, `<select>` and `<input>` for settings, a `<main>` holding the canvas, and
