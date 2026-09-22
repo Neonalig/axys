@@ -14,6 +14,7 @@ import { MIN_BLOB_SECONDS } from '../core/types.js';
 import type { Blob, EditOp, ExportPreview, TimelineMap } from '../core/types.js';
 import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
+import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
 import { showSourceCode, showDiagnostics } from '../ui/diagnostics.js';
 import { showExportDialog } from '../ui/export-dialog.js';
@@ -143,20 +144,56 @@ function targetBlob(state: AppState): Blob | undefined {
   return selectedBlobs(state)[0] ?? blobAtPlayhead(state);
 }
 
-/** The span a span command acts on, clipped to the blob that holds it. */
-function targetSpan(state: AppState): { blob: Blob; start: number; end: number } | null {
+/** The selected span in output seconds, or `null` when nothing is selected. */
+function selectedRange(state: AppState): { start: number; end: number } | null {
   const range = state.selection.range;
   if (!range) return null;
-  const low = Math.min(range.start, range.end);
-  const high = Math.max(range.start, range.end);
+  const start = Math.min(range.start, range.end);
+  const end = Math.max(range.start, range.end);
+  return end > start ? { start, end } : null;
+}
+
+/** The span a span command acts on, clipped to the blob that holds it, in source seconds. */
+function targetSpan(state: AppState): { blob: Blob; start: number; end: number } | null {
+  const range = selectedRange(state);
+  if (!range) return null;
   const blob =
-    selectedBlobs(state).find((candidate) => candidate.end > low && candidate.start < high) ??
-    state.blobs.find((candidate) => candidate.end > low && candidate.start < high);
+    selectedBlobs(state)[0] ??
+    state.blobs.find((candidate) => candidate.end > range.start && candidate.start < range.end);
   if (!blob) return null;
-  const start = Math.max(blob.start, low);
-  const end = Math.min(blob.end, high);
+  const start = Math.max(blob.start, outputToSource(blob, range.start));
+  const end = Math.min(blob.end, outputToSource(blob, range.end));
   if (!(end > start)) return null;
   return { blob, start, end };
+}
+
+/**
+ * The one edit a Reset commits.
+ *
+ * @remarks Always a restore of the analysed material, so splits and joins go back with the pitch
+ * and timing rather than surviving a reset. The selected span decides how much: it is converted
+ * to source seconds per blob, because a stretched blob's output span is not the span it was
+ * analysed over. With nothing selected the blob under the playhead is reset on its own.
+ */
+function resetTarget(state: AppState): EditOp | null {
+  const blobs = selectedBlobs(state);
+  const range = selectedRange(state);
+  if (range !== null && blobs.length > 0) {
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const blob of blobs) {
+      start = Math.min(start, clampTo(outputToSource(blob, range.start), blob));
+      end = Math.max(end, clampTo(outputToSource(blob, range.end), blob));
+    }
+    if (end > start) return { type: 'resetRange', start, end };
+  }
+  const blob = targetBlob(state);
+  return blob === undefined ? null : { type: 'resetBlob', blob: blob.id };
+}
+
+/** A source time held inside the span a blob was analysed over. */
+function clampTo(seconds: number, blob: Blob): number {
+  return seconds < blob.start ? blob.start : seconds > blob.end ? blob.end : seconds;
 }
 
 /** The pair a Join Blobs command acts on: two selected neighbours, else a blob and its successor. */
@@ -412,8 +449,21 @@ export function buildCommands(): Command[] {
       label: 'Join Blobs',
       group: 'Edit',
       shortcut: 'J',
-      enabled: (ctx) => editable(ctx) && joinPair(ctx.store.state) !== null,
+      enabled: (ctx) =>
+        editable(ctx) &&
+        (selectedBlobs(ctx.store.state).length >= 2 || joinPair(ctx.store.state) !== null),
       run: (ctx) => {
+        const selected = selectedBlobs(ctx.store.state);
+        if (selected.length >= 2) {
+          // Each join folds the next blob into the first, so the survivor stays addressable and
+          // the whole selection ends up as one blob however many were covered.
+          const first = selected[0];
+          if (first === undefined) return;
+          for (const blob of selected.slice(1)) {
+            ctx.workspace.apply({ type: 'joinBlobs', first: first.id, second: blob.id });
+          }
+          return;
+        }
         const pair = joinPair(ctx.store.state);
         if (!pair) {
           ctx.toast.warn('Select a blob that has a neighbour to join.');
@@ -423,38 +473,18 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      id: 'edit.resetBlob',
-      label: 'Reset Blob',
+      id: 'edit.reset',
+      label: 'Reset',
       group: 'Edit',
       shortcut: 'Ctrl+R',
-      enabled: (ctx) => editable(ctx) && targetBlob(ctx.store.state) !== undefined,
+      enabled: (ctx) => editable(ctx) && resetTarget(ctx.store.state) !== null,
       run: (ctx) => {
-        const state = ctx.store.state;
-        const blobs = selectedBlobs(state);
-        const targets = blobs.length > 0 ? blobs : [blobAtPlayhead(state)];
-        for (const blob of targets) {
-          if (blob) ctx.workspace.apply({ type: 'resetBlob', blob: blob.id });
-        }
-      },
-    },
-    {
-      id: 'edit.resetSpan',
-      label: 'Reset Span',
-      group: 'Edit',
-      shortcut: 'Ctrl+Shift+R',
-      enabled: (ctx) => editable(ctx) && targetSpan(ctx.store.state) !== null,
-      run: (ctx) => {
-        const span = targetSpan(ctx.store.state);
-        if (!span) {
-          ctx.toast.warn('Select a time range inside a blob first.');
+        const op = resetTarget(ctx.store.state);
+        if (!op) {
+          ctx.toast.warn('Select something to reset.');
           return;
         }
-        ctx.workspace.apply({
-          type: 'resetSpan',
-          blob: span.blob.id,
-          start: span.start,
-          end: span.end,
-        });
+        ctx.workspace.apply(op);
       },
     },
     {
@@ -667,7 +697,8 @@ export function buildCommands(): Command[] {
       label: 'Align Guide',
       group: 'MIDI',
       shortcut: 'Ctrl+Alt+A',
-      enabled: (ctx) => ctx.store.state.midi !== null,
+      // A file being loaded is not a guide; the core refuses until a track is chosen.
+      enabled: (ctx) => (ctx.store.state.edits?.guide ?? null) !== null,
       run: (ctx) => {
         ctx.workspace.alignGuide();
       },

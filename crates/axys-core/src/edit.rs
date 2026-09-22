@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::PitchTrack;
-use crate::blob::{BlobId, Edge, Voicing};
+use crate::blob::{BlobId, BlobSet, Edge, Voicing};
 use crate::curve::{Anchor, PitchCurve};
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideSelection, NoteMapping};
@@ -160,6 +160,13 @@ pub enum EditOp {
         /// Blob to reset.
         blob: BlobId,
     },
+    /// Restores the analysed segmentation across a span, discarding splits, joins and edits.
+    ResetRange {
+        /// Span start in source seconds.
+        start: f64,
+        /// Span end in source seconds.
+        end: f64,
+    },
     /// Suppresses every edit on one blob without discarding it.
     SetBypass {
         /// Blob to bypass.
@@ -255,6 +262,7 @@ impl EditOp {
             EditOp::SmoothSpan { .. } => "Smooth Span",
             EditOp::ResetSpan { .. } => "Reset Span",
             EditOp::ResetBlob { .. } => "Reset Blob",
+            EditOp::ResetRange { .. } => "Reset Range",
             EditOp::SetBypass { .. } => "Bypass Blob",
             EditOp::SetExcluded { .. } => "Exclude Blob",
             EditOp::SetScale { .. } => "Set Scale",
@@ -350,6 +358,20 @@ impl History {
 ///
 /// Analysis results are never modified, so any op can be recomputed from the source.
 pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> Result<()> {
+    apply_with_baseline(state, track, None, op)
+}
+
+/// Applies one operation, with the analysed segmentation available to restore from.
+///
+/// Only [`EditOp::ResetRange`] needs `baseline`; every other operation ignores it. A
+/// `ResetRange` without one fails rather than silently resetting nothing, because the caller
+/// asked for the analysed blobs back and there is nothing else to give them.
+pub fn apply_with_baseline(
+    state: &mut EditState,
+    track: Option<&PitchTrack>,
+    baseline: Option<&BlobSet>,
+    op: &EditOp,
+) -> Result<()> {
     match op {
         EditOp::SplitBlob { blob, time } => {
             state.blobs.split(*blob, *time, track)?;
@@ -451,6 +473,20 @@ pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> 
             blob.curve = PitchCurve::new();
             blob.excluded = false;
             blob.bypassed = false;
+        }
+        EditOp::ResetRange { start, end } => {
+            let (start, end) = finite_span(*start, *end)?;
+            let Some(baseline) = baseline else {
+                return Err(AxysError::Invalid(
+                    "the analysed segmentation is unavailable, so a range cannot be reset".into(),
+                ));
+            };
+            state.blobs.restore_range(baseline, start, end)?;
+            // Restoring the segmentation discards blob ids, so any guide mapping onto one that
+            // no longer exists goes with it rather than being left pointing at nothing.
+            state
+                .mappings
+                .retain(|mapping| state.blobs.get(mapping.blob).is_some());
         }
         EditOp::SetBypass { blob, bypassed } => {
             blob_mut(state, *blob)?.bypassed = *bypassed;
@@ -1326,6 +1362,124 @@ mod tests {
         .unwrap();
         let times: Vec<f64> = anchors_of(&s, 1).iter().map(|a| a.time).collect();
         assert_eq!(times, vec![0.1, 0.9]);
+    }
+
+    #[test]
+    fn reset_range_restores_the_analysed_segmentation() {
+        let baseline = state().blobs;
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SplitBlob {
+                blob: BlobId(1),
+                time: 0.5,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetPitchOffset {
+                blob: BlobId(2),
+                semitones: 4.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blobs.len(), 3);
+
+        apply_with_baseline(
+            &mut s,
+            None,
+            Some(&baseline),
+            &EditOp::ResetRange {
+                start: 0.0,
+                end: 2.0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(s.blobs.len(), 2, "the split is undone");
+        let spans: Vec<(f64, f64)> = s.blobs.blobs().iter().map(|b| (b.start, b.end)).collect();
+        assert_eq!(spans, vec![(0.0, 1.0), (1.0, 2.0)]);
+        assert_eq!(s.blobs.get(BlobId(2)).unwrap().pitch_offset, 0.0);
+    }
+
+    #[test]
+    fn reset_range_leaves_blobs_outside_the_span_alone() {
+        let baseline = state().blobs;
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SplitBlob {
+                blob: BlobId(1),
+                time: 0.5,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetPitchOffset {
+                blob: BlobId(2),
+                semitones: 4.0,
+            },
+        )
+        .unwrap();
+
+        apply_with_baseline(
+            &mut s,
+            None,
+            Some(&baseline),
+            &EditOp::ResetRange {
+                start: 0.0,
+                end: 0.8,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            s.blobs.len(),
+            2,
+            "the split halves collapse back into one blob"
+        );
+        assert_eq!(
+            s.blobs.get(BlobId(2)).unwrap().pitch_offset,
+            4.0,
+            "a blob the span never reached keeps its edit"
+        );
+    }
+
+    #[test]
+    fn reset_range_without_a_baseline_is_refused() {
+        let mut s = state();
+        let err = apply(
+            &mut s,
+            None,
+            &EditOp::ResetRange {
+                start: 0.0,
+                end: 1.0,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AxysError::Invalid(_)));
+    }
+
+    #[test]
+    fn reset_range_rejects_an_empty_span() {
+        let baseline = state().blobs;
+        let mut s = state();
+        assert!(apply_with_baseline(
+            &mut s,
+            None,
+            Some(&baseline),
+            &EditOp::ResetRange {
+                start: 1.0,
+                end: 1.0
+            },
+        )
+        .is_err());
     }
 
     #[test]

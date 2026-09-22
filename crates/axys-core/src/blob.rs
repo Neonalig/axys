@@ -281,6 +281,32 @@ impl BlobSet {
         self.blobs.iter().find(|b| b.contains(time))
     }
 
+    /// Replaces every blob overlapping a source span with the analysed blobs from `original`.
+    ///
+    /// Blobs are matched on the span they were analysed from rather than on where editing has
+    /// since moved them, so material dragged out of the span is still restored with it. A blob
+    /// the span only partly covers is restored whole, because a segmentation cannot be half
+    /// undone: the span decides which blobs are reset, not how much of each one.
+    pub fn restore_range(&mut self, original: &BlobSet, start: f64, end: f64) -> Result<()> {
+        if !start.is_finite() || !end.is_finite() || end <= start {
+            return Err(AxysError::Invalid(format!(
+                "reset range {start}..{end} is not a positive span"
+            )));
+        }
+        self.blobs
+            .retain(|blob| !spans_overlap(blob.start, blob.end, start, end));
+        for blob in original.blobs() {
+            if spans_overlap(blob.start, blob.end, start, end) {
+                self.blobs.push(blob.clone());
+            }
+        }
+        self.blobs.sort_by(|a, b| a.start.total_cmp(&b.start));
+        for blob in &self.blobs {
+            self.next_id = self.next_id.max(blob.id.0.saturating_add(1));
+        }
+        Ok(())
+    }
+
     /// Adds a blob, keeping start order; errors when it overlaps an existing blob.
     ///
     /// A clashing id is replaced with a fresh one, and the id actually stored is returned.
@@ -670,6 +696,11 @@ fn slice_curve(curve: &PitchCurve, start: f64, end: f64) -> Result<PitchCurve> {
         }
     }
     PitchCurve::from_anchors(kept)
+}
+
+/// Whether two half-open spans share any time.
+fn spans_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64) -> bool {
+    a_end > b_start && a_start < b_end
 }
 
 #[cfg(test)]

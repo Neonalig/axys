@@ -196,8 +196,8 @@ export class EditorRenderer {
     }
     ctx.save();
     switch (preview.kind) {
-      case 'rubberBand':
-        drawRubberBand(ctx, theme, preview.x0, preview.y0, preview.x1, preview.y1);
+      case 'spanSelect':
+        drawSpanSelect(ctx, viewport, theme, preview.x0, preview.x1);
         break;
       case 'pitchDrag':
         for (const blob of blobsOf(state, preview.blobs)) {
@@ -344,29 +344,32 @@ function curveAnchorPoint(
   };
 }
 
-function drawRubberBand(
+/**
+ * Draws a selection drag in progress.
+ *
+ * @remarks The same dotted full-height region the committed selection is drawn as, so the drag
+ * shows what the release will produce rather than a rectangle that becomes something else.
+ */
+function drawSpanSelect(
   ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
   theme: Theme,
   x0: number,
-  y0: number,
   x1: number,
-  y1: number,
 ): void {
   const left = Math.min(x0, x1);
-  const top = Math.min(y0, y1);
-  const width = Math.abs(x1 - x0);
-  const height = Math.abs(y1 - y0);
+  const width = Math.max(1, Math.abs(x1 - x0));
   ctx.fillStyle = theme.selectionFill;
-  ctx.fillRect(left, top, width, height);
+  ctx.fillRect(left, viewport.plotTop, width, viewport.plotHeight);
   ctx.strokeStyle = theme.selection;
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 3]);
-  ctx.strokeRect(
-    Math.round(left) + 0.5,
-    Math.round(top) + 0.5,
-    Math.round(width),
-    Math.round(height),
-  );
+  ctx.beginPath();
+  ctx.moveTo(Math.round(left) + 0.5, viewport.plotTop);
+  ctx.lineTo(Math.round(left) + 0.5, viewport.height);
+  ctx.moveTo(Math.round(left + width) + 0.5, viewport.plotTop);
+  ctx.lineTo(Math.round(left + width) + 0.5, viewport.height);
+  ctx.stroke();
   ctx.setLineDash([]);
 }
 

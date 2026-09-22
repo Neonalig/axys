@@ -379,6 +379,7 @@ export type EditOp =
   | { type: 'smoothSpan'; blob: BlobId; start: number; end: number; amount: number }
   | { type: 'resetSpan'; blob: BlobId; start: number; end: number }
   | { type: 'resetBlob'; blob: BlobId }
+  | { type: 'resetRange'; start: number; end: number }
   | { type: 'setBypass'; blob: BlobId; bypassed: boolean }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setScale'; scale: ScaleSettings }

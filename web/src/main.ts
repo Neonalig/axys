@@ -14,6 +14,7 @@ import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { bindShortcuts } from './app/shortcuts.js';
 import { loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
+import { selectionForRange } from './app/selection.js';
 import { AppStore, initialState } from './app/store.js';
 import type { CompareMode, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile } from './audio/decode.js';
@@ -551,10 +552,14 @@ class AxysWorkspace implements Workspace {
       const plan = session.plan();
       this.#plan = plan;
       this.#audio.setPlan(plan);
+      const blobs = session.blobs();
       this.#store.update({
-        blobs: session.blobs(),
+        blobs,
         conflicts: session.conflicts(),
         edits: session.state(),
+        // An edit can split, join or replace blobs, so what the selected span amounts to is
+        // worked out again rather than left naming blobs the edit may have just removed.
+        selection: selectionForRange(blobs, this.#store.state.selection.range),
         dirty: true,
       });
     } catch (error) {
@@ -575,12 +580,20 @@ class AxysWorkspace implements Workspace {
     this.#store.update({ analysis: { running: false, progress: 1, stage: '' } });
   }
 
+  /**
+   * Reports a failed operation.
+   *
+   * @remarks The toast carries the detail. With a project still open the phase stays `ready` and
+   * no message is kept, because a status line pinned to one past failure goes on contradicting
+   * the editor long after the thing it described stopped being true.
+   */
   #fail(operation: string, error: unknown): void {
     const message = describe(error);
     this.#toast.error(`${operation} failed: ${message}`);
+    const open = this.#session !== null;
     this.#store.update({
-      phase: this.#session ? 'ready' : 'error',
-      message,
+      phase: open ? 'ready' : 'error',
+      message: open ? null : message,
       analysis: { running: false, progress: 0, stage: '' },
     });
   }

@@ -388,7 +388,7 @@ export function rampAnchors(from: GesturePoint, to: GesturePoint, curved: boolea
 
 /** A gesture in progress, drawn over the committed state until it is released. */
 export type EditorPreview =
-  | { kind: 'rubberBand'; x0: number; y0: number; x1: number; y1: number }
+  | { kind: 'spanSelect'; x0: number; x1: number }
   | { kind: 'pitchDrag'; blobs: readonly BlobId[]; semitones: number; label: string }
   | { kind: 'timeDrag'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }

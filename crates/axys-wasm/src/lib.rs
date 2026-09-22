@@ -19,7 +19,7 @@ use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
 use axys_core::dsp::formant::FormantMode;
-use axys_core::edit::{apply, EditOp, History};
+use axys_core::edit::{apply_with_baseline, EditOp, History};
 use axys_core::midi::{measure_drift, parse_smf, propose_mappings, MidiFile};
 use axys_core::project::{AnalysisInfo, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION};
 use axys_core::render::{Quality, Renderer};
@@ -480,7 +480,13 @@ impl Session {
     #[wasm_bindgen(js_name = applyEdit)]
     pub fn apply_edit(&mut self, op_json: &str) -> Result<(), JsValue> {
         let op: EditOp = parse(op_json)?;
-        apply(&mut self.state, Some(&self.track), &op).map_err(to_js)?;
+        apply_with_baseline(
+            &mut self.state,
+            Some(&self.track),
+            self.base_blobs.as_ref(),
+            &op,
+        )
+        .map_err(to_js)?;
         self.history.push(op);
         self.recompile()
     }
@@ -499,7 +505,13 @@ impl Session {
         let Some(op) = self.history.redo() else {
             return Ok(false);
         };
-        apply(&mut self.state, Some(&self.track), &op).map_err(to_js)?;
+        apply_with_baseline(
+            &mut self.state,
+            Some(&self.track),
+            self.base_blobs.as_ref(),
+            &op,
+        )
+        .map_err(to_js)?;
         self.recompile()?;
         Ok(true)
     }
@@ -539,7 +551,13 @@ impl Session {
             global_bypass: false,
         };
         for op in &ops {
-            apply(&mut self.state, Some(&self.track), op).map_err(to_js)?;
+            apply_with_baseline(
+                &mut self.state,
+                Some(&self.track),
+                self.base_blobs.as_ref(),
+                op,
+            )
+            .map_err(to_js)?;
         }
         self.recompile()
     }
@@ -620,7 +638,13 @@ impl Session {
             &self.state.mappings,
         );
         let op = EditOp::SetMappings { mappings };
-        apply(&mut self.state, Some(&self.track), &op).map_err(to_js)?;
+        apply_with_baseline(
+            &mut self.state,
+            Some(&self.track),
+            self.base_blobs.as_ref(),
+            &op,
+        )
+        .map_err(to_js)?;
         self.history.push(op);
         self.recompile()?;
         dump(&report)

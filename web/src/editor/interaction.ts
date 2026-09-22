@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { selectionForRange } from '../app/selection.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, ViewState } from '../core/types.js';
 import { MIN_BLOB_SECONDS } from '../core/types.js';
@@ -856,15 +857,7 @@ export class EditorController {
   #previewOf(gesture: Gesture): EditorPreview | null {
     switch (gesture.kind) {
       case 'rubberBand':
-        return this.#moved
-          ? {
-              kind: 'rubberBand',
-              x0: this.#origin.x,
-              y0: this.#origin.y,
-              x1: this.#current.x,
-              y1: this.#current.y,
-            }
-          : null;
+        return this.#moved ? { kind: 'spanSelect', x0: this.#origin.x, x1: this.#current.x } : null;
       case 'pitch':
         return {
           kind: 'pitchDrag',
@@ -1068,59 +1061,51 @@ export class EditorController {
     this.render();
   }
 
+  /**
+   * Selects everything a dragged span covers.
+   *
+   * @remarks A selection is a span of time, never a rectangle. Pitch is ignored deliberately: a
+   * blob is selected when the span reaches it at all, so what is selected is what the shaded
+   * region on screen says is selected, and a drag along one pitch does not miss the blob above
+   * it. Operations that care how much of a blob was covered read the span itself.
+   */
   #commitBand(additive: boolean): void {
-    const state = this.#store.state;
     const viewport = this.viewport;
-    const left = Math.min(this.#origin.x, this.#current.x);
-    const right = Math.max(this.#origin.x, this.#current.x);
-    const top = Math.min(this.#origin.y, this.#current.y);
-    const bottom = Math.max(this.#origin.y, this.#current.y);
-    const start = viewport.xToTime(left);
-    const end = viewport.xToTime(right);
-    const high = viewport.yToMidi(top);
-    const low = viewport.yToMidi(bottom);
-
-    const blobs: BlobId[] = [];
-    const anchors: { blob: number; index: number }[] = [];
-    for (const blob of state.blobs) {
-      const extent = blobPitchExtent(blob, state.track);
-      const overlaps =
-        blobOutputEnd(blob) >= start &&
-        blobOutputStart(blob) <= end &&
-        extent.high >= low &&
-        extent.low <= high;
-      if (overlaps) {
-        blobs.push(blob.id);
-      }
-      for (let index = 0; index < blob.curve.anchors.length; index += 1) {
-        const anchor = blob.curve.anchors[index];
-        if (anchor === undefined) {
-          continue;
-        }
-        const at = sourceToOutput(blob, anchor.time);
-        if (at >= start && at <= end && anchor.midi >= low && anchor.midi <= high) {
-          anchors.push({ blob: blob.id, index });
-        }
-      }
-    }
-    const previous = this.#store.state.selection;
-    this.#setSelection({
-      blobs: additive ? [...new Set([...previous.blobs, ...blobs])] : blobs,
-      anchors: additive ? [...previous.anchors, ...anchors] : anchors,
-      range: { start, end },
-    });
-    this.#announce(`${blobs.length} selected`);
+    const left = viewport.xToTime(Math.min(this.#origin.x, this.#current.x));
+    const right = viewport.xToTime(Math.max(this.#origin.x, this.#current.x));
+    const previous = additive ? this.#store.state.selection.range : null;
+    this.#selectSpan(
+      Math.min(left, previous?.start ?? left),
+      Math.max(right, previous?.end ?? right),
+    );
   }
 
+  /** Replaces the selection with the blobs and anchors a span of output time covers. */
+  #selectSpan(start: number, end: number): void {
+    const selection = selectionForRange(this.#store.state.blobs, { start, end });
+    this.#setSelection(selection);
+    this.#announce(`${String(selection.blobs.length)} selected`);
+  }
+
+  /**
+   * Selects what a click landed on.
+   *
+   * @remarks Clicking a blob selects the span that blob occupies, so a click and a drag produce
+   * the same kind of selection. Open canvas clears the selection and places the playhead.
+   */
   #commitClick(additive: boolean): void {
     const hit = this.hitTest(this.#current.x, this.#current.y);
     const previous = this.#store.state.selection;
     if (hit.kind === 'anchor' && hit.blob !== null && hit.anchor !== null) {
       const entry = { blob: hit.blob, index: hit.anchor };
+      const owner = this.#blob(hit.blob);
       this.#setSelection({
-        blobs: additive ? previous.blobs : [],
+        blobs: owner === undefined ? previous.blobs : [owner.id],
         anchors: additive ? [...previous.anchors, entry] : [entry],
-        range: previous.range,
+        range:
+          owner === undefined
+            ? previous.range
+            : { start: blobOutputStart(owner), end: blobOutputEnd(owner) },
       });
       return;
     }
@@ -1129,13 +1114,14 @@ export class EditorController {
       this.#scrubTo(hit.time);
       return;
     }
-    const id = hit.blob;
-    const blobs = additive
-      ? previous.blobs.includes(id)
-        ? previous.blobs.filter((value) => value !== id)
-        : [...previous.blobs, id]
-      : [id];
-    this.#setSelection({ blobs, anchors: additive ? previous.anchors : [], range: previous.range });
+    const blob = this.#blob(hit.blob);
+    if (blob === undefined) {
+      return;
+    }
+    const start = blobOutputStart(blob);
+    const end = blobOutputEnd(blob);
+    const range = additive ? previous.range : null;
+    this.#selectSpan(Math.min(start, range?.start ?? start), Math.max(end, range?.end ?? end));
   }
 
   #dragSet(id: BlobId): BlobId[] {

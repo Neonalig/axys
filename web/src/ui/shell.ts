@@ -141,8 +141,7 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Redo: 'redo',
   'Split Blob': 'split',
   'Join Blobs': 'join',
-  'Reset Blob': 'undo',
-  'Reset Span': 'undo',
+  Reset: 'undo',
   'Smooth Span': 'smooth',
   'Bypass Blob': 'bypass',
   'Exclude Blob': 'exclude',
@@ -178,7 +177,16 @@ function group(label: string): HTMLElement {
   return element;
 }
 
-function statusItem(parent: HTMLElement, label: string): HTMLElement {
+/**
+ * One labelled readout in the status bar.
+ *
+ * @remarks Returns the wrapper as well as the value, so a readout with nothing to report can be
+ * hidden outright rather than left saying nothing at some width.
+ */
+function statusItem(
+  parent: HTMLElement,
+  label: string,
+): { wrapper: HTMLElement; value: HTMLElement } {
   const wrapper = document.createElement('span');
   const name = document.createElement('span');
   name.className = 'axys-readout-label';
@@ -188,7 +196,27 @@ function statusItem(parent: HTMLElement, label: string): HTMLElement {
   value.textContent = '--';
   wrapper.append(name, value);
   parent.append(wrapper);
-  return value;
+  return { wrapper, value };
+}
+
+/**
+ * What the status bar says is selected.
+ *
+ * @remarks A selection is a span, so the span is what it reports. "None" while a span is drawn
+ * would be a lie, and a blob count alone never says where.
+ */
+function describeSelection(state: AppState): string {
+  const range = state.selection.range;
+  if (range === null) {
+    return 'None';
+  }
+  const start = formatClock(Math.min(range.start, range.end));
+  const end = formatClock(Math.max(range.start, range.end));
+  const count = state.selection.blobs.length;
+  if (count === 0) {
+    return `${start} to ${end}`;
+  }
+  return `${start} to ${end} (${String(count)} ${count === 1 ? 'blob' : 'blobs'})`;
 }
 
 function formatClock(seconds: number): string {
@@ -217,11 +245,11 @@ export class AppShell {
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
   readonly #compare: HTMLSelectElement;
 
-  readonly #statusPhase: HTMLElement;
+  readonly #statusPhase: { wrapper: HTMLElement; value: HTMLElement };
   readonly #statusPosition: HTMLElement;
   readonly #statusSelection: HTMLElement;
-  readonly #statusConflicts: HTMLElement;
-  readonly #statusPlayback: HTMLElement;
+  readonly #statusConflicts: { wrapper: HTMLElement; value: HTMLElement };
+  readonly #statusPlayback: { wrapper: HTMLElement; value: HTMLElement };
   readonly #progress: HTMLProgressElement;
   readonly #timeBar: Scrollbar;
   readonly #pitchBar: Scrollbar;
@@ -364,8 +392,8 @@ export class AppShell {
     const footer = document.createElement('footer');
     footer.className = 'axys-status';
     this.#statusPhase = statusItem(footer, 'State');
-    this.#statusPosition = statusItem(footer, 'Position');
-    this.#statusSelection = statusItem(footer, 'Selection');
+    this.#statusPosition = statusItem(footer, 'Position').value;
+    this.#statusSelection = statusItem(footer, 'Selection').value;
     this.#statusConflicts = statusItem(footer, 'Conflicts');
     this.#statusPlayback = statusItem(footer, 'Playback');
 
@@ -429,8 +457,9 @@ export class AppShell {
   setEngineReport(report: EngineReport): void {
     noteEngineReport(report);
     const failed = report.status === 'failed';
-    this.#statusPlayback.textContent = failed ? (report.message ?? 'Failed') : '--';
-    this.#statusPlayback.classList.toggle('axys-error', failed);
+    this.#statusPlayback.wrapper.hidden = !failed;
+    this.#statusPlayback.value.textContent = report.message ?? 'Failed';
+    this.#statusPlayback.value.classList.toggle('axys-error', failed);
   }
 
   /** Announces a selection change or an edit result through the off-screen live region. */
@@ -469,13 +498,19 @@ export class AppShell {
     }
     this.#compare.disabled = state.phase !== 'ready';
 
-    this.#statusPhase.textContent = state.message ?? state.phase;
-    this.#statusPhase.classList.toggle('axys-error', state.phase === 'error');
+    // A readout earns its place only while it has something to say. A working editor reporting
+    // "ready", "0 conflicts" and "nothing selected" is a row of noise to read past.
+    const working = state.phase === 'ready';
+    this.#statusPhase.wrapper.hidden = working;
+    this.#statusPhase.value.textContent = state.message ?? state.phase;
+    this.#statusPhase.value.classList.toggle('axys-error', state.phase === 'error');
+
     this.#statusPosition.textContent = formatClock(state.transport.position);
-    this.#statusSelection.textContent =
-      state.selection.blobs.length === 0 ? 'None' : `${String(state.selection.blobs.length)} blobs`;
-    this.#statusConflicts.textContent = String(state.conflicts.length);
-    this.#statusConflicts.classList.toggle('axys-warning', state.conflicts.length > 0);
+    this.#statusSelection.textContent = describeSelection(state);
+
+    this.#statusConflicts.wrapper.hidden = state.conflicts.length === 0;
+    this.#statusConflicts.value.textContent = String(state.conflicts.length);
+    this.#statusConflicts.value.classList.add('axys-warning');
 
     this.#progress.hidden = !state.analysis.running;
     this.#progress.value = state.analysis.progress;

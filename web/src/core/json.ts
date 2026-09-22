@@ -534,6 +534,7 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
     isNumber(op.blob) && isNumber(op.start) && isNumber(op.end) && isNumber(op.amount),
   resetSpan: (op) => isNumber(op.blob) && isNumber(op.start) && isNumber(op.end),
   resetBlob: (op) => isNumber(op.blob),
+  resetRange: (op) => isNumber(op.start) && isNumber(op.end),
   setBypass: (op) => isNumber(op.blob) && isBoolean(op.bypassed),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
   setScale: (op) => isScaleSettings(op.scale),

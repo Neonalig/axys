@@ -821,6 +821,7 @@ pub enum EditOp {
     SmoothSpan { blob: BlobId, start: f64, end: f64, amount: f64 },
     ResetSpan { blob: BlobId, start: f64, end: f64 },
     ResetBlob { blob: BlobId },
+    ResetRange { start: f64, end: f64 },
     SetBypass { blob: BlobId, bypassed: bool },
     SetExcluded { blob: BlobId, excluded: bool },
     SetScale { scale: ScaleSettings },
