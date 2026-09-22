@@ -6,15 +6,15 @@
 
 ## 1. Settled choices
 
-| Choice | Decision | Licence | AGPL compatible |
-| --- | --- | --- | --- |
-| Icon set | Lucide, `viewBox="0 0 24 24"`, stroke 2, rendered at 20 and 16 | ISC | Yes |
-| Music glyphs | Bravura, SMuFL, subset to 16.4 KB | OFL 1.1 | Yes |
-| UI typeface | Atkinson Hyperlegible Next, variable, Latin, upright only | OFL 1.1 | Yes |
-| Readout typeface | Atkinson Hyperlegible Mono, variable, Latin | OFL 1.1 | Yes |
-| Accent identity | Cerulean, OKLCH hue 248, `#34a4ff` dark and `#006cb5` light | n/a | n/a |
-| Window material | In-app translucency, not system Mica | n/a | n/a |
-| String standard | GNOME HIG writing style and tooltips | n/a | n/a |
+| Choice           | Decision                                                       | Licence | AGPL compatible |
+| ---------------- | -------------------------------------------------------------- | ------- | --------------- |
+| Icon set         | Lucide, `viewBox="0 0 24 24"`, stroke 2, rendered at 20 and 16 | ISC     | Yes             |
+| Music glyphs     | Bravura, SMuFL, subset to 16.4 KB                              | OFL 1.1 | Yes             |
+| UI typeface      | Atkinson Hyperlegible Next, variable, Latin, upright only      | OFL 1.1 | Yes             |
+| Readout typeface | Atkinson Hyperlegible Mono, variable, Latin                    | OFL 1.1 | Yes             |
+| Accent identity  | Cerulean, OKLCH hue 248, `#34a4ff` dark and `#006cb5` light    | n/a     | n/a             |
+| Window material  | In-app translucency, not system Mica                           | n/a     | n/a             |
+| String standard  | GNOME HIG writing style and tooltips                           | n/a     | n/a             |
 
 Bravura reserves the name "Bravura" and derivatives must stay OFL. Atkinson reserves "ATKINSON" and "HYPERLEGIBLE". Neither restricts embedding or subsetting. Add all three to `THIRD_PARTY_LICENSES.md` as they land.
 
@@ -32,11 +32,11 @@ Each scale below replaces one or two values plus a scatter of inline literals.
 
 **Elevation**, three levels drawn from the existing `shadow` token:
 
-| Token | Shadow | Used by |
-| --- | --- | --- |
-| `--axys-elevation-1` | `0 1px 2px` | Raised controls, inspector rail, mixer bar |
-| `--axys-elevation-2` | `0 4px 12px` | Menus, dropdowns, tooltips |
-| `--axys-elevation-3` | `0 12px 32px` | Dialogs, toasts, the backdrop layer |
+| Token                | Shadow        | Used by                                    |
+| -------------------- | ------------- | ------------------------------------------ |
+| `--axys-elevation-1` | `0 1px 2px`   | Raised controls, inspector rail, mixer bar |
+| `--axys-elevation-2` | `0 4px 12px`  | Menus, dropdowns, tooltips                 |
+| `--axys-elevation-3` | `0 12px 32px` | Dialogs, toasts, the backdrop layer        |
 
 **Weight**, currently absent:
 
@@ -58,18 +58,18 @@ Animations are wanted. `prefers-reduced-motion` is already handled, so all of th
 
 `--axys-ease-standard: cubic-bezier(0.2, 0, 0, 1)`, `--axys-ease-enter: cubic-bezier(0, 0, 0, 1)`, `--axys-ease-exit: cubic-bezier(0.3, 0, 1, 1)`
 
-| Animation | Duration | Easing |
-| --- | --- | --- |
-| Tooltip fade | fast | standard |
-| Menu and dropdown enter | fast | enter |
-| Menu and dropdown exit | fast | exit |
-| Toast enter | base | enter |
-| Toast exit | fast | exit |
-| Dialog and backdrop enter | base | enter |
-| Inspector and mixer fold | base | standard |
-| Toolbar label toggle | base | standard |
-| Theme and accent change | slow | standard |
-| State icon swap | fast | standard |
+| Animation                 | Duration | Easing   |
+| ------------------------- | -------- | -------- |
+| Tooltip fade              | fast     | standard |
+| Menu and dropdown enter   | fast     | enter    |
+| Menu and dropdown exit    | fast     | exit     |
+| Toast enter               | base     | enter    |
+| Toast exit                | fast     | exit     |
+| Dialog and backdrop enter | base     | enter    |
+| Inspector and mixer fold  | base     | standard |
+| Toolbar label toggle      | base     | standard |
+| Theme and accent change   | slow     | standard |
+| State icon swap           | fast     | standard |
 
 - [ ] Add the duration and easing tokens, retire `--axys-motion`.
 - [ ] Apply the table above.
@@ -79,12 +79,12 @@ Animations are wanted. `prefers-reduced-motion` is already handled, so all of th
 
 Variable wins on size as well as range. Latin upright, measured from Fontsource 5.3.0:
 
-| File | Size |
-| --- | --- |
-| Sans variable, whole weight axis | 34.0 KB |
-| Sans static, one weight | 12.1 KB |
+| File                                   | Size    |
+| -------------------------------------- | ------- |
+| Sans variable, whole weight axis       | 34.0 KB |
+| Sans static, one weight                | 12.1 KB |
 | Sans static, the three weights we need | 37.5 KB |
-| Mono variable, whole weight axis | 17.8 KB |
+| Mono variable, whole weight axis       | 17.8 KB |
 
 - [ ] Ship the two variable Latin woff2 files, 51.8 KB total. No italics, no `latin-ext` until localisation lands.
 - [ ] `--axys-font` becomes Atkinson Hyperlegible Next, `--axys-font-mono` becomes Atkinson Hyperlegible Mono, `system-ui` and `ui-monospace` stay as fallbacks.
@@ -103,13 +103,13 @@ Lucide's own rule is stroke width equal to size over twelve, and it sanctions 16
 - [ ] `scripts/build-icons.mjs` generates `ui/icons.ts` in its current shape from a checked-in name map, so there is no runtime icon dependency and `currentColor` keeps working. Do not ship `lucide-static`; it unpacks to roughly 50MB.
 - [ ] Settle the five ambiguous names now, map the rest one to one at migration:
 
-| Current | Lucide |
-| --- | --- |
-| `properties` | `wrench` |
-| `settings` | `settings` |
-| Inspector toggle | `sliders-horizontal` |
-| `sidebar` | `panel-right-open` and `panel-right-close` |
-| `exclude` | `circle-minus` |
+| Current          | Lucide                                     |
+| ---------------- | ------------------------------------------ |
+| `properties`     | `wrench`                                   |
+| `settings`       | `settings`                                 |
+| Inspector toggle | `sliders-horizontal`                       |
+| `sidebar`        | `panel-right-open` and `panel-right-close` |
+| `exclude`        | `circle-minus`                             |
 
 `circle-slash` reads as blocked. `circle-minus` reads as removed from the set, which is what excluding from analysis means.
 
@@ -117,18 +117,18 @@ Lucide's own rule is stroke width equal to size over twelve, and it sanctions 16
 
 Lucide ships open and closed, on and off pairs, and a toggle should swap the glyph rather than only dim one. `IconName` becomes a pair for these, and the control picks by state.
 
-| Control | On, or open | Off, or closed |
-| --- | --- | --- |
-| Inspector fold | `panel-right-open` | `panel-right-close` |
-| Mixer fold | `panel-bottom-open` | `panel-bottom-close` |
-| Transport | `pause` | `play` |
-| Loop | `repeat` | `repeat-off` |
-| Loop one range | `repeat-1` | `repeat-off` |
-| Follow playhead | `locate-fixed` | `locate-off` |
-| Channel mute | `volume-2` | `volume-x` |
-| Monitoring | `mic` | `mic-off` |
-| Blob excluded | `eye` | `eye-off` |
-| Diagnostics | `bug` | `bug-off` |
+| Control         | On, or open         | Off, or closed       |
+| --------------- | ------------------- | -------------------- |
+| Inspector fold  | `panel-right-open`  | `panel-right-close`  |
+| Mixer fold      | `panel-bottom-open` | `panel-bottom-close` |
+| Transport       | `pause`             | `play`               |
+| Loop            | `repeat`            | `repeat-off`         |
+| Loop one range  | `repeat-1`          | `repeat-off`         |
+| Follow playhead | `locate-fixed`      | `locate-off`         |
+| Channel mute    | `volume-2`          | `volume-x`           |
+| Monitoring      | `mic`               | `mic-off`            |
+| Blob excluded   | `eye`               | `eye-off`            |
+| Diagnostics     | `bug`               | `bug-off`            |
 
 - [ ] Widen `ICONS` to carry state pairs and have the toggles swap on state.
 - [ ] Where Lucide ships no off variant, and `metronome` and `magnet` are the two that matter here, keep the single glyph and carry the state on the control's pressed styling. Never hand-draw a slashed variant; a bespoke off glyph beside real Lucide pairs is immediately visible.
@@ -138,12 +138,12 @@ Lucide ships open and closed, on and off pairs, and a toggle should swap the gly
 
 SMuFL places glyphs in the private use area, so the subset is specified by codepoint like any other font. Measured against the real `Bravura.otf`:
 
-| Subset | woff2 |
-| --- | --- |
-| Accidentals alone | 4.7 KB |
-| The set below | 16.4 KB |
-| Full Bravura | 316 KB |
-| Full BravuraText | 447 KB |
+| Subset            | woff2   |
+| ----------------- | ------- |
+| Accidentals alone | 4.7 KB  |
+| The set below     | 16.4 KB |
+| Full Bravura      | 316 KB  |
+| Full BravuraText  | 447 KB  |
 
 Locked codepoints:
 
@@ -174,15 +174,15 @@ The current `#4cc2ff` is not a designed colour and is retired. The palette below
 
 Derivation rule: an accent supplies a hue and a chroma multiplier. Lightness and the chroma ceiling are fixed per role, so every accent lands on the same contrast relationships.
 
-| Role | Dark | Light |
-| --- | --- | --- |
-| `accent` | L 0.70 at the gamut ceiling | L 0.52 at the gamut ceiling |
-| `focus` | L 0.80, chroma x 0.75 | as `accent` |
-| `selection` | as `accent` | as `accent` |
-| `selectionFill` | `accent` at 20% alpha | `accent` at 15% alpha |
-| `blobFill` | L 0.45 at 35% alpha | `accent` at 14% alpha |
-| `blobBounds` | L 0.82, chroma x 0.50 | L 0.45, chroma x 0.70 |
-| `accentText` | black | white |
+| Role            | Dark                        | Light                       |
+| --------------- | --------------------------- | --------------------------- |
+| `accent`        | L 0.70 at the gamut ceiling | L 0.52 at the gamut ceiling |
+| `focus`         | L 0.80, chroma x 0.75       | as `accent`                 |
+| `selection`     | as `accent`                 | as `accent`                 |
+| `selectionFill` | `accent` at 20% alpha       | `accent` at 15% alpha       |
+| `blobFill`      | L 0.45 at 35% alpha         | `accent` at 14% alpha       |
+| `blobBounds`    | L 0.82, chroma x 0.50       | L 0.45, chroma x 0.70       |
+| `accentText`    | black                       | white                       |
 
 `accentText` resolves the same way for all eight, so it is a constant per theme rather than a computed value.
 
@@ -190,16 +190,16 @@ Derivation rule: an accent supplies a hue and a chroma multiplier. Lightness and
 
 Every hue sits at least 25 degrees from each semantic layer hue, which are `pitchTarget` 86, `pitchDetected` 163, `midiNote` 300 and `playhead` 347. That leaves three usable arcs, 12 to 61, 111 to 138, and 188 to 275, which is why the set leans blue and green rather than spreading evenly round the wheel. Blue leads because the name plays on both axis and axolotl.
 
-| Name | Hue | Chroma | Dark | Contrast on sunken | Light | Contrast on surface |
-| --- | --- | --- | --- | --- | --- | --- |
-| Cerulean, default | 248 | 1.00 | `#34a4ff` | 7.32 | `#006cb5` | 5.51 |
-| Lagoon | 212 | 1.00 | `#00b2ca` | 7.62 | `#007687` | 5.33 |
-| Sea Glass | 190 | 1.00 | `#00b6af` | 7.70 | `#007974` | 5.27 |
-| Abyssal | 270 | 1.00 | `#7997ff` | 7.12 | `#3843ff` | 6.15 |
-| Kelp | 130 | 1.00 | `#76b400` | 7.69 | `#4d7800` | 5.25 |
-| Coral | 22 | 1.00 | `#ff6266` | 6.66 | `#c5002b` | 6.16 |
-| Ember | 48 | 1.00 | `#f97000` | 6.81 | `#a74900` | 5.84 |
-| Slate | 248 | 0.35 | `#82a2c1` | 7.31 | `#536c84` | 5.46 |
+| Name              | Hue | Chroma | Dark      | Contrast on sunken | Light     | Contrast on surface |
+| ----------------- | --- | ------ | --------- | ------------------ | --------- | ------------------- |
+| Cerulean, default | 248 | 1.00   | `#34a4ff` | 7.32               | `#006cb5` | 5.51                |
+| Lagoon            | 212 | 1.00   | `#00b2ca` | 7.62               | `#007687` | 5.33                |
+| Sea Glass         | 190 | 1.00   | `#00b6af` | 7.70               | `#007974` | 5.27                |
+| Abyssal           | 270 | 1.00   | `#7997ff` | 7.12               | `#3843ff` | 6.15                |
+| Kelp              | 130 | 1.00   | `#76b400` | 7.69               | `#4d7800` | 5.25                |
+| Coral             | 22  | 1.00   | `#ff6266` | 6.66               | `#c5002b` | 6.16                |
+| Ember             | 48  | 1.00   | `#f97000` | 6.81               | `#a74900` | 5.84                |
+| Slate             | 248 | 0.35   | `#82a2c1` | 7.31               | `#536c84` | 5.46                |
 
 Slate is Cerulean at a third of its chroma, so the neutral option costs no hue budget and cannot collide with anything. The hexes above are the computed values; they are the expected output of the derivation, not a hand-maintained table.
 
@@ -245,16 +245,16 @@ Settled treatment: `backdrop-filter: blur(20px) saturate(1.4)` over the surface 
 
 Cursor per tool, all custom cursors 24px with a declared hotspot and a stock fallback:
 
-| Tool | Cursor |
-| --- | --- |
-| Select | `default` |
-| Marquee | `crosshair` |
-| Pen | custom pen, hotspot at the nib, bottom left |
-| Line | `crosshair` |
-| Smooth | custom brush, hotspot centre |
-| Time | `ew-resize` |
-| Number field scrub | `ew-resize` |
-| Boundary drag | `col-resize` |
+| Tool               | Cursor                                      |
+| ------------------ | ------------------------------------------- |
+| Select             | `default`                                   |
+| Marquee            | `crosshair`                                 |
+| Pen                | custom pen, hotspot at the nib, bottom left |
+| Line               | `crosshair`                                 |
+| Smooth             | custom brush, hotspot centre                |
+| Time               | `ew-resize`                                 |
+| Number field scrub | `ew-resize`                                 |
+| Boundary drag      | `col-resize`                                |
 
 - [ ] Add the cursor set.
 - [ ] Name the fine-adjust modifier in the tooltip of every scrubbable number field.

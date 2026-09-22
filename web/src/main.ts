@@ -62,6 +62,7 @@ import type { MenuEntry } from './ui/menu.js';
 import type { IconName } from './ui/icons.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
+import type { AccentName } from './ui/accent.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
 import type { ToastHost } from './ui/toast.js';
@@ -1187,10 +1188,14 @@ function resolvedTheme(choice: ThemeChoice): ThemeName {
  *
  * @remarks Returns a disposer. A fixed choice needs no watcher, so this returns an empty one.
  */
-function watchSystemTheme(choice: ThemeChoice, redraw: () => void): () => void {
+function watchSystemTheme(
+  choice: ThemeChoice,
+  accent: () => AccentName,
+  redraw: () => void,
+): () => void {
   if (choice !== 'system') return () => {};
   return watchPreferredTheme((name) => {
-    applyTheme(name);
+    applyTheme(name, accent());
     redraw();
   });
 }
@@ -1264,9 +1269,17 @@ function buildHooks(
       store.update({ inspectorWidth: width });
     },
     setTheme(choice: ThemeChoice): void {
-      savePreferences({ theme: choice });
-      applyTheme(resolvedTheme(choice));
+      const saved = savePreferences({ theme: choice });
+      applyTheme(resolvedTheme(choice), saved.accent);
       onThemeChoice(choice);
+      // The canvas resolves its colours as it draws, and a theme change alone schedules no
+      // frame, so the chrome would recolour while the editor kept the old palette until the
+      // next unrelated redraw.
+      redraw();
+    },
+    setAccent(accent: AccentName): void {
+      const saved = savePreferences({ accent });
+      applyTheme(resolvedTheme(saved.theme), accent);
       // The canvas resolves its colours as it draws, and a theme change alone schedules no
       // frame, so the chrome would recolour while the editor kept the old palette until the
       // next unrelated redraw.
@@ -1295,7 +1308,7 @@ async function start(): Promise<void> {
   }
 
   const preferences = loadPreferences();
-  applyTheme(resolvedTheme(preferences.theme));
+  applyTheme(resolvedTheme(preferences.theme), preferences.accent);
 
   const store = new AppStore(initialState());
   store.update({
@@ -1328,7 +1341,7 @@ async function start(): Promise<void> {
     redraw,
     (choice) => {
       releaseSystemTheme();
-      releaseSystemTheme = watchSystemTheme(choice, redraw);
+      releaseSystemTheme = watchSystemTheme(choice, () => loadPreferences().accent, redraw);
     },
   );
   const shell = AppShell.mount({
@@ -1336,9 +1349,10 @@ async function start(): Promise<void> {
     commands,
     hooks,
     theme: preferences.theme,
+    accent: preferences.accent,
     toolbarLabels: preferences.toolbarLabels,
   });
-  releaseSystemTheme = watchSystemTheme(preferences.theme, redraw);
+  releaseSystemTheme = watchSystemTheme(preferences.theme, () => loadPreferences().accent, redraw);
   const toast = shell.toasts;
   shell.setCapabilities(caps);
 

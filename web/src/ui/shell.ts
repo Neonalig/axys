@@ -28,7 +28,9 @@ import { Inspector } from './inspector.js';
 import { MixerPanel } from './mixer.js';
 import { showContextMenu } from './menu.js';
 import type { MenuEntry } from './menu.js';
-import { THEME_LABELS, THEME_NAMES } from './theme.js';
+import type { AccentName } from './accent.js';
+import { ACCENT_LABELS, ACCENT_NAMES, DEFAULT_ACCENT, accentTokens } from './accent.js';
+import { THEME_LABELS, THEME_NAMES, currentTheme, isDarkTheme } from './theme.js';
 import { ToastHost } from './toast.js';
 import { ProgressBar } from './progress.js';
 import { Scrollbar } from './scrollbar.js';
@@ -70,6 +72,8 @@ export interface ShellHooks {
   setAccidentals(style: AccidentalStyle): void;
   /** Applies and remembers a colour theme, or defers to the operating system. */
   setTheme(choice: ThemeChoice): void;
+  /** Applies and remembers the accent the chrome takes. */
+  setAccent(accent: AccentName): void;
   /** Shows or hides the names beside the toolbar icons, and remembers the choice. */
   setToolbarLabels(on: boolean): void;
   /** Folds the inspector away to its rail, or opens it again, and remembers the choice. */
@@ -86,6 +90,8 @@ export interface ShellOptions {
   hooks: ShellHooks;
   /** Theme choice shown as selected. Applying it is the caller's job. */
   theme?: ThemeChoice;
+  /** Accent shown as selected. Applying it is the caller's job. */
+  accent?: AccentName;
   /** Whether the toolbar buttons start with their names beside their icons. */
   toolbarLabels?: boolean;
 }
@@ -202,6 +208,51 @@ function themeLabel(choice: ThemeChoice): string {
 /** The theme button's tooltip: what pressing it does, and which theme is on. */
 function themeTip(choice: ThemeChoice): string {
   return `Pick Theme (${choice === 'system' ? 'System' : THEME_LABELS[choice]})`;
+}
+
+/**
+ * The accent swatches, as a radio group inside the theme menu.
+ *
+ * @remarks Each swatch is painted in the accent it selects, on the ground the current theme
+ * paints, so the row shows the choice rather than describing it. High Contrast takes no accent,
+ * so the row is disabled there rather than hidden: a control that comes and goes is harder to
+ * find again than one that says why it cannot be used.
+ */
+function buildAccentRow(shell: AppShell): HTMLElement {
+  const group = document.createElement('div');
+  group.className = 'axys-accent-row';
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', 'Accent Colour');
+
+  const theme = currentTheme();
+  const dark = isDarkTheme(theme);
+  const ignored = theme === 'contrast';
+  if (ignored) {
+    setTooltip(group, 'High Contrast uses its own colours');
+  }
+
+  for (const name of ACCENT_NAMES) {
+    const swatch = document.createElement('button');
+    swatch.type = 'button';
+    swatch.className = 'axys-accent';
+    swatch.setAttribute('role', 'radio');
+    swatch.setAttribute('aria-checked', String(shell.accent === name));
+    swatch.setAttribute('aria-label', ACCENT_LABELS[name]);
+    swatch.disabled = ignored;
+    swatch.style.setProperty('--axys-swatch', accentTokens(name, dark).accent);
+    if (!ignored) {
+      setTooltip(swatch, ACCENT_LABELS[name]);
+    }
+    swatch.addEventListener('click', () => {
+      shell.chooseAccent(name);
+      for (const sibling of group.children) {
+        sibling.setAttribute('aria-checked', String(sibling === swatch));
+      }
+      swatch.style.setProperty('--axys-swatch', accentTokens(name, dark).accent);
+    });
+    group.append(swatch);
+  }
+  return group;
 }
 
 /**
@@ -393,6 +444,7 @@ export class AppShell {
   #resizeGrab = 0;
 
   #themeChoice: ThemeChoice;
+  #accent: AccentName;
 
   readonly #statusPhase: { wrapper: HTMLElement; value: HTMLElement };
   readonly #statusPosition: HTMLElement;
@@ -436,6 +488,7 @@ export class AppShell {
 
     this.#header = header;
     this.#themeChoice = options.theme ?? 'system';
+    this.#accent = options.accent ?? DEFAULT_ACCENT;
     const theme = this.#buildTheme();
     this.#themeButton = theme;
 
@@ -1007,6 +1060,18 @@ export class AppShell {
     this.announce(themeLabel(choice));
   }
 
+  /** The accent currently chosen, for the theme menu. */
+  get accent(): AccentName {
+    return this.#accent;
+  }
+
+  /** Applies and remembers an accent, for the theme menu. */
+  chooseAccent(accent: AccentName): void {
+    this.#accent = accent;
+    this.#hooks.setAccent(accent);
+    this.announce(ACCENT_LABELS[accent]);
+  }
+
   /**
    * The bar between the canvas and the inspector, dragged to set the column width.
    *
@@ -1121,13 +1186,17 @@ export class AppShell {
       this.#openButtonMenu(button, (shell) =>
         // No icon per entry: four copies of the same palette would say nothing, and the mark
         // against the current choice is what the menu is here to show.
-        THEME_CHOICES.map((choice) => ({
-          label: themeLabel(choice),
-          checked: shell.themeChoice === choice,
-          run: () => {
-            shell.chooseTheme(choice);
-          },
-        })),
+        [
+          ...THEME_CHOICES.map((choice) => ({
+            label: themeLabel(choice),
+            checked: shell.themeChoice === choice,
+            run: () => {
+              shell.chooseTheme(choice);
+            },
+          })),
+          { separator: true as const },
+          { render: () => buildAccentRow(shell) },
+        ],
       );
     });
     return button;

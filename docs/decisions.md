@@ -1087,3 +1087,50 @@ in it. The width is written while the column is open and removed when it folds, 
 
 The control carries a sidebar icon rather than an arrow, because what it shows and hides is a panel
 beside a pane, and an arrow that flipped said only which way something was about to move.
+
+## Interface design system
+
+### The accent is a generated ramp, not a picked colour
+
+`#4cc2ff` was picked by eye, and the seven tokens that hang off it, `focus`, `selection`,
+`selectionFill`, `blobFill`, `blobFillSelected`, `blobBounds` and `accentText`, were each nudged
+into place by hand. That is how a set drifts: eight accents times seven tokens times two themes is
+112 values nobody can keep consistent.
+
+`ui/accent.ts` takes a hue and a chroma multiplier per accent and computes the rest. Lightness and
+the chroma ceiling are fixed per role, so every accent lands on the same contrast relationships.
+Lightness is 0.70 in dark and 0.52 in light because blue runs out of gamut early: above 0.77 every
+blue washes out to a maximum chroma near 0.12, while at 0.70 the same hues hold 0.16.
+
+Hex out, not `oklch()` or `color-mix()`. `resolveTheme()` hands token text straight to Canvas 2D,
+and `fillStyle` would take either as unresolved text.
+
+The eight hues each sit at least 25 degrees from `pitchTarget`, `pitchDetected`, `midiNote` and
+`playhead`, which leaves three usable arcs and is why the set leans blue and green. Slate is
+Cerulean at a third of its chroma, so the neutral option costs no hue budget. Cerulean leads
+because the name plays on both axis and axolotl.
+
+High Contrast ignores the accent and keeps `#00e5ff`. Its colours are chosen against a floor the
+ramp does not promise. The swatches are shown disabled there rather than hidden, because a control
+that comes and goes is harder to find again than one that says why it cannot be used.
+
+`web/src/ui/accent.test.ts` asserts 4.5:1 for `accentText` on `accent` and 3:1 for `accent`
+against the surface behind it, over every accent in both themes, so a ninth cannot be added
+without clearing them.
+
+### A ring rather than an outline for focus
+
+`:focus-visible` drew a 2px outline and forced `border-radius` onto every element that could take
+focus, so a pill control got a rounded-rectangle ring. It is now a two-layer `box-shadow`, 1px of
+`bg` inside and 2px of `focus` outside, which follows whatever radius the element already has. The
+global radius override goes away with it.
+
+### Chrome leaves on an animation, so it is removed after one
+
+An element entering can animate from its own rule, because it is in the document for the length of
+the animation. An element leaving cannot: removing it ends the animation before it is seen.
+`ui/motion.ts` plays the exit class, waits on the element's own animations, then removes it, and
+falls straight through under `prefers-reduced-motion`.
+
+Nothing the editor draws per frame goes through it. The playhead, canvas drags, value scrubs and
+zoom are answered on the frame they are asked for; an eased delay on any of those reads as lag.

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { AccentName } from './accent.js';
+import { ACCENT_NAMES, DEFAULT_ACCENT, accentTokens } from './accent.js';
+
 /** Selectable colour scheme. */
 export type ThemeName = 'dark' | 'light' | 'contrast';
 
@@ -216,9 +219,19 @@ export function cssVariable(token: TokenName): string {
   return `--axys-${token.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
 }
 
-/** Authored colours of a theme, before any stylesheet override. */
-export function themeColors(name: ThemeName): Theme {
-  return PALETTES[name];
+/**
+ * Authored colours of a theme with an accent laid over it.
+ *
+ * @remarks High Contrast takes no accent. Its colours are chosen against a contrast floor the
+ * accent ramp does not promise, so letting an accent through would stop the theme meeting its
+ * own promise.
+ */
+export function themeColors(name: ThemeName, accent: AccentName = DEFAULT_ACCENT): Theme {
+  const base = PALETTES[name];
+  if (name === 'contrast') {
+    return base;
+  }
+  return { ...base, ...accentTokens(accent, isDarkTheme(name)) };
 }
 
 /**
@@ -226,13 +239,20 @@ export function themeColors(name: ThemeName): Theme {
  *
  * @remarks Call before the first paint; the stylesheet carries no colour values of its own.
  */
-export function applyTheme(name: ThemeName, root: HTMLElement = document.documentElement): void {
-  const colors = PALETTES[name];
-  const changed = root.dataset['theme'] !== undefined && root.dataset['theme'] !== name;
+export function applyTheme(
+  name: ThemeName,
+  accent: AccentName = DEFAULT_ACCENT,
+  root: HTMLElement = document.documentElement,
+): void {
+  const colors = themeColors(name, accent);
+  const changed =
+    (root.dataset['theme'] !== undefined && root.dataset['theme'] !== name) ||
+    (root.dataset['accent'] !== undefined && root.dataset['accent'] !== accent);
   for (const token of THEME_TOKENS) {
     root.style.setProperty(cssVariable(token), colors[token]);
   }
   root.dataset['theme'] = name;
+  root.dataset['accent'] = accent;
   root.style.colorScheme = isDarkTheme(name) ? 'dark' : 'light';
   if (changed) {
     crossFade(root);
@@ -267,6 +287,12 @@ export function currentTheme(root: HTMLElement = document.documentElement): Them
   return THEME_NAMES.find((name) => name === applied) ?? 'dark';
 }
 
+/** Accent currently applied to an element, or the default. */
+export function currentAccent(root: HTMLElement = document.documentElement): AccentName {
+  const applied = root.dataset['accent'];
+  return ACCENT_NAMES.find((name) => name === applied) ?? DEFAULT_ACCENT;
+}
+
 /**
  * Colours as they actually resolve on an element, honouring stylesheet overrides.
  *
@@ -274,7 +300,7 @@ export function currentTheme(root: HTMLElement = document.documentElement): Them
  */
 export function resolveTheme(root: HTMLElement = document.documentElement): Theme {
   const computed = getComputedStyle(root);
-  const fallback = PALETTES[currentTheme(root)];
+  const fallback = themeColors(currentTheme(root), currentAccent(root));
   const resolved: Record<TokenName, string> = { ...fallback };
   for (const token of THEME_TOKENS) {
     const value = computed.getPropertyValue(cssVariable(token)).trim();

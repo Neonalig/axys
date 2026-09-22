@@ -10,6 +10,8 @@
 
 import type { FollowMode } from './store.js';
 import type { TimeDisplay } from '../core/types.js';
+import type { AccentName } from '../ui/accent.js';
+import { ACCENT_NAMES, DEFAULT_ACCENT } from '../ui/accent.js';
 import type { ThemeName } from '../ui/theme.js';
 
 /** Theme choice, including deferring to the operating system. */
@@ -19,6 +21,8 @@ export type ThemeChoice = ThemeName | 'system';
 export interface Preferences {
   /** Colour scheme, or `system` to follow the operating system as it changes. */
   theme: ThemeChoice;
+  /** Which accent the chrome takes. High Contrast ignores it. */
+  accent: AccentName;
   /** How the view keeps up once it is following. */
   followMode: FollowMode;
   /** Whether the ruler reads clock time or bars and beats. */
@@ -34,13 +38,13 @@ export interface Preferences {
 }
 
 /** Narrowest the inspector column may be dragged, in pixels. */
-export const INSPECTOR_MIN_WIDTH = 240;
+export const INSPECTOR_MIN_WIDTH = 256;
 
 /** Widest the inspector column may be dragged, in pixels. */
 export const INSPECTOR_MAX_WIDTH = 640;
 
 /** The width the inspector column opens at. */
-export const INSPECTOR_DEFAULT_WIDTH = 328;
+export const INSPECTOR_DEFAULT_WIDTH = 344;
 
 /** A stored or dragged width, held inside the bounds the column may take. */
 export function clampInspectorWidth(value: number): number {
@@ -59,6 +63,7 @@ const TIME_DISPLAYS: readonly TimeDisplay[] = ['seconds', 'barsBeats'];
 export function defaultPreferences(): Preferences {
   return {
     theme: 'system',
+    accent: DEFAULT_ACCENT,
     followMode: 'page',
     timeDisplay: 'seconds',
     toolbarLabels: false,
@@ -92,6 +97,7 @@ export function loadPreferences(): Preferences {
   const record = parsed as Record<string, unknown>;
   return {
     theme: oneOf(record['theme'], THEME_CHOICES, defaults.theme),
+    accent: oneOf(record['accent'], ACCENT_NAMES, defaults.accent),
     followMode: oneOf(record['followMode'], FOLLOW_MODES, defaults.followMode),
     timeDisplay: oneOf(record['timeDisplay'], TIME_DISPLAYS, defaults.timeDisplay),
     toolbarLabels:

@@ -33,8 +33,20 @@ export interface MenuSeparator {
   separator: true;
 }
 
+/**
+ * A row the caller draws itself, for a choice a list of labels cannot carry.
+ *
+ * @remarks The row owns its own keyboard handling and is skipped by the menu's own arrow-key
+ * walk, so only use it where a plain item genuinely will not do: a grid of colour swatches is
+ * the case it exists for.
+ */
+export interface MenuCustom {
+  /** Builds the row. `close` dismisses the menu, for a row that acts on a press. */
+  render(close: () => void): HTMLElement;
+}
+
 /** Anything a menu may hold. */
-export type MenuEntry = MenuItem | MenuSeparator;
+export type MenuEntry = MenuItem | MenuSeparator | MenuCustom;
 
 import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
@@ -44,7 +56,7 @@ import { animateOut } from './motion.js';
 const MARGIN = 8;
 
 function isItem(entry: MenuEntry): entry is MenuItem {
-  return !('separator' in entry);
+  return !('separator' in entry) && !('render' in entry);
 }
 
 /**
@@ -76,6 +88,14 @@ export function showContextMenu(
 
   const buttons: HTMLButtonElement[] = [];
   for (const entry of entries) {
+    if ('render' in entry) {
+      element.append(
+        entry.render(() => {
+          close();
+        }),
+      );
+      continue;
+    }
     if (!isItem(entry)) {
       const rule = document.createElement('div');
       rule.className = 'axys-menu-separator';
