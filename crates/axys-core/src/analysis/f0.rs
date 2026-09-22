@@ -272,15 +272,19 @@ impl PitchTrack {
         };
         let a = &self.frames[lo];
         let b = &self.frames[hi];
-        if !a.voiced || !b.voiced {
-            return None;
-        }
         let span = b.time - a.time;
         let t = if span > 0.0 {
             ((time - a.time) / span).clamp(0.0, 1.0)
         } else {
             0.0
         };
+        // Only the endpoints the interpolation actually reads need to be voiced. A query
+        // landing exactly on the last voiced frame of a span weights its unvoiced
+        // neighbour at zero, and rejecting it there would punch a hole in the target at
+        // the release of every note.
+        if (t < 1.0 && !a.voiced) || (t > 0.0 && !b.voiced) {
+            return None;
+        }
         Some((a, b, t))
     }
 }
@@ -1184,6 +1188,37 @@ mod tests {
 
         let all = track_of(&[true, true]);
         assert_eq!(all.voiced_spans().len(), 1);
+    }
+
+    #[test]
+    fn the_last_voiced_frame_of_a_span_still_reads() {
+        // Frame 3 is the last voiced frame before an unvoiced one. Querying exactly on it
+        // weights the unvoiced neighbour at zero, so it must resolve rather than report a
+        // gap; the unvoiced frame after it must still report one.
+        let track = track_of(&[false, true, true, true, false, true, false]);
+        let hop = track.hop_seconds;
+
+        let last_voiced = track.frames[3].time;
+        assert!(
+            track.midi_at(last_voiced).is_some(),
+            "the last voiced frame of a span must resolve"
+        );
+        assert!(track.hz_at(last_voiced).is_some());
+
+        let first_voiced = track.frames[1].time;
+        assert!(
+            track.midi_at(first_voiced).is_some(),
+            "the first voiced frame of a span must resolve"
+        );
+
+        assert!(
+            track.midi_at(track.frames[4].time).is_none(),
+            "an unvoiced frame must report a gap"
+        );
+        assert!(
+            track.midi_at(last_voiced + hop * 0.5).is_none(),
+            "a query between a voiced and an unvoiced frame must report a gap"
+        );
     }
 
     #[test]
