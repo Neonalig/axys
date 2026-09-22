@@ -153,11 +153,13 @@ function writeWav(path, samples) {
 const flat = (m) => () => m;
 const level = (v) => () => v;
 /** An attack-sustain-release gain envelope over `seconds`. */
-const env = (seconds, attack = 0.03, release = 0.06) => (t) => {
-  if (t < attack) return t / attack;
-  if (t > seconds - release) return Math.max(0, (seconds - t) / release);
-  return 1;
-};
+const env =
+  (seconds, attack = 0.03, release = 0.06) =>
+  (t) => {
+    if (t < attack) return t / attack;
+    if (t > seconds - release) return Math.max(0, (seconds - t) / release);
+    return 1;
+  };
 
 console.info('\nGenerating Axys fixtures\n');
 console.info('Audio');
@@ -195,10 +197,7 @@ writeWav(
   ),
 );
 
-writeWav(
-  join(audioDir, 'slide.wav'),
-  fade(voice(2, (t) => 55 + 12 * (t / 2), env(2))),
-);
+writeWav(join(audioDir, 'slide.wav'), fade(voice(2, (t) => 55 + 12 * (t / 2), env(2))));
 
 writeWav(
   join(audioDir, 'rapid-transitions.wav'),
@@ -236,10 +235,7 @@ writeWav(
   ]),
 );
 
-writeWav(
-  join(audioDir, 'octave-ambiguity.wav'),
-  fade(voice(2, flat(40), env(2), 24)),
-);
+writeWav(join(audioDir, 'octave-ambiguity.wav'), fade(voice(2, flat(40), env(2), 24)));
 
 writeWav(
   join(audioDir, 'low-confidence.wav'),
@@ -263,7 +259,9 @@ writeWav(
     sibilant(0.12, 31),
     fade(voice(0.6, flat(64), env(0.6))),
     silence(0.06),
-    fade(voice(0.9, (t) => 65 + (t > 0.3 ? 0.4 * Math.sin(2 * Math.PI * 5 * (t - 0.3)) : 0), env(0.9))),
+    fade(
+      voice(0.9, (t) => 65 + (t > 0.3 ? 0.4 * Math.sin(2 * Math.PI * 5 * (t - 0.3)) : 0), env(0.9)),
+    ),
     silence(0.15),
   ]),
 );
@@ -388,7 +386,13 @@ writeMidi(
 writeMidi(
   'meter-change.mid',
   buildSmf(PPQ, [
-    [trackName('Conductor'), tempo(0, 100), meter(0, 4, 4), meter(PPQ * 4, 3, 4), meter(PPQ * 3, 7, 8)],
+    [
+      trackName('Conductor'),
+      tempo(0, 100),
+      meter(0, 4, 4),
+      meter(PPQ * 4, 3, 4),
+      meter(PPQ * 3, 7, 8),
+    ],
     [
       trackName('Melody'),
       ...notes([
@@ -434,7 +438,12 @@ writeMidi(
 writeMidi(
   'percussion.mid',
   buildSmf(PPQ, [
-    [trackName('Melody'), tempo(0, 120), meter(0, 4, 4), ...notes([{ start: 0, length: PPQ, key: 60 }])],
+    [
+      trackName('Melody'),
+      tempo(0, 120),
+      meter(0, 4, 4),
+      ...notes([{ start: 0, length: PPQ, key: 60 }]),
+    ],
     [
       trackName('Drums'),
       ...notes(

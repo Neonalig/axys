@@ -1,0 +1,325 @@
+# Axys web contracts
+
+Authoritative module and API contract for `web/src`. Implement these names and shapes exactly;
+other modules compile against them.
+
+House rules for every TypeScript file:
+
+- First line `// SPDX-License-Identifier: AGPL-3.0-or-later`, blank line, then the code.
+- Strict TypeScript. No `any`, no non-null `!` on values that can genuinely be absent, no `as`
+  casts that hide a real type problem. `import type` for type-only imports.
+- Every exported symbol gets a TSDoc comment describing the abstraction, not the implementation.
+  Simple code gets no comment. No changelog or journal comments.
+- No global mutable state outside the one `AppStore`. Modules take their dependencies as
+  constructor or function arguments.
+- No network requests of any kind. No analytics. No CDN.
+- Player-facing text is short conventional Title Case verb-noun, two or three words: "Split Blob",
+  "Reset Span", "Export WAV", "Add Anchor". Never sentences on a button.
+- Errors that affect the user surface as a toast or an inline state, never only `console`.
+- Keep the realtime audio path free of allocation, DOM work and blocking.
+
+## Type mirrors: `core/types.ts`
+
+Hand-written TypeScript mirrors of the serde contracts in `docs/core_contracts.md`, all
+`camelCase`, matching the JSON exactly. Export `interface` or `type` for: `Tuning`,
+`AccidentalStyle`, `Interp`, `Anchor`, `PitchCurve`, `PitchFrame`, `PitchTrack`,
+`PitchTrackArrays`, `F0Params`, `EnergyTrack`, `SegmentParams`, `BlobId`, `Voicing`, `Subregion`,
+`Blob`, `BlobSet`, `Edge`, `TimingConflict`, `ConflictKind`, `TempoEvent`, `MeterEvent`, `BarBeat`,
+`TimelineMap`, `BeatGridPoint`, `MidiNote`, `MidiTrackInfo`, `MidiFile`, `GuideMode`,
+`GuideSelection`, `NoteMapping`, `MappingReport`, `DriftReport`, `SampledCurve`, `TimeMap`,
+`ScaleSettings`, `ModulationSettings`, `FormantMode`, `RenderPlan`, `EditOp`, `History`,
+`BitDepth`, `ExportReport`, `SourceInfo`, `AnalysisInfo`, `EditState`, `ViewState`, `TimeDisplay`,
+`Project`, `Quality`.
+
+`EditOp` is a discriminated union on `type`, matching serde's `#[serde(tag = "type")]` with
+`camelCase` variant names, so `{ type: 'splitBlob', blob: 3, time: 1.25 }`.
+
+`FormantMode` serialises as `"follow"`, `"preserve"` or `{ shift: number }`.
+
+Also export the named constants `MIN_BLOB_SECONDS = 0.01` and `SCHEMA_VERSION = 1`.
+
+## WASM facade: `core/wasm.ts`
+
+```ts
+/** Loads and initialises the WebAssembly core exactly once. */
+export function loadCore(): Promise<AxysCore>;
+
+/** Typed facade over the wasm-bindgen exports. */
+export interface AxysCore {
+  version: string;
+  createSession(input: SessionInput): Session;
+  openSession(projectJson: string, samples: Float32Array): Session;
+  parseMidi(bytes: Uint8Array): MidiFile;
+  hzToMidi(hz: number, a4: number): number;
+  midiToHz(midi: number, a4: number): number;
+}
+```
+
+`Session` wraps the Rust `Session` class: `applyEdit(op: EditOp): void`, `undo(): boolean`,
+`redo(): boolean`, `state(): EditState`, `track(): PitchTrackArrays`, `blobs(): Blob[]`,
+`plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `history(): { undo: string | null; redo:
+string | null }`, `project(name: string, view: ViewState): string`, `exportWav(range, depth):
+{ bytes: Uint8Array; report: ExportReport }`, `free(): void`.
+
+Every method that can fail throws an `AxysError` carrying the Rust message. Wrap the raw
+wasm-bindgen calls so nothing outside this file touches generated bindings.
+
+## Capabilities: `capabilities.ts`
+
+```ts
+/** One probed browser capability. */
+export interface Capability {
+  id: string;
+  label: string;
+  available: boolean;
+  required: boolean;
+  detail: string;
+}
+
+/** Probes every capability Axys cares about. Never throws. */
+export function probeCapabilities(): Promise<Capability[]>;
+
+/** True when every required capability is available. */
+export function isSupported(caps: Capability[]): boolean;
+```
+
+Probe: WebAssembly, `AudioWorklet`, `AudioContext`, IndexedDB, OPFS, OPFS sync access handles,
+secure context, `WebGPU`, `SharedArrayBuffer`, cross-origin isolation, WASM threads,
+`WebCodecs`, and `decodeAudioData` support for wav/flac/mp3/aac/ogg. Optional capabilities that
+are missing must never block startup.
+
+## State: `app/store.ts`
+
+```ts
+/** The whole application state. Replaced wholesale on each change, never mutated in place. */
+export interface AppState {
+  phase: 'empty' | 'loading' | 'ready' | 'error';
+  message: string | null;
+  source: SourceInfo | null;
+  track: PitchTrackArrays | null;
+  blobs: Blob[];
+  conflicts: TimingConflict[];
+  edits: EditState | null;
+  view: ViewState;
+  midi: MidiFile | null;
+  mappingReport: MappingReport | null;
+  drift: DriftReport | null;
+  selection: Selection;
+  tool: ToolId;
+  transport: TransportState;
+  analysis: { running: boolean; progress: number; stage: string };
+  compare: CompareMode;
+  dirty: boolean;
+}
+
+/** What the user currently has selected. */
+export interface Selection {
+  blobs: number[];
+  anchors: { blob: number; index: number }[];
+  range: { start: number; end: number } | null;
+}
+
+/** Editor tool in use. */
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time' | 'audition';
+
+/** Which audio the transport plays. */
+export type CompareMode = 'processed' | 'original' | 'split';
+
+/** Transport position and mode. */
+export interface TransportState {
+  playing: boolean;
+  position: number;
+  loop: { start: number; end: number } | null;
+  returnToStart: boolean;
+  metronome: boolean;
+  countIn: boolean;
+}
+
+/** Observable state container. The only mutable singleton in the app. */
+export class AppStore {
+  constructor(initial: AppState);
+  get state(): AppState;
+  /** Applies a partial update and notifies subscribers once. */
+  update(patch: Partial<AppState>): void;
+  /** Subscribes to changes; returns an unsubscribe function. */
+  subscribe(fn: (state: AppState) => void): () => void;
+}
+
+/** The state an empty editor starts from. */
+export function initialState(): AppState;
+```
+
+## Commands: `app/commands.ts`
+
+```ts
+/** A user-invocable action with a stable id, label and optional shortcut. */
+export interface Command {
+  id: string;
+  label: string;
+  group: 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
+  shortcut?: string;
+  enabled(ctx: CommandContext): boolean;
+  run(ctx: CommandContext): void | Promise<void>;
+}
+
+/** Everything a command may reach. */
+export interface CommandContext {
+  store: AppStore;
+  editor: EditorController;
+  audio: AudioEngine;
+  toast: ToastHost;
+}
+
+/** Builds the full command list. */
+export function buildCommands(): Command[];
+
+/** Looks a command up by id. */
+export function findCommand(commands: Command[], id: string): Command | undefined;
+```
+
+Commands must cover, at minimum: Open Audio, Open MIDI, Open Project, Save Project, Export WAV,
+Undo, Redo, Split Blob, Join Blobs, Reset Blob, Reset Span, Smooth Span, Bypass Blob, Exclude Blob,
+Play, Stop, Loop Selection, Toggle Compare, Zoom In, Zoom Out, Zoom Fit, Toggle Bars Beats,
+Toggle Metronome, Align Guide, Show Diagnostics, Show Source Code.
+
+## Shortcuts: `app/shortcuts.ts`
+
+```ts
+/** Binds keyboard shortcuts for a command list to a target element. Returns a disposer. */
+export function bindShortcuts(
+  target: EventTarget,
+  commands: Command[],
+  ctx: CommandContext,
+): () => void;
+```
+
+Space toggles play, Escape clears selection, arrow keys nudge, Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z undo
+and redo. Shortcuts must not fire while a text input has focus.
+
+## Audio: `audio/engine.ts`
+
+```ts
+/** Owns the AudioContext, the worklet and the transport. */
+export class AudioEngine {
+  static create(store: AppStore): Promise<AudioEngine>;
+  /** Hands the worklet its source audio. Transfers the buffer. */
+  loadSource(samples: Float32Array, sampleRate: number, trackJson: string): Promise<void>;
+  /** Pushes a compiled plan to the worklet. Cheap, safe to call on every edit. */
+  setPlan(plan: RenderPlan): void;
+  setCompare(mode: CompareMode): void;
+  play(from?: number): Promise<void>;
+  pause(): void;
+  stop(): void;
+  seek(seconds: number): void;
+  setLoop(range: { start: number; end: number } | null): void;
+  setMetronome(on: boolean, timeline: TimelineMap): void;
+  /** Plays a short region once, for scrubbing and audition. */
+  audition(start: number, end: number): void;
+  get position(): number;
+  get playing(): boolean;
+  dispose(): void;
+}
+```
+
+The worklet is `audio/worklet/renderer-worklet.ts`, built as a separate module and registered with
+`addModule`. It instantiates the WASM core itself, holds the source PCM and a `PlaybackRenderer`,
+and answers `process()` from `renderRange`. It must never allocate in `process()`, must report
+underruns and a stale or failed plan back to the main thread rather than emitting garbage, and must
+output silence rather than noise on any failure.
+
+`audio/decode.ts` exports `decodeAudioFile(file: File): Promise<DecodedSource>` using
+`AudioContext.decodeAudioData`, preserving the original sample rate, channel count and a
+fingerprint, and reporting an unsupported format clearly.
+
+## Workers
+
+`workers/analysis.worker.ts` runs `detect_f0`, `analyse_energy` and `segment` off the main thread,
+posting `{ stage, progress }` messages and honouring a cancel message. `workers/render.worker.ts`
+runs offline rendering and WAV encoding at `Quality.Offline`, with progress and cancel. Both are
+typed by `workers/protocol.ts`, which exports the request and response unions.
+
+## Editor: `editor/`
+
+```ts
+/** Maps between screen pixels and the time/pitch domain. */
+export class Viewport {
+  constructor(width: number, height: number, view: ViewState);
+  timeToX(seconds: number): number;
+  xToTime(x: number): number;
+  midiToY(midi: number): number;
+  yToMidi(y: number): number;
+  get secondsPerPixel(): number;
+  /** Zooms about a fixed screen point so the point under the cursor stays put. */
+  zoomTime(factor: number, anchorX: number): ViewState;
+  zoomPitch(factor: number, anchorY: number): ViewState;
+  pan(dx: number, dy: number): ViewState;
+}
+```
+
+`editor/renderer.ts` exports `class EditorRenderer` with
+`constructor(canvas: HTMLCanvasElement)`, `render(state: AppState, viewport: Viewport): void` and
+`dispose()`. It draws to Canvas 2D, respects `devicePixelRatio`, decimates the pitch polyline to at
+most one point per pixel column, and keeps a frame under 16 ms for the representative project.
+
+Layers in `editor/layers/`, each a pure draw function taking
+`(ctx, state, viewport, theme)`: `grid.ts` (pitch rows, octave labels, cents guides), `ruler.ts`
+(seconds or bars and beats), `waveform.ts` (peak envelope behind the blobs), `pitch.ts` (detected
+track with confidence, target curve, unvoiced spans), `blobs.ts` (bounds, centres, handles,
+conflicts), `midi.ts` (guide notes and mapping links), `overlay.ts` (selection, playhead, loop
+range, hover readout, drag preview).
+
+`editor/interaction.ts` exports `class EditorController` owning pointer handling. Requirements:
+
+- Dragging previews on the dragged object itself before commitment.
+- Modifiers: Shift constrains, Alt is fine adjustment, Ctrl/Cmd toggles snap.
+- Every gesture commits exactly one `EditOp` so undo is one step.
+- Numeric entry for the selected object's pitch and time coexists with dragging.
+- `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
+
+## UI: `ui/`
+
+`ui/shell.ts` builds the whole DOM chrome with semantic elements: a `<header>` toolbar of
+`<button>` elements, `<select>` and `<input>` for settings, a `<main>` holding the canvas, and
+`<aside>` inspector panels. Every control has an accessible name and a tooltip. The canvas gets
+`role="application"` with a keyboard-reachable focus ring and an off-screen live region announcing
+selection and edit results.
+
+`ui/icons.ts` exports concise inline SVG strings, one per command group, 16px on a 16 grid, using
+`currentColor`. `ui/toast.ts` exports `class ToastHost` with `info`, `warn` and `error`, each
+auto-dismissing and stacking. `ui/dialog.ts` exports a focus-trapped modal. `ui/inspector.ts` shows
+the selection's numeric fields and the scale, modulation, formant and guide settings, each bound to
+an `EditOp`. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
+build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`.
+`ui/theme.ts` exports the colour tokens as CSS custom properties with a high-contrast variant.
+
+## Persistence: `persistence/`
+
+```ts
+/** Project documents in IndexedDB, keyed by project id. */
+export class ProjectStore {
+  static open(): Promise<ProjectStore>;
+  list(): Promise<ProjectSummary[]>;
+  load(id: string): Promise<string>;
+  save(id: string, json: string): Promise<void>;
+  remove(id: string): Promise<void>;
+}
+
+/** Decoded source audio in the Origin Private File System, keyed by fingerprint. */
+export class MediaStore {
+  static open(): Promise<MediaStore>;
+  has(fingerprint: string): Promise<boolean>;
+  read(fingerprint: string): Promise<Float32Array>;
+  write(fingerprint: string, samples: Float32Array): Promise<void>;
+}
+```
+
+`persistence/project-io.ts` exports `exportProject(json, name)` writing a `.axys.json` download and
+`importProject(file)` reading one back, plus `relink(file, expected: SourceInfo)` which verifies the
+fingerprint and refuses a different file with a clear message. `persistence/autosave.ts` debounces
+a save of the document only, never the media, and never becomes the sole copy of the user's work.
+
+## Entry: `main.ts`
+
+Probes capabilities, shows an explicit unsupported-browser state when a required one is missing,
+loads the core, builds the store, shell, editor and audio engine, wires commands and shortcuts, and
+shows a first-run toast when an optional capability is degraded.
