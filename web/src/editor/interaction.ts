@@ -591,6 +591,12 @@ export class EditorController {
   };
 
   #beginGesture(state: AppState, hit: Hit, modifiers: Modifiers): Gesture | null {
+    // Alt over open canvas or the ruler hears a snippet and leaves the playhead where it was.
+    // Over a blob Alt stays the fine-adjustment modifier the drag gestures read.
+    if ((hit.kind === 'empty' || hit.kind === 'ruler') && modifiers.fine) {
+      return { kind: 'audition', start: hit.time, end: hit.time };
+    }
+
     if (hit.kind === 'ruler' || hit.kind === 'loopEdge') {
       if (hit.kind === 'loopEdge' && state.transport.loop !== null) {
         const loop = state.transport.loop;
@@ -601,12 +607,6 @@ export class EditorController {
       }
       this.#scrubTo(hit.time);
       return { kind: 'scrub' };
-    }
-
-    // Alt over open canvas hears a snippet and leaves the playhead where it was. Over a blob
-    // Alt stays the fine-adjustment modifier the drag gestures read.
-    if (hit.kind === 'empty' && modifiers.fine) {
-      return { kind: 'audition', start: hit.time, end: hit.time };
     }
 
     switch (state.tool) {

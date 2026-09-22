@@ -12,8 +12,10 @@
 import { buildCommands, findCommand } from './app/commands.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { bindShortcuts } from './app/shortcuts.js';
+import { loadPreferences, savePreferences } from './app/preferences.js';
+import type { ThemeChoice } from './app/preferences.js';
 import { AppStore, initialState } from './app/store.js';
-import type { CompareMode, ToolId } from './app/store.js';
+import type { CompareMode, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile } from './audio/decode.js';
 import { AudioEngine } from './audio/engine.js';
 import type { EngineReport } from './audio/engine.js';
@@ -42,7 +44,7 @@ import { exportProject, importProject, relink } from './persistence/project-io.j
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
-import { applyTheme, preferredTheme, THEME_NAMES } from './ui/theme.js';
+import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
 import type { ToastHost } from './ui/toast.js';
 import { AnalysisClient, RenderClient } from './workers/client.js';
@@ -59,12 +61,6 @@ const PLAYHEAD_EPSILON = 1e-4;
 
 /** How often the engine's underrun count is read, and the shortest gap between its warnings. */
 const UNDERRUN_INTERVAL_MS = 10_000;
-
-/** What a user whose browser holds audio until a gesture has to do. */
-const BLOCKED_HINT = 'Press Play to start audio in this browser.';
-
-/** Local key holding the theme the user last chose. */
-const THEME_KEY = 'axys.theme';
 
 /** What an {@link AxysWorkspace} needs to reach the core, the device and the user. */
 interface WorkspaceDeps {
@@ -711,6 +707,16 @@ async function openDropped(
   }
 }
 
+/**
+ * Takes down the loading splash the document paints before the module graph arrives.
+ *
+ * @remarks Safe to call more than once, and on every exit from startup including the failure
+ * ones, so a browser that cannot run Axys is never left looking at a loading bar.
+ */
+function dismissSplash(): void {
+  document.getElementById('axys-splash')?.remove();
+}
+
 /** Replaces the page with a plain explanation when a required capability is missing. */
 function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
   mount.textContent = '';
@@ -817,7 +823,8 @@ function startPlayheadLoop(
       Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
       audio.playing !== state.transport.playing;
     const view = movedPlayhead ? { ...state.view, playhead } : state.view;
-    const followed = state.follow && audio.playing ? followView(view, playhead) : null;
+    const followed =
+      state.follow && audio.playing ? followView(view, playhead, state.followMode) : null;
     if (movedPlayhead || movedTransport || followed !== null) {
       store.update({
         ...(movedPlayhead || followed !== null ? { view: followed ?? view } : {}),
@@ -842,7 +849,6 @@ function startPlayheadLoop(
  * That interval is also the shortest gap between underrun warnings.
  */
 function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () => void {
-  let blockedShown = false;
   let reportedFailure: string | null = null;
   let seenUnderruns = audio.report.underruns;
 
@@ -855,10 +861,6 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
       return;
     }
     reportedFailure = null;
-    if (report.status !== 'blocked' || blockedShown) return;
-    blockedShown = true;
-    const reason = report.message === null ? '' : `${report.message} `;
-    toast.info(`${reason}${BLOCKED_HINT}`);
   };
 
   show(audio.report);
@@ -880,23 +882,22 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
   };
 }
 
-/** Theme the user last chose on this device, or the one the system asks for. */
-function startingTheme(): ThemeName {
-  try {
-    const stored = localStorage.getItem(THEME_KEY);
-    if (stored !== null && THEME_NAMES.includes(stored as ThemeName)) return stored as ThemeName;
-  } catch {
-    // A browser that refuses storage simply follows the system preference.
-  }
-  return preferredTheme();
+/** The theme a choice paints as, which for `system` is whatever the device currently asks for. */
+function resolvedTheme(choice: ThemeChoice): ThemeName {
+  return choice === 'system' ? preferredTheme() : choice;
 }
 
-function rememberTheme(name: ThemeName): void {
-  try {
-    localStorage.setItem(THEME_KEY, name);
-  } catch {
-    // The theme still applies for this session.
-  }
+/**
+ * Repaints as the system preference changes, while the theme choice is to follow it.
+ *
+ * @remarks Returns a disposer. A fixed choice needs no watcher, so this returns an empty one.
+ */
+function watchSystemTheme(choice: ThemeChoice, redraw: () => void): () => void {
+  if (choice !== 'system') return () => {};
+  return watchPreferredTheme((name) => {
+    applyTheme(name);
+    redraw();
+  });
 }
 
 /** Turns shell intent into command runs, edits and view changes. */
@@ -906,6 +907,8 @@ function buildHooks(
   context: () => CommandContext | null,
   workspace: () => AxysWorkspace | null,
   audio: AudioEngine,
+  redraw: () => void,
+  onThemeChoice: (choice: ThemeChoice) => void,
 ): ShellHooks {
   return {
     runCommand(id: string): void {
@@ -923,7 +926,14 @@ function buildHooks(
       workspace()?.apply(op);
     },
     setView(patch: Partial<ViewState>): void {
+      // How time reads is a display habit that follows the person between projects, so it is
+      // remembered on the device as well as in the project it was set from.
+      if (patch.timeDisplay !== undefined) savePreferences({ timeDisplay: patch.timeDisplay });
       store.update({ view: { ...store.state.view, ...patch } });
+    },
+    setFollowMode(mode: FollowMode): void {
+      savePreferences({ followMode: mode });
+      store.update({ followMode: mode });
     },
     setTool(tool: ToolId): void {
       store.update({ tool });
@@ -937,9 +947,14 @@ function buildHooks(
     setAccidentals(style: AccidentalStyle): void {
       workspace()?.setAccidentals(style);
     },
-    setTheme(name: ThemeName): void {
-      applyTheme(name);
-      rememberTheme(name);
+    setTheme(choice: ThemeChoice): void {
+      savePreferences({ theme: choice });
+      applyTheme(resolvedTheme(choice));
+      onThemeChoice(choice);
+      // The canvas resolves its colours as it draws, and a theme change alone schedules no
+      // frame, so the chrome would recolour while the editor kept the old palette until the
+      // next unrelated redraw.
+      redraw();
     },
   };
 }
@@ -949,6 +964,7 @@ async function start(): Promise<void> {
 
   const caps = await probeCapabilities();
   if (!isSupported(caps)) {
+    dismissSplash();
     showUnsupported(mount, caps);
     return;
   }
@@ -957,14 +973,19 @@ async function start(): Promise<void> {
   try {
     core = await loadCore();
   } catch (error) {
+    dismissSplash();
     showFailure(mount, describe(error));
     return;
   }
 
-  const theme = startingTheme();
-  applyTheme(theme);
+  const preferences = loadPreferences();
+  applyTheme(resolvedTheme(preferences.theme));
 
   const store = new AppStore(initialState());
+  store.update({
+    followMode: preferences.followMode,
+    view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
+  });
   const commands = buildCommands();
   let context: CommandContext | null = null;
 
@@ -973,14 +994,25 @@ async function start(): Promise<void> {
   const mediaPromise = openStore(MediaStore.open());
 
   let workspace: AxysWorkspace | null = null;
+  let renderer: EditorRenderer | null = null;
+  let releaseSystemTheme = (): void => {};
+  const redraw = (): void => {
+    renderer?.invalidate();
+  };
   const hooks = buildHooks(
     store,
     commands,
     () => context,
     () => workspace,
     audio,
+    redraw,
+    (choice) => {
+      releaseSystemTheme();
+      releaseSystemTheme = watchSystemTheme(choice, redraw);
+    },
   );
-  const shell = AppShell.mount({ root: mount, commands, hooks, theme });
+  const shell = AppShell.mount({ root: mount, commands, hooks, theme: preferences.theme });
+  releaseSystemTheme = watchSystemTheme(preferences.theme, redraw);
   const toast = shell.toasts;
   shell.setCapabilities(caps);
 
@@ -998,7 +1030,7 @@ async function start(): Promise<void> {
   }
 
   workspace = new AxysWorkspace({ core, store, audio, toast, projects, media });
-  const renderer = new EditorRenderer(shell.canvas);
+  renderer = new EditorRenderer(shell.canvas);
   const editor = new EditorController({
     canvas: shell.canvas,
     store,
@@ -1017,6 +1049,8 @@ async function start(): Promise<void> {
     },
   });
   context = { store, editor, audio, toast, workspace };
+
+  dismissSplash();
 
   const releaseEngine = watchEngine(audio, shell, toast);
   const releaseStore = store.subscribe((state) => {
@@ -1042,10 +1076,11 @@ async function start(): Promise<void> {
       releaseDrop();
       releaseStore();
       releaseEngine();
+      releaseSystemTheme();
       stopPlayhead();
       open.dispose();
       editor.dispose();
-      renderer.dispose();
+      renderer?.dispose();
       audio.dispose();
       shell.dispose();
     },

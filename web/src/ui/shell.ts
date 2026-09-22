@@ -9,14 +9,15 @@
 
 import '../styles.css';
 
-import type { AppState, CompareMode, ToolId } from '../app/store.js';
+import type { ThemeChoice } from '../app/preferences.js';
+import type { AppState, CompareMode, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { ICONS, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
-import { THEME_LABELS, THEME_NAMES, type ThemeName } from './theme.js';
+import { THEME_LABELS, THEME_NAMES } from './theme.js';
 import { ToastHost } from './toast.js';
 import { setTooltip, TooltipHost } from './tooltip.js';
 
@@ -43,14 +44,16 @@ export interface ShellHooks {
   setView(patch: Partial<ViewState>): void;
   /** Selects the active editing tool. */
   setTool(tool: ToolId): void;
+  /** Chooses how the view keeps up with a playing playhead. */
+  setFollowMode(mode: FollowMode): void;
   /** Chooses which audio the transport plays. */
   setCompare(mode: CompareMode): void;
   /** Sets the concert reference in Hz. */
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
   setAccidentals(style: AccidentalStyle): void;
-  /** Applies and remembers a colour theme. */
-  setTheme(name: ThemeName): void;
+  /** Applies and remembers a colour theme, or defers to the operating system. */
+  setTheme(choice: ThemeChoice): void;
 }
 
 /** What the chrome is built from. */
@@ -59,8 +62,8 @@ export interface ShellOptions {
   root: HTMLElement;
   commands: readonly ShellCommand[];
   hooks: ShellHooks;
-  /** Theme shown as selected. Applying it is the caller's job. */
-  theme?: ThemeName;
+  /** Theme choice shown as selected. Applying it is the caller's job. */
+  theme?: ThemeChoice;
 }
 
 interface ToolEntry {
@@ -79,6 +82,9 @@ const TOOLS: readonly ToolEntry[] = [
   { id: 'smooth', label: 'Smooth Tool', icon: 'smooth', tooltip: 'Reduces jitter over a span.' },
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time.' },
 ];
+
+/** Theme entries the chrome offers, with following the operating system first and default. */
+const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
 
 const COMPARE_OPTIONS: readonly { value: CompareMode; label: string }[] = [
   { value: 'processed', label: 'Processed' },
@@ -227,7 +233,7 @@ export class AppShell {
     }
 
     const compare = this.#buildCompare();
-    const theme = this.#buildTheme(options.theme ?? 'dark');
+    const theme = this.#buildTheme(options.theme ?? 'system');
     this.#compare = compare.select;
 
     for (const name of GROUP_ORDER) {
@@ -296,6 +302,9 @@ export class AppShell {
       setView: (patch) => {
         this.#hooks.setView(patch);
       },
+      setFollowMode: (mode) => {
+        this.#hooks.setFollowMode(mode);
+      },
       setTuning: (a4Hz) => {
         this.#hooks.setTuning(a4Hz);
       },
@@ -351,13 +360,17 @@ export class AppShell {
     noteCapabilities(capabilities);
   }
 
-  /** Shows the newest playback report and hands it to the diagnostics dialog. */
+  /**
+   * Shows the newest playback report and hands it to the diagnostics dialog.
+   *
+   * @remarks Only a failure earns a line. That the transport is idle, or that audio waits for a
+   * gesture, is what the transport controls themselves say. Show Diagnostics carries the rest.
+   */
   setEngineReport(report: EngineReport): void {
     noteEngineReport(report);
-    this.#statusPlayback.textContent =
-      report.message === null ? report.status : `${report.status}: ${report.message}`;
-    this.#statusPlayback.classList.toggle('axys-error', report.status === 'failed');
-    this.#statusPlayback.classList.toggle('axys-warning', report.status === 'blocked');
+    const failed = report.status === 'failed';
+    this.#statusPlayback.textContent = failed ? (report.message ?? 'Failed') : '--';
+    this.#statusPlayback.classList.toggle('axys-error', failed);
   }
 
   /** Announces a selection change or an edit result through the off-screen live region. */
@@ -529,15 +542,15 @@ export class AppShell {
     return { wrapper, select };
   }
 
-  #buildTheme(current: ThemeName): { wrapper: HTMLElement; select: HTMLSelectElement } {
+  #buildTheme(current: ThemeChoice): { wrapper: HTMLElement; select: HTMLSelectElement } {
     const wrapper = document.createElement('span');
     wrapper.className = 'axys-field';
     const select = document.createElement('select');
     select.id = 'axys-theme';
-    for (const name of THEME_NAMES) {
+    for (const choice of THEME_CHOICES) {
       const element = document.createElement('option');
-      element.value = name;
-      element.textContent = THEME_LABELS[name];
+      element.value = choice;
+      element.textContent = choice === 'system' ? 'Follow System' : THEME_LABELS[choice];
       select.append(element);
     }
     select.value = current;
@@ -546,10 +559,10 @@ export class AppShell {
     label.htmlFor = select.id;
     label.textContent = 'Theme';
     select.addEventListener('change', () => {
-      const chosen = THEME_NAMES.find((name) => name === select.value);
+      const chosen = THEME_CHOICES.find((choice) => choice === select.value);
       if (chosen) {
         this.#hooks.setTheme(chosen);
-        this.announce(`${THEME_LABELS[chosen]} applied.`);
+        this.announce(chosen === 'system' ? 'Following System Theme' : THEME_LABELS[chosen]);
       }
     });
     wrapper.append(label, select);

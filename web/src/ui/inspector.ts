@@ -8,7 +8,7 @@
  */
 
 import { setTooltip } from './tooltip.js';
-import type { AppState } from '../app/store.js';
+import type { AppState, FollowMode } from '../app/store.js';
 import type {
   AccidentalStyle,
   Blob,
@@ -27,6 +27,8 @@ export interface InspectorHooks {
   applyEdit(op: EditOp): void;
   /** Changes saved editor view state, such as the snap division or the ruler mode. */
   setView(patch: Partial<ViewState>): void;
+  /** Chooses how the view keeps up with a playing playhead. */
+  setFollowMode(mode: FollowMode): void;
   /** Sets the concert reference in Hz. */
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
@@ -257,6 +259,7 @@ export class Inspector {
   readonly #accidentals: HTMLSelectElement;
   readonly #snap: HTMLSelectElement;
   readonly #timeDisplay: HTMLSelectElement;
+  readonly #followMode: HTMLSelectElement;
 
   readonly #guideMode: HTMLSelectElement;
   readonly #guideStrength: HTMLInputElement;
@@ -448,6 +451,10 @@ export class Inspector {
       { value: 'seconds', label: 'Clock Time' },
       { value: 'barsBeats', label: 'Bars And Beats' },
     ]);
+    this.#followMode = selectInput([
+      { value: 'page', label: 'Page Ahead' },
+      { value: 'centre', label: 'Keep Centred' },
+    ]);
 
     displayPanel.append(
       field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz.'),
@@ -457,6 +464,11 @@ export class Inspector {
         'Time Display',
         this.#timeDisplay,
         'Whether the ruler reads clock time or bars and beats.',
+      ),
+      field(
+        'Follow Mode',
+        this.#followMode,
+        'Whether a following view jumps ahead a screen at a time or holds the playhead centred.',
       ),
     );
     element.append(displayPanel);
@@ -633,6 +645,7 @@ export class Inspector {
     }
     setValue(this.#snap, String(state.view.snapDivision));
     setValue(this.#timeDisplay, state.view.timeDisplay);
+    setValue(this.#followMode, state.followMode);
   }
 
   #updateGuide(state: AppState): void {
@@ -856,6 +869,9 @@ export class Inspector {
       const display: TimeDisplay =
         this.#timeDisplay.value === 'barsBeats' ? 'barsBeats' : 'seconds';
       this.#hooks.setView({ timeDisplay: display });
+    });
+    this.#followMode.addEventListener('change', () => {
+      this.#hooks.setFollowMode(this.#followMode.value === 'centre' ? 'centre' : 'page');
     });
 
     this.#guideMode.addEventListener('change', () => {

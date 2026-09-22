@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { FollowMode } from '../app/store.js';
 import type {
   BarBeat,
   BeatGridPoint,
@@ -176,11 +177,16 @@ export function snapViewTo(view: ViewState, seconds: number): ViewState {
 /**
  * Scrolls a view so a moving playhead stays in sight.
  *
- * @remarks `null` while the playhead is comfortably inside the window, so the view pages forward
- * at the edge rather than sliding under every frame. Only the time axis moves.
+ * @remarks `null` when the view already sits where the mode wants it. Only the time axis moves.
  */
-export function followView(view: ViewState, playhead: number): ViewState | null {
+export function followView(view: ViewState, playhead: number, mode: FollowMode): ViewState | null {
   const span = Math.max(MIN_TIME_SPAN, view.visibleEnd - view.visibleStart);
+  if (mode === 'centre') {
+    const start = playhead - span / 2;
+    return Math.abs(start - view.visibleStart) < span * 1e-4
+      ? null
+      : { ...view, visibleStart: start, visibleEnd: start + span };
+  }
   const offset = (playhead - view.visibleStart) / span;
   if (offset >= 0 && offset <= FOLLOW_EDGE) {
     return null;

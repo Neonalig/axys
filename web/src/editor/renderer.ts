@@ -11,7 +11,7 @@ import {
   drawBlobs,
   sourceToOutput,
 } from './layers/blobs.js';
-import { drawGrid } from './layers/grid.js';
+import { drawGrid, drawPitchLabels } from './layers/grid.js';
 import { drawMidi } from './layers/midi.js';
 import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
@@ -150,6 +150,7 @@ export class EditorRenderer {
     drawMidi(ctx, state, viewport, theme);
     drawBlobs(ctx, state, viewport, theme);
     drawPitch(ctx, state, viewport, theme);
+    drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
     drawOverlay(ctx, state, viewport, theme);
     this.#drawHoverGuides(ctx, state, viewport, theme);

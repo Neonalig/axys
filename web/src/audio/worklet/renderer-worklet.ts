@@ -74,7 +74,15 @@ export type RendererMessage =
       failure: string | null;
       seq: number;
     }
-  | { type: 'ended'; position: number; seq: number };
+  | { type: 'ended'; position: number; seq: number; reason: EndReason };
+
+/**
+ * Why the transport stopped on its own.
+ *
+ * @remarks A snippet restores the position it interrupted, so it must not be treated as
+ * reaching the end of the take, which is what returns the playhead to the beginning.
+ */
+export type EndReason = 'end' | 'audition';
 
 const COUNT_IN_BEATS = 4;
 const DEFAULT_BEAT_SECONDS = 0.5;
@@ -660,13 +668,23 @@ class RendererProcessor extends AudioWorkletProcessor {
       this.#playing = false;
       this.#position = audition.restore;
       this.#audition = null;
-      this.#post({ type: 'ended', position: this.#position / this.#sourceRate, seq: this.#seq });
+      this.#post({
+        type: 'ended',
+        position: this.#position / this.#sourceRate,
+        seq: this.#seq,
+        reason: 'audition',
+      });
       return;
     }
     if (this.#position >= this.#outputFrames - 1e-6) {
       this.#playing = false;
       this.#position = this.#outputFrames;
-      this.#post({ type: 'ended', position: this.#position / this.#sourceRate, seq: this.#seq });
+      this.#post({
+        type: 'ended',
+        position: this.#position / this.#sourceRate,
+        seq: this.#seq,
+        reason: 'end',
+      });
     }
   }
 

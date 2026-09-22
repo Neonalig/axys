@@ -48,7 +48,6 @@ export function drawGrid(
   theme: Theme,
 ): void {
   const { plotTop, plotHeight, width } = viewport;
-  const style: AccidentalStyle = state.edits?.accidentals ?? 'sharps';
   const rowHeight = plotHeight / viewport.pitchRange;
   const low = Math.floor(viewport.view.lowMidi) - 1;
   const high = Math.ceil(viewport.view.highMidi) + 1;
@@ -115,28 +114,37 @@ export function drawGrid(
     ctx.restore();
   }
 
-  drawLabels(ctx, viewport, theme, style, low, high, rowHeight);
   ctx.restore();
 }
 
-function drawLabels(
+/**
+ * Draws the pitch-label gutter down the left edge.
+ *
+ * @remarks Drawn after the content layers rather than with the grid. Every content layer spans
+ * the full canvas width, so a gutter drawn underneath them ends up with blobs, the pitch track
+ * and guide notes written across the note names.
+ */
+export function drawPitchLabels(
   ctx: CanvasRenderingContext2D,
+  state: AppState,
   viewport: Viewport,
   theme: Theme,
-  style: AccidentalStyle,
-  low: number,
-  high: number,
-  rowHeight: number,
 ): void {
+  const rowHeight = viewport.plotHeight / viewport.pitchRange;
   const everySemitone = rowHeight >= 11;
   if (!everySemitone && rowHeight * 12 < 12) {
     return;
   }
+  const style: AccidentalStyle = state.edits?.accidentals ?? 'sharps';
+  const low = Math.floor(viewport.view.lowMidi) - 1;
+  const high = Math.ceil(viewport.view.highMidi) + 1;
+
   ctx.save();
-  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  ctx.rect(0, viewport.plotTop, PITCH_LABEL_GUTTER + 1, viewport.plotHeight);
+  ctx.clip();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, viewport.plotTop, PITCH_LABEL_GUTTER, viewport.plotHeight);
-  ctx.globalAlpha = 1;
   ctx.strokeStyle = theme.border;
   ctx.beginPath();
   ctx.moveTo(PITCH_LABEL_GUTTER + 0.5, viewport.plotTop);

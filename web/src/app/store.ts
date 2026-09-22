@@ -38,6 +38,8 @@ export interface AppState {
   compare: CompareMode;
   /** Whether the view scrolls to keep the playhead in sight. Panning the view clears it. */
   follow: boolean;
+  /** How the view keeps up while following. */
+  followMode: FollowMode;
   dirty: boolean;
 }
 
@@ -53,6 +55,15 @@ export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 
 
 /** Which audio the transport plays. */
 export type CompareMode = 'processed' | 'original' | 'split';
+
+/**
+ * How the view keeps up with a playing playhead.
+ *
+ * @remarks `page` jumps the window forward a screen at a time, which holds the material still
+ * while it is being read. `centre` keeps the playhead in the middle and slides the material past
+ * it, which suits following a part closely.
+ */
+export type FollowMode = 'page' | 'centre';
 
 /** Transport position and mode. */
 export interface TransportState {
@@ -170,6 +181,7 @@ export function initialState(): AppState {
     analysis: { running: false, progress: 0, stage: '' },
     compare: 'processed',
     follow: true,
+    followMode: 'page',
     dirty: false,
   };
 }

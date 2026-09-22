@@ -636,7 +636,16 @@ export function buildCommands(): Command[] {
           ctx.store.update({ follow: false });
           return;
         }
-        ctx.store.update({ follow: true, view: snapViewTo(state.view, state.view.playhead) });
+        const span = state.view.visibleEnd - state.view.visibleStart;
+        const view =
+          state.followMode === 'centre'
+            ? {
+                ...state.view,
+                visibleStart: state.view.playhead - span / 2,
+                visibleEnd: state.view.playhead + span / 2,
+              }
+            : snapViewTo(state.view, state.view.playhead);
+        ctx.store.update({ follow: true, view });
       },
     },
     {

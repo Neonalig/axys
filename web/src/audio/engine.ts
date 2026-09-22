@@ -393,7 +393,9 @@ export class AudioEngine {
     } else if (context.state === 'closed') {
       this.#publish('idle', null);
     } else {
-      this.#publish('blocked', 'Playback is waiting for a click to start audio.');
+      // No message: that audio waits for a gesture is what pressing Play is for, and saying
+      // so in the status bar is a line the user reads once and never needs again.
+      this.#publish('blocked', null);
     }
   }
 
@@ -428,7 +430,9 @@ export class AudioEngine {
         this.#playing = false;
         this.#reported = message.position;
         this.#reportedAt = now();
-        if (this.#store.state.transport.returnToStart) {
+        // A snippet has already put the position back where it interrupted, so only reaching
+        // the end of the take returns the playhead to the beginning.
+        if (message.reason === 'end' && this.#store.state.transport.returnToStart) {
           this.seek(this.#beginning);
         } else {
           this.#syncTransport();
