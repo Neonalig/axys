@@ -73,6 +73,14 @@ impl Default for AnalysisInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditState {
+    /// What the project is called.
+    ///
+    /// The single source of truth for the name: the tab title, the window titlebar, the save
+    /// file name and the export default all read it. It lives here rather than beside the
+    /// schema version because renaming is an edit like any other, undone and redone with the
+    /// rest of the history.
+    #[serde(default)]
+    pub name: String,
     /// Editable regions of the analysed vocal.
     #[serde(default)]
     pub blobs: BlobSet,
@@ -108,6 +116,7 @@ pub struct EditState {
 impl Default for EditState {
     fn default() -> Self {
         Self {
+            name: String::new(),
             blobs: BlobSet::new(),
             scale: ScaleSettings::default(),
             modulation: ModulationSettings::default(),
@@ -183,6 +192,9 @@ pub struct Project {
     /// Build that last wrote the document.
     pub app_version: String,
     /// Project name shown in the editor.
+    ///
+    /// Written from `edits.name` on save and read back into it on open, so a file carries the
+    /// name where a reader expects to find it while the editor keeps one copy of it.
     pub name: String,
     /// Immutable facts about the imported source audio.
     pub source: SourceInfo,

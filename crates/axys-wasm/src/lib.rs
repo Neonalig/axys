@@ -122,6 +122,17 @@ fn check_fits_audio(
 /// Converts a frequency in Hz to a fractional MIDI note number.
 ///
 /// Returns `NaN` for non-positive or non-finite input.
+/// A project's opening name, from the file it was imported from with its extension stripped.
+///
+/// A leading dot is kept, so a file called `.wav` names a project `.wav` rather than nothing.
+fn project_name(file_name: &str) -> String {
+    let trimmed = file_name.trim();
+    match trimmed.rfind('.') {
+        Some(dot) if dot > 0 => trimmed[..dot].to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
 #[wasm_bindgen(js_name = hzToMidi)]
 pub fn hz_to_midi(hz: f64, a4_hz: f64) -> f64 {
     axys_core::Tuning { a4_hz }
@@ -278,11 +289,13 @@ struct GuideOverlap {
 /// Owns the immutable analysis, the mutable edit state and the undo history, and
 /// compiles a [`RenderPlan`] on demand. It does not render audio; the worklet and the
 /// export worker each build their own [`PlaybackRenderer`] from the plan.
+///
+/// The project's name is not a field here: it lives in [`EditState`], so renaming is undone and
+/// redone with every other edit.
 #[wasm_bindgen]
 pub struct Session {
     samples: Vec<f32>,
     sample_rate: f64,
-    name: String,
     source: SourceInfo,
     analysis: AnalysisInfo,
     track: PitchTrack,
@@ -373,6 +386,7 @@ impl Session {
         };
 
         let state = EditState {
+            name: project_name(&name),
             blobs,
             scale: Default::default(),
             modulation: Default::default(),
@@ -388,7 +402,6 @@ impl Session {
         let mut session = Session {
             samples,
             sample_rate,
-            name,
             source,
             analysis: info,
             track,
@@ -441,12 +454,19 @@ impl Session {
         let mut session = Session {
             samples,
             sample_rate,
-            name: project.name.clone(),
             source: project.source.clone(),
             analysis: project.analysis.clone(),
             track,
             base: project.base.clone(),
-            state: project.edits.clone(),
+            // A project written before the name moved into the edit state carries it only at the
+            // top level, so it is read back into the one place the editor keeps it.
+            state: {
+                let mut edits = project.edits.clone();
+                if edits.name.trim().is_empty() {
+                    edits.name = project.name.clone();
+                }
+                edits
+            },
             history: project.history.clone(),
             midi,
             midi_bytes,
@@ -768,7 +788,7 @@ impl Session {
         let project = Project {
             schema_version: SCHEMA_VERSION,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
-            name: self.name.clone(),
+            name: self.state.name.clone(),
             source: self.source.clone(),
             analysis: self.analysis.clone(),
             track: Some(self.track.clone()),

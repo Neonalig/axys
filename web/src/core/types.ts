@@ -393,6 +393,7 @@ export type EditOp =
   | { type: 'setMixer'; mixer: MixerSettings }
   | { type: 'setScale'; scale: ScaleSettings }
   | { type: 'setTuning'; tuning: Tuning }
+  | { type: 'setName'; name: string }
   | { type: 'setAccidentals'; accidentals: AccidentalStyle }
   | { type: 'setModulation'; modulation: ModulationSettings }
   | { type: 'setFormant'; formant: FormantMode }
@@ -461,6 +462,14 @@ export interface AnalysisInfo {
 
 /** The mutable part of a project: everything an edit operation may change. */
 export interface EditState {
+  /**
+   * What the project is called.
+   *
+   * @remarks The single source of truth: the tab title, the window titlebar, the save file name
+   * and the export default all read it. It lives in the edit state because renaming is an edit
+   * like any other, undone and redone with the rest of the history.
+   */
+  name: string;
   blobs: BlobSet;
   /** Monitor levels for everything the transport plays. */
   mixer: MixerSettings;

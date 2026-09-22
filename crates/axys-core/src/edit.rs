@@ -204,6 +204,11 @@ pub enum EditOp {
         /// New tuning.
         tuning: Tuning,
     },
+    /// Renames the project.
+    SetName {
+        /// New name, which may not be blank once trimmed.
+        name: String,
+    },
     /// Replaces the convention note names are spelled with.
     SetAccidentals {
         /// New accidental style.
@@ -281,6 +286,7 @@ impl EditOp {
             EditOp::SetMixer { .. } => "Set Mixer",
             EditOp::SetScale { .. } => "Set Scale",
             EditOp::SetTuning { .. } => "Set Tuning",
+            EditOp::SetName { .. } => "Rename Project",
             EditOp::SetAccidentals { .. } => "Set Accidentals",
             EditOp::SetModulation { .. } => "Set Modulation",
             EditOp::SetFormant { .. } => "Set Formant",
@@ -521,6 +527,18 @@ pub fn apply_with_baseline(
             validate_tuning(tuning)?;
             state.tuning = *tuning;
         }
+        EditOp::SetName { name } => {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Err(AxysError::Invalid("a project name cannot be blank".into()));
+            }
+            if trimmed.chars().count() > MAX_NAME_CHARS {
+                return Err(AxysError::Invalid(format!(
+                    "a project name is longer than {MAX_NAME_CHARS} characters"
+                )));
+            }
+            state.name = trimmed.to_string();
+        }
         EditOp::SetAccidentals { accidentals } => {
             state.accidentals = *accidentals;
         }
@@ -757,6 +775,12 @@ fn validate_scale(scale: &ScaleSettings) -> Result<()> {
 }
 
 /// Rejects a reference tuning outside [`MIN_A4_HZ`]..=[`MAX_A4_HZ`].
+/// Longest a project name may be, in characters.
+///
+/// A name reaches a file system, a tab title and a titlebar, none of which handle an arbitrarily
+/// long one gracefully.
+const MAX_NAME_CHARS: usize = 120;
+
 fn validate_tuning(tuning: &Tuning) -> Result<()> {
     let a4 = finite(tuning.a4_hz, "reference tuning")?;
     if !(MIN_A4_HZ..=MAX_A4_HZ).contains(&a4) {
@@ -801,6 +825,7 @@ mod tests {
 
     fn state_with(blobs: Vec<Blob>) -> EditState {
         EditState {
+            name: "Test".to_string(),
             blobs: BlobSet::from_blobs(blobs).unwrap(),
             scale: ScaleSettings::default(),
             modulation: ModulationSettings::default(),
@@ -1683,6 +1708,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.accidentals, AccidentalStyle::Flats);
+    }
+
+    #[test]
+    fn renaming_trims_and_stores_the_name() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetName {
+                name: "  Take 3  ".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.name, "Take 3");
+    }
+
+    #[test]
+    fn a_blank_name_is_rejected() {
+        let mut s = state();
+        let before = s.name.clone();
+        assert!(apply(
+            &mut s,
+            None,
+            &EditOp::SetName {
+                name: "   ".to_string(),
+            },
+        )
+        .is_err());
+        assert_eq!(s.name, before);
+    }
+
+    #[test]
+    fn an_overlong_name_is_rejected() {
+        let mut s = state();
+        assert!(apply(
+            &mut s,
+            None,
+            &EditOp::SetName {
+                name: "n".repeat(MAX_NAME_CHARS + 1),
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn renaming_is_one_undo_step() {
+        let mut history = History::new();
+        let mut s = state();
+        let op = EditOp::SetName {
+            name: "Second Take".to_string(),
+        };
+        apply(&mut s, None, &op).unwrap();
+        history.push(op);
+        assert_eq!(history.undo_label(), Some("Rename Project"));
+
+        history.undo();
+        let mut replayed = state();
+        for op in history.applied() {
+            apply(&mut replayed, None, op).unwrap();
+        }
+        assert_eq!(replayed.name, "Test");
     }
 
     #[test]

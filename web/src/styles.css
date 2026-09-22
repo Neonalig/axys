@@ -94,9 +94,45 @@
   --axys-mixer-height: 248px;
   --axys-scrollbar: 12px;
 
-  /* Translucency of chrome floating over the canvas */
+  /*
+   * Translucency of chrome floating over the canvas. Real Mica is a DWM system backdrop for
+   * native windows: it is not exposed to web apps, and `backdrop-filter` samples only what is
+   * inside the page, never the desktop behind it. This is the part of Mica Alt that is actually
+   * available, which is panels that take colour from the editor underneath them.
+   */
   --axys-surface-alpha: 72%;
   --axys-blur: blur(20px) saturate(1.4);
+  --axys-veil: color-mix(in srgb, var(--axys-surface) var(--axys-surface-alpha), transparent);
+  --axys-veil-raised: color-mix(
+    in srgb,
+    var(--axys-surface-raised) var(--axys-surface-alpha),
+    transparent
+  );
+}
+
+/* Light paints on a brighter ground, so it needs a little more of the surface to stay legible */
+
+:root[data-theme='light'] {
+  --axys-surface-alpha: 78%;
+}
+
+/*
+ * High Contrast opts out: its promise is a fixed contrast floor, and anything showing through
+ * would break it. So does a browser with no `backdrop-filter`, where the blur would simply be a
+ * thinner panel.
+ */
+
+:root[data-theme='contrast'] {
+  --axys-veil: var(--axys-surface);
+  --axys-veil-raised: var(--axys-surface-raised);
+  --axys-blur: none;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --axys-veil: var(--axys-surface);
+    --axys-veil-raised: var(--axys-surface-raised);
+  }
 }
 
 *,
@@ -200,6 +236,34 @@ body {
   padding: 0 var(--axys-space-3);
   background: var(--axys-surface);
   border-bottom: 1px solid var(--axys-border);
+}
+
+/*
+ * A ground behind the canvas, so translucent chrome has something to sample past the end of a
+ * project. Over a flat sunken surface a blurred panel is only a slightly different flat surface,
+ * which reads as a mistake rather than as a material.
+ */
+
+.axys-canvas-area::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      120% 80% at 50% 0%,
+      color-mix(in srgb, var(--axys-accent) 7%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      90% 70% at 15% 100%,
+      color-mix(in srgb, var(--axys-surface-raised) 60%, transparent),
+      transparent 65%
+    );
+  pointer-events: none;
+}
+
+:root[data-theme='contrast'] .axys-canvas-area::before {
+  display: none;
 }
 
 #app > main,
@@ -310,7 +374,8 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--axys-space-3);
-  background: var(--axys-surface);
+  background: var(--axys-veil);
+  backdrop-filter: var(--axys-blur);
 }
 
 /* Folding the inspector away: the column narrows to a rail carrying the control that opens it */
@@ -358,7 +423,8 @@ body {
   padding: var(--axys-space-2) var(--axys-space-3);
   overflow-x: auto;
   border-top: 1px solid var(--axys-border);
-  background: var(--axys-surface);
+  background: var(--axys-veil);
+  backdrop-filter: var(--axys-blur);
   transition: height var(--axys-duration-base) var(--axys-ease-standard);
 }
 
@@ -488,6 +554,41 @@ body {
     border-left: 0;
     border-top: 1px solid var(--axys-border);
   }
+}
+
+/*
+ * The installed app draws its own titlebar: the toolbar rises into the window controls overlay
+ * and carries the project name. Every browser tab, and any host that does not grant the overlay,
+ * reports a zero-height title area and keeps the ordinary toolbar.
+ */
+
+@media (display-mode: window-controls-overlay) {
+  #app > header,
+  .axys-toolbar {
+    padding-left: max(var(--axys-space-3), env(titlebar-area-x, 0));
+    padding-right: var(--axys-space-3);
+    min-height: max(var(--axys-toolbar-height), env(titlebar-area-height, 0));
+    /* The bar is the drag handle; every control on it opts back out below. */
+    app-region: drag;
+  }
+
+  .axys-toolbar button,
+  .axys-toolbar input,
+  .axys-toolbar .axys-select,
+  .axys-toolbar .axys-title {
+    app-region: no-drag;
+  }
+}
+
+/* The project name, shown in the titlebar of the installed app only */
+
+.axys-title {
+  overflow: hidden;
+  max-width: 28ch;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Toolbar groups */
@@ -1005,7 +1106,8 @@ input.is-adjustable {
   padding: 4px;
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius);
-  background: var(--axys-surface-raised);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
   box-shadow: var(--axys-elevation-2);
   animation: axys-pop-in var(--axys-duration-fast) var(--axys-ease-enter);
   transform-origin: top center;
@@ -1116,7 +1218,8 @@ input.is-adjustable {
   padding: 4px 8px;
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius);
-  background: var(--axys-surface-raised);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
   box-shadow: var(--axys-elevation-2);
   color: var(--axys-text);
   font-size: var(--axys-size-sm);
@@ -1154,7 +1257,8 @@ input.is-adjustable {
   gap: var(--axys-space-2);
   width: 100%;
   padding: 10px 12px;
-  background: var(--axys-surface-raised);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
   color: var(--axys-text);
   border: 1px solid var(--axys-border-strong);
   border-left: 3px solid var(--axys-accent);
@@ -1221,7 +1325,8 @@ input.is-adjustable {
   padding: 16px;
   transform: translate(-50%, -50%);
   color: var(--axys-text);
-  background: var(--axys-surface-raised);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius-lg);
   box-shadow: var(--axys-elevation-3);

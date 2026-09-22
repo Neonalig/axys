@@ -217,6 +217,17 @@ export function rangeInput(min: number, max: number, step: number): HTMLInputEle
   return input;
 }
 
+/** Single-line text entry. */
+export function textInput(maxLength: number): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.id = nextControlId('text');
+  input.maxLength = maxLength;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  return input;
+}
+
 /** Checkbox for a boolean setting. */
 export function checkboxInput(): HTMLInputElement {
   const input = document.createElement('input');

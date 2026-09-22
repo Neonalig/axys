@@ -1239,3 +1239,40 @@ dismiss, focus back to the trigger either way.
 
 Every native select went, not only the three in the export dialog and the inspector. A set where
 some are native and some are not is exactly the inconsistency the primitives exist to end.
+
+### In-app translucency, because system Mica needs a native shell
+
+Mica is a DWM system backdrop for native windows. It is not exposed to web apps, and
+`backdrop-filter` samples only what is inside the page, never the desktop wallpaper behind it. A
+browser tab and an installed PWA both fall outside it. This is settled: do not reopen it without a
+native shell.
+
+What is available is the part of Mica Alt that actually matters, which is panels taking colour from
+the editor underneath them: `backdrop-filter: blur(20px) saturate(1.4)` over the surface at 72%
+alpha in dark and 78% in light, on menus, dropdowns, tooltips, dialogs, toasts, the inspector and
+the mixer. A ground layer behind the canvas gives them something to sample past the end of a
+project, because a blurred panel over a flat surface is only a slightly different flat surface.
+
+High Contrast opts out and stays opaque: its promise is a fixed contrast floor and anything showing
+through would break it. So does a browser with no `backdrop-filter`, where the blur would only be a
+thinner panel.
+
+The installed app draws its own titlebar through `window-controls-overlay` in `display_override`,
+the `titlebar-area-*` environment variables and `app-region`. The toolbar rises into the overlay and
+carries the project name. Every browser tab reports a zero-height title area and keeps the ordinary
+toolbar, so there is one layout with one extra rule rather than two.
+
+### The project's name lives in the edit state
+
+Renaming has to be undoable like any other edit, and the history replays `EditOp`s over the base
+state, so the name is a field of `EditState` and `SetName` is an ordinary operation. `Project.name`
+stays at the top of the saved file, written from `edits.name` on save and read back into it on open,
+so a file carries the name where a reader expects to find it while the editor keeps one copy.
+
+It opens as the imported audio's file name with the extension stripped, and it is edited in the
+inspector's Project panel. The tab title, the window titlebar, the save file name and the export
+default all read that one field. Title format: `Axys` with nothing open, `Take 3 - Axys` open and
+saved, `*Take 3 - Axys` while `store.dirty`; the marker leads so a truncated tab still shows it.
+
+Renaming does not move an already-saved file. Save writes to the handle it is bound to; the new
+name is what Save As and Export offer.

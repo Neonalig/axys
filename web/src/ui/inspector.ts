@@ -16,6 +16,7 @@ import {
   numberInput,
   rangeInput,
   selectInput,
+  textInput,
 } from './controls/index.js';
 import type { SelectElement } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
@@ -50,6 +51,8 @@ export interface InspectorHooks {
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
   setAccidentals(style: AccidentalStyle): void;
+  /** Renames the project. One undo step, like any other edit. */
+  setProjectName(name: string): void;
   /** Folds the inspector away to its rail, or opens it again. */
   setCollapsed(on: boolean): void;
 }
@@ -69,6 +72,9 @@ const NOTE_NAMES: Readonly<Record<AccidentalStyle, readonly string[]>> = {
  * Each division carries the note it divides by, set in Bravura. A triplet has no glyph of its own,
  * so it borrows the note it is three of, which is how a score writes one.
  */
+/** Longest a project name may be, matching the limit the core enforces. */
+const MAX_PROJECT_NAME = 120;
+
 const SNAP_DIVISIONS: readonly { value: number; label: string; glyph: MusicGlyph }[] = [
   { value: 1, label: 'Bar', glyph: 'noteWhole' },
   { value: 2, label: 'Minim (Half Note)', glyph: 'noteHalfUp' },
@@ -269,6 +275,7 @@ export class Inspector {
   readonly #blobHeading: HTMLElement;
 
   readonly #tuning: HTMLInputElement;
+  readonly #projectName: HTMLInputElement;
   readonly #accidentals: SelectElement;
   readonly #snap: SelectElement;
   readonly #timeDisplay: SelectElement;
@@ -389,6 +396,15 @@ export class Inspector {
 
     // Correction and voice character are operations rather than settings, so neither is
     // drawn here; each opens its own panel and previews in the editor while it is open.
+
+    // Project panel: what the project is called, which the tab title, the window titlebar, the
+    // save file name and the export default all read.
+    const projectPanel = panel('Project');
+    this.#projectName = textInput(MAX_PROJECT_NAME);
+    projectPanel.append(
+      field('Name', this.#projectName, 'What this project is called. Renaming is undoable.'),
+    );
+    project.append(projectPanel);
 
     // Display panel.
     const displayPanel = panel('Display');
@@ -553,6 +569,13 @@ export class Inspector {
     }
     const edits = state.edits;
     const style = edits?.accidentals ?? 'sharps';
+
+    // Left alone while it holds the caret, so an autosave or a playhead update does not rewrite
+    // a name halfway through being typed.
+    this.#projectName.disabled = state.projectName === null;
+    if (document.activeElement !== this.#projectName) {
+      this.#projectName.value = state.projectName ?? '';
+    }
 
     const selected = state.selection.blobs;
     const primary = selected.length > 0 ? selected[selected.length - 1] : undefined;
@@ -830,6 +853,19 @@ export class Inspector {
       this.#applyToSelection((blob) =>
         blob.excluded === excluded ? null : { type: 'setExcluded', blob: blob.id, excluded },
       );
+    });
+
+    // On change rather than on input: one undo step per rename, not one per keystroke. A blank
+    // name is put back rather than sent, because the core rejects it and would leave the field
+    // holding something the project does not have.
+    this.#projectName.addEventListener('change', () => {
+      const typed = this.#projectName.value.trim();
+      const current = this.#state?.projectName ?? '';
+      if (typed === '' || typed === current) {
+        this.#projectName.value = current;
+        return;
+      }
+      this.#hooks.setProjectName(typed);
     });
 
     this.#tuning.addEventListener('change', () => {

@@ -350,14 +350,15 @@ export class Session {
     );
   }
 
-  /** Serialises the whole project under `name`, including the imported MIDI guide. */
-  project(name: string, view: ViewState): string {
+  /**
+   * Serialises the whole project, including the imported MIDI guide.
+   *
+   * @remarks The name comes from the edit state rather than from a parameter, because that is
+   * where the one copy of it lives.
+   */
+  project(view: ViewState): string {
     const viewJson = JSON.stringify(view);
-    const json = call('Save Project', () => this.#alive().projectJson(viewJson));
-    const project = decode('Save Project', json, isProject, 'project');
-    if (project.name === name) return json;
-    project.name = name;
-    return JSON.stringify(project);
+    return call('Save Project', () => this.#alive().projectJson(viewJson));
   }
 
   /**

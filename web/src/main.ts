@@ -116,7 +116,6 @@ class AxysWorkspace implements Workspace {
 
   #session: Session | null = null;
   #plan: RenderPlan | null = null;
-  #name = 'Untitled';
   #projectId: string | null = null;
   #autosave: Autosave | null = null;
   #pending: PendingProject | null = null;
@@ -140,7 +139,7 @@ class AxysWorkspace implements Workspace {
   }
 
   get projectName(): string {
-    return this.#name;
+    return this.#store.state.projectName ?? 'Untitled';
   }
 
   get importing(): boolean {
@@ -169,7 +168,6 @@ class AxysWorkspace implements Workspace {
     this.#plan = null;
     this.#projectFile = null;
     this.#projectId = null;
-    this.#name = 'Untitled';
     clearPeaks();
     this.#audio.unloadSource();
 
@@ -179,6 +177,7 @@ class AxysWorkspace implements Workspace {
       phase: 'empty',
       message: null,
       source: null,
+      projectName: null,
       track: null,
       blobs: [],
       conflicts: [],
@@ -395,7 +394,7 @@ class AxysWorkspace implements Workspace {
     if (!this.#session || !this.#store.state.dirty) return true;
     const answer = await confirmAction({
       title: 'Unsaved Changes',
-      message: `${this.#name} has edits that are not saved. ${what} discards them.`,
+      message: `${this.projectName} has edits that are not saved. ${what} discards them.`,
       confirm,
       alternative: 'Save First',
       icon: 'warning',
@@ -485,7 +484,7 @@ class AxysWorkspace implements Workspace {
         this.#store.update({ dirty: false });
         this.#toast.info(`Saved ${existing.name}`);
       } else {
-        const name = `${this.#name}.axys.json`;
+        const name = `${this.projectName}.axys.json`;
         const handle = await saveFileAs(json, name, PROJECT_KIND, 'application/json');
         if (handle === null && !hasHandleSupport()) {
           this.#toast.info(`Saved ${name}`);
@@ -546,13 +545,15 @@ class AxysWorkspace implements Workspace {
           this.#progress(stage, progress);
         },
       );
-      await saveFileAs(toBytes(encoded.bytes), `${this.#name}.wav`, EXPORT_KIND, 'audio/wav');
+      await saveFileAs(toBytes(encoded.bytes), `${this.projectName}.wav`, EXPORT_KIND, 'audio/wav');
       if (encoded.report.clippedSamples > 0) {
         this.#toast.warn(
           `Clipped ${String(encoded.report.clippedSamples)} samples. Lower the level and export again.`,
         );
       } else {
-        this.#toast.info(`Exported ${this.#name}.wav, peak ${encoded.report.peak.toFixed(2)}`);
+        this.#toast.info(
+          `Exported ${this.projectName}.wav, peak ${encoded.report.peak.toFixed(2)}`,
+        );
       }
     } catch (error) {
       this.#fail('Export WAV', error);
@@ -664,7 +665,6 @@ class AxysWorkspace implements Workspace {
     this.#session?.free();
     this.#autosave?.dispose();
     this.#session = session;
-    this.#name = name;
     // A fresh import has no file of its own yet, so the next Save asks where it goes.
     if (view === null) this.#projectFile = null;
 
@@ -698,6 +698,7 @@ class AxysWorkspace implements Workspace {
       phase: 'ready',
       message: null,
       source,
+      projectName: edits.name,
       track,
       blobs,
       plan,
@@ -747,7 +748,7 @@ class AxysWorkspace implements Workspace {
     const session = this.#session;
     if (!session) return null;
     try {
-      return session.project(this.#name, this.#store.state.view);
+      return session.project(this.#store.state.view);
     } catch (error) {
       this.#fail('Save Project', error);
       return null;
@@ -798,6 +799,9 @@ class AxysWorkspace implements Workspace {
         plan,
         conflicts: session.conflicts(),
         edits,
+        // Renaming is an ordinary edit, so the name comes back with the rest of the state and
+        // needs no path of its own.
+        projectName: edits.name,
         // An edit can split, join or replace blobs, so what the selected span amounts to is
         // worked out again rather than left naming blobs the edit may have just removed.
         selection: selectionForRanges(blobs, this.#store.state.selection.ranges),
@@ -1224,6 +1228,9 @@ function buildHooks(
     },
     applyEdit(op: EditOp): void {
       workspace()?.apply(op);
+    },
+    setProjectName(name: string): void {
+      workspace()?.apply({ type: 'setName', name });
     },
     setView(patch: Partial<ViewState>): void {
       // How time reads is a display habit that follows the person between projects, so it is

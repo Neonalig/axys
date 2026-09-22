@@ -75,6 +75,8 @@ export interface ShellHooks {
   setTheme(choice: ThemeChoice): void;
   /** Applies and remembers the accent the chrome takes. */
   setAccent(accent: AccentName): void;
+  /** Renames the project. One undo step, like any other edit. */
+  setProjectName(name: string): void;
   /** Shows or hides the names beside the toolbar icons, and remembers the choice. */
   setToolbarLabels(on: boolean): void;
   /** Folds the inspector away to its rail, or opens it again, and remembers the choice. */
@@ -363,6 +365,9 @@ interface ButtonFace {
   pressed?: boolean;
 }
 
+/** What sits between the project's name and the application's in a window title. */
+const TITLE_SEPARATOR = ' - ';
+
 function group(label: string): HTMLElement {
   const element = document.createElement('div');
   element.className = 'axys-group';
@@ -442,6 +447,7 @@ export class AppShell {
   /* Assigned by #buildMixerToggle, which the constructor calls before anything reads it. */
   #mixerIcon!: HTMLElement;
   readonly #themeButton: HTMLButtonElement;
+  readonly #title: HTMLElement;
   readonly #resizer: HTMLElement;
   /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
   #resizeGrab = 0;
@@ -544,6 +550,14 @@ export class AppShell {
     spacer.className = 'axys-spacer';
     header.append(spacer);
 
+    // The project's name at the end of the bar, which is the window's titlebar once the app is
+    // installed. In a browser tab it simply reads as one more thing the bar says.
+    const title = document.createElement('span');
+    title.className = 'axys-title';
+    title.hidden = true;
+    header.append(title);
+    this.#title = title;
+
     const main = document.createElement('main');
     main.className = 'axys-canvas-area';
 
@@ -620,6 +634,9 @@ export class AppShell {
     this.#inspector = new Inspector({
       applyEdit: (op) => {
         this.#hooks.applyEdit(op);
+      },
+      setProjectName: (name) => {
+        this.#hooks.setProjectName(name);
       },
       setView: (patch) => {
         this.#hooks.setView(patch);
@@ -833,6 +850,16 @@ export class AppShell {
     this.#mixerToggle.setAttribute('aria-label', mixerLabel);
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
     setTooltip(this.#mixerToggle, `${mixerLabel} (K)`);
+
+    // `Axys` with nothing open, `Take 3 - Axys` open and saved, `*Take 3 - Axys` unsaved. The
+    // marker leads, so a truncated tab still shows it.
+    const name = state.projectName;
+    const title = name === null ? 'Axys' : `${state.dirty ? '*' : ''}${name}${TITLE_SEPARATOR}Axys`;
+    if (document.title !== title) {
+      document.title = title;
+    }
+    this.#title.textContent = name ?? '';
+    this.#title.hidden = name === null;
 
     this.setToolbarLabels(state.toolbarLabels);
     // The column width is the grid's, so the shell carries the folded state and the width rather

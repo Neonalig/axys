@@ -17,6 +17,7 @@ export {
   nextControlId,
   numberInput,
   rangeInput,
+  textInput,
 } from './field.js';
 export { selectInput } from './select.js';
 export type { SelectElement, SelectOption } from './select.js';

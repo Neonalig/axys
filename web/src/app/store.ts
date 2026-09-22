@@ -19,6 +19,8 @@ export interface AppState {
   phase: 'empty' | 'loading' | 'ready' | 'error';
   message: string | null;
   source: SourceInfo | null;
+  /** What the project is called, or `null` with nothing open. */
+  projectName: string | null;
   track: PitchTrackArrays | null;
   blobs: Blob[];
   conflicts: TimingConflict[];
@@ -167,6 +169,7 @@ export function initialState(): AppState {
     phase: 'empty',
     message: null,
     source: null,
+    projectName: null,
     track: null,
     blobs: [],
     conflicts: [],
