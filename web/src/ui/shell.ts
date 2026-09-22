@@ -25,9 +25,11 @@ import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { button as control } from './controls/index.js';
 import { ICONS, STATE_ICONS, stateIcon, type IconName } from './icons.js';
+import type { Dialog } from './dialog.js';
 import { Inspector } from './inspector.js';
 import { MixerPanel } from './mixer.js';
 import { showContextMenu } from './menu.js';
+import { showCheatsheet, showCommandPalette } from './palette.js';
 import type { MenuEntry } from './menu.js';
 import type { AccentName } from './accent.js';
 import { ACCENT_LABELS, ACCENT_NAMES, DEFAULT_ACCENT, accentTokens } from './accent.js';
@@ -47,6 +49,16 @@ export interface ShellCommand {
   label: string;
   group: CommandGroup;
   shortcut?: string;
+}
+
+/**
+ * A command as the palette and the cheatsheet read it.
+ *
+ * @remarks The same commands the toolbar and the menus show, with the icon already resolved, so
+ * nothing has to be registered a second time to be findable.
+ */
+export interface SearchableCommand extends ShellCommand {
+  icon: IconName;
 }
 
 /** Everything the chrome needs in order to act on the user's behalf. */
@@ -365,6 +377,14 @@ interface ButtonFace {
   pressed?: boolean;
 }
 
+/**
+ * The commands the empty canvas offers, in the order it offers them.
+ *
+ * @remarks Open first, because one picker takes a vocal, a project or a guide and that is what
+ * an empty editor is waiting for.
+ */
+const EMPTY_COMMANDS: readonly string[] = ['file.open', 'file.newProject'];
+
 /** What sits between the project's name and the application's in a window title. */
 const TITLE_SEPARATOR = ' - ';
 
@@ -431,6 +451,7 @@ function formatClock(seconds: number): string {
  */
 export class AppShell {
   readonly #hooks: ShellHooks;
+  readonly #commands: readonly ShellCommand[];
   readonly #root: HTMLElement;
   readonly #canvas: HTMLCanvasElement;
   readonly #live: HTMLElement;
@@ -448,6 +469,13 @@ export class AppShell {
   #mixerIcon!: HTMLElement;
   readonly #themeButton: HTMLButtonElement;
   readonly #title: HTMLElement;
+  readonly #empty: HTMLElement;
+  readonly #overflow: HTMLButtonElement;
+  /** Groups currently folded into the overflow menu, outermost first. */
+  #folded: HTMLElement[] = [];
+  readonly #toolbarFit: ResizeObserver;
+  /** The palette or the cheatsheet while one is open, so the same key closes it again. */
+  #panel: { kind: 'palette' | 'cheatsheet'; dialog: Dialog } | null = null;
   readonly #resizer: HTMLElement;
   /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
   #resizeGrab = 0;
@@ -477,6 +505,7 @@ export class AppShell {
 
   private constructor(options: ShellOptions) {
     this.#hooks = options.hooks;
+    this.#commands = [...options.commands];
     this.#root = options.root;
     this.#root.replaceChildren();
 
@@ -496,6 +525,11 @@ export class AppShell {
     }
 
     this.#header = header;
+    // The bar does not wrap, so what fits is measured whenever the window changes.
+    this.#toolbarFit = new ResizeObserver(() => {
+      this.#reflowToolbar();
+    });
+    this.#toolbarFit.observe(header);
     this.#themeChoice = options.theme ?? 'system';
     this.#accent = options.accent ?? DEFAULT_ACCENT;
     const theme = this.#buildTheme();
@@ -546,6 +580,21 @@ export class AppShell {
 
     header.classList.toggle('is-labelled', options.toolbarLabels === true);
 
+    // The overflow control, which takes whichever groups the bar has run out of room for. It
+    // sits before the spacer so it stays with the groups rather than drifting to the far end.
+    const overflow = control({
+      icon: 'overflow',
+      label: 'More Commands',
+      tooltip: 'More Commands',
+    });
+    overflow.hidden = true;
+    overflow.setAttribute('aria-haspopup', 'menu');
+    overflow.addEventListener('click', () => {
+      this.#openButtonMenu(overflow, (shell) => shell.#overflowEntries());
+    });
+    header.append(overflow);
+    this.#overflow = overflow;
+
     const spacer = document.createElement('span');
     spacer.className = 'axys-spacer';
     header.append(spacer);
@@ -592,6 +641,37 @@ export class AppShell {
       },
     });
     main.append(this.#timeBar.element, this.#pitchBar.element);
+
+    // Before anything is imported the canvas has nothing to draw, so it says how to start
+    // rather than showing an empty grid. All three ways in, because a drop target alone is
+    // unreachable from the keyboard and a button alone hides that a file can be dropped.
+    const empty = document.createElement('div');
+    empty.className = 'axys-empty';
+    empty.hidden = true;
+
+    const emptyHeading = document.createElement('h2');
+    emptyHeading.textContent = 'Open a vocal to start';
+    const emptyHint = document.createElement('p');
+    emptyHint.className = 'axys-hint';
+    emptyHint.textContent = 'Drop an audio file here, or open one.';
+    const emptyActions = group('Ways In');
+    for (const id of EMPTY_COMMANDS) {
+      const command = options.commands.find((entry) => entry.id === id);
+      if (command === undefined) continue;
+      const action = control({
+        icon: iconFor(command),
+        label: command.label,
+        tooltip: tooltipFor(command),
+        onPress: () => {
+          this.#hooks.runCommand(id);
+        },
+      });
+      action.classList.add('is-labelled');
+      emptyActions.append(action);
+    }
+    empty.append(emptyHeading, emptyHint, emptyActions);
+    main.append(empty);
+    this.#empty = empty;
 
     // Import covers the editor rather than sitting beside it: the timeline underneath is not
     // the project being opened, and letting it be clicked invites edits that are about to be
@@ -825,6 +905,7 @@ export class AppShell {
     this.#statusConflicts.value.textContent = String(state.conflicts.length);
     this.#statusConflicts.value.classList.add('axys-warning');
 
+    this.#empty.hidden = state.phase !== 'empty' || state.analysis.running;
     this.#busy.hidden = !state.analysis.running;
     this.#busyStage.textContent = state.analysis.stage === '' ? 'Working' : state.analysis.stage;
     // One reading of the same work, so the cover and the status bar never show two different
@@ -898,6 +979,8 @@ export class AppShell {
 
   /** Removes the chrome and its notification layer. */
   dispose(): void {
+    this.#toolbarFit.disconnect();
+    this.#panel?.dialog.close();
     this.#timeBar.dispose();
     this.#pitchBar.dispose();
     this.#tooltips.dispose();
@@ -934,7 +1017,11 @@ export class AppShell {
 
   /** Shows or hides the names beside the icons, wherever the chrome draws one. */
   setToolbarLabels(on: boolean): void {
-    this.#header.classList.toggle('is-labelled', on);
+    if (this.#header.classList.contains('is-labelled') !== on) {
+      this.#header.classList.toggle('is-labelled', on);
+      // Names change every button's width, so what fits is a different answer.
+      this.#reflowToolbar();
+    }
     this.#footer.classList.toggle('is-labelled', on);
   }
 
@@ -1068,6 +1155,50 @@ export class AppShell {
     this.#hooks.runCommand(id);
   }
 
+  /** Every command as the palette and the cheatsheet read it, icon already resolved. */
+  get searchableCommands(): readonly SearchableCommand[] {
+    return this.#commands.map((command) => ({ ...command, icon: iconFor(command) }));
+  }
+
+  /** Opens the command palette, or closes it when it is already open. */
+  toggleCommandPalette(): void {
+    if (this.#closePanel('palette')) {
+      return;
+    }
+    const dialog = showCommandPalette({
+      commands: this.searchableCommands,
+      isEnabled: (id) => this.#hooks.isCommandEnabled(id),
+      run: (id) => {
+        this.#hooks.runCommand(id);
+      },
+    });
+    this.#holdPanel('palette', dialog);
+  }
+
+  /** Opens the keyboard cheatsheet, or closes it when it is already open. */
+  toggleCheatsheet(): void {
+    if (this.#closePanel('cheatsheet')) {
+      return;
+    }
+    this.#holdPanel('cheatsheet', showCheatsheet(this.searchableCommands));
+  }
+
+  #holdPanel(kind: 'palette' | 'cheatsheet', dialog: Dialog): void {
+    this.#panel?.dialog.close();
+    this.#panel = { kind, dialog };
+  }
+
+  /** Closes the held panel when it is this one, and says whether it did. */
+  #closePanel(kind: 'palette' | 'cheatsheet'): boolean {
+    const held = this.#panel;
+    this.#panel = null;
+    if (held === null) {
+      return false;
+    }
+    held.dialog.close();
+    return held.kind === kind;
+  }
+
   /** Whether a command can run, for a button menu. */
   can(id: string): boolean {
     return this.#hooks.isCommandEnabled(id);
@@ -1160,6 +1291,60 @@ export class AppShell {
   /** The width the inspector column is drawn at now. */
   #inspectorWidth(): number {
     return this.#inspector.element.getBoundingClientRect().width;
+  }
+
+  /**
+   * Folds toolbar groups into the overflow menu until the bar fits on one line.
+   *
+   * @remarks The bar does not wrap: a two-line toolbar moves every control underneath it and
+   * changes how tall the editor is, which is worse than a menu. Groups are folded from the right,
+   * so the file and edit commands that anchor the bar are the last to go.
+   *
+   * Measured against `scrollWidth`, which is what the row would need, so the check does not
+   * depend on knowing any control's own width.
+   */
+  #reflowToolbar(): void {
+    for (const group of this.#folded) {
+      group.hidden = false;
+    }
+    this.#folded = [];
+    this.#overflow.hidden = true;
+
+    const groups = [...this.#header.querySelectorAll<HTMLElement>('.axys-group')].filter(
+      (group) => !group.contains(this.#overflow),
+    );
+    let index = groups.length - 1;
+    while (this.#header.scrollWidth > this.#header.clientWidth && index >= 0) {
+      const group = groups[index];
+      index -= 1;
+      if (group === undefined || group.hidden) continue;
+      group.hidden = true;
+      this.#folded.unshift(group);
+      this.#overflow.hidden = false;
+    }
+  }
+
+  /** The folded groups' commands, as menu entries in the order the bar had them. */
+  #overflowEntries(): MenuEntry[] {
+    const entries: MenuEntry[] = [];
+    for (const group of this.#folded) {
+      if (entries.length > 0) {
+        entries.push({ separator: true });
+      }
+      for (const [id, entry] of this.#commandButtons) {
+        if (!group.contains(entry.button)) continue;
+        entries.push({
+          label: entry.command.label,
+          icon: iconFor(entry.command),
+          ...(entry.command.shortcut === undefined ? {} : { key: entry.command.shortcut }),
+          enabled: !entry.button.disabled,
+          run: () => {
+            this.#hooks.runCommand(id);
+          },
+        });
+      }
+    }
+    return entries;
   }
 
   #buildToolGroup(): HTMLElement {

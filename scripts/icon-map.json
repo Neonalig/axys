@@ -55,6 +55,8 @@
     "sourceCode": "code",
     "warning": "triangle-alert",
     "info": "info",
+    "overflow": "ellipsis",
+    "search": "search",
     "caret": "chevron-down",
     "close": "x"
   },

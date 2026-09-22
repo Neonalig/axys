@@ -230,7 +230,10 @@ body {
   display: flex;
   align-items: center;
   gap: var(--axys-space-2);
-  flex-wrap: wrap;
+  /* The bar never wraps: a second line moves the editor down and changes how tall it is. What
+     does not fit folds into the overflow menu instead. */
+  flex-wrap: nowrap;
+  overflow: hidden;
   min-height: var(--axys-toolbar-height);
   transition: min-height var(--axys-duration-base) var(--axys-ease-standard);
   padding: 0 var(--axys-space-3);
@@ -1206,6 +1209,131 @@ input.is-adjustable {
   box-shadow:
     0 0 0 2px var(--axys-surface-raised),
     0 0 0 3px var(--axys-text);
+}
+
+/* The command palette, and the keyboard cheatsheet beside it */
+
+.axys-palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-2);
+  width: min(560px, 90vw);
+}
+
+.axys-palette-search {
+  width: 100%;
+}
+
+.axys-palette-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 44vh;
+  overflow-y: auto;
+}
+
+.axys-palette-item {
+  display: flex;
+  gap: var(--axys-space-2);
+  align-items: center;
+  justify-content: flex-start;
+  height: 30px;
+  padding: 0 var(--axys-space-2);
+  border: 0;
+  border-radius: var(--axys-radius-sm);
+  background: transparent;
+  text-align: left;
+}
+
+/* The row Enter would run, which is not the focused element: the caret stays in the field */
+
+.axys-palette-item.is-active:not(:disabled) {
+  color: var(--axys-accent-text);
+  background: var(--axys-accent);
+}
+
+.axys-palette-item.is-active:not(:disabled) .axys-menu-icon,
+.axys-palette-item.is-active:not(:disabled) .axys-palette-group,
+.axys-palette-item.is-active:not(:disabled) .axys-menu-key {
+  color: inherit;
+  border-color: currentcolor;
+}
+
+.axys-palette-group {
+  margin-left: auto;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-cheatsheet {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--axys-space-4);
+  width: min(720px, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.axys-cheatsheet-group > h3 {
+  margin: 0 0 var(--axys-space-2);
+  font-size: var(--axys-size-md);
+  font-weight: var(--axys-weight-strong);
+}
+
+.axys-cheatsheet dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--axys-space-1) var(--axys-space-2);
+  margin: 0;
+  align-items: center;
+}
+
+.axys-cheatsheet dt {
+  overflow: hidden;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-cheatsheet dd {
+  margin: 0;
+  text-align: right;
+}
+
+/* The empty canvas: how to start, before anything has been imported */
+
+.axys-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-3);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.axys-empty[hidden] {
+  display: none;
+}
+
+.axys-empty > h2 {
+  margin: 0;
+  font-size: var(--axys-size-lg);
+  font-weight: var(--axys-weight-strong);
+}
+
+.axys-empty > .axys-hint {
+  margin: 0;
+}
+
+/* The heading and the hint are read, not pressed, so only the buttons take the pointer back */
+
+.axys-empty .axys-group {
+  pointer-events: auto;
 }
 
 /* Tooltips: drawn by the page, so they appear on our delay and without window focus */

@@ -1276,3 +1276,39 @@ saved, `*Take 3 - Axys` while `store.dirty`; the marker leads so a truncated tab
 
 Renaming does not move an already-saved file. Save writes to the handle it is bound to; the new
 name is what Save As and Export offer.
+
+### The palette and the cheatsheet read the command list, nothing else
+
+`Ctrl+Shift+P` opens the command palette and `?` the keyboard cheatsheet, both over the same
+commands the toolbar and the menus already show. A command reaches either by existing, not by being
+registered a second time, so neither can drift out of date.
+
+Matching is a subsequence over the label and its group rather than a substring, so `expwav` finds
+Export Audio without anybody maintaining a keyword list. A label prefix sorts first, then a
+substring, then the toolbar's own order. The row Enter would run is marked rather than focused,
+because the caret stays in the search field.
+
+Opening either needs the chrome, so `CommandContext` carries a `Chrome` with exactly two methods.
+Everything else a command opens is a dialog the command builds, because the chrome has no business
+knowing what an export looks like.
+
+### A shifted punctuation key ignores Shift
+
+`?` never fired: the chord parsed as the bare key with Shift off, while the keystroke arrived with
+Shift on, so they never matched. On most layouts `?` _is_ Shift and the slash key, so demanding
+Shift be off means the chord can never be pressed, and demanding it be on binds a key nobody wrote
+down. A chord whose key is a single punctuation character now matches whatever Shift is doing.
+
+### The toolbar folds rather than wraps
+
+The bar had `flex-wrap: wrap`, so a narrow window gave it a second line, which moves the editor down
+and changes how tall it is. It now folds groups into an overflow menu from the right, so the file
+and edit commands that anchor the bar are the last to go. What fits is measured from the header's
+own `scrollWidth` against its `clientWidth`, so the check needs to know no control's width, and it
+is re-measured on resize and whenever the button names are turned on or off.
+
+### An empty canvas says how to start
+
+Before anything is imported the editor drew an empty grid. It now offers the ways in: a drop
+target, the words saying a file can be dropped, and buttons, because a drop target alone is
+unreachable from the keyboard and a button alone hides that dropping works.

@@ -64,6 +64,14 @@ interface Chord {
   shift: boolean;
   alt: boolean;
   key: string;
+  /**
+   * Whether Shift has to agree for this chord to match.
+   *
+   * @remarks It does not for a punctuation key, because the key is what Shift produces. `?` is
+   * Shift and the slash key on most layouts, so demanding that Shift be off would mean the chord
+   * could never be pressed, and demanding it be on would bind a key nobody wrote down.
+   */
+  shiftMatters: boolean;
 }
 
 function parseChord(shortcut: string): Chord | null {
@@ -73,7 +81,14 @@ function parseChord(shortcut: string): Chord | null {
     .filter((part) => part.length > 0);
   const key = parts.pop();
   if (key === undefined) return null;
-  const chord: Chord = { primary: false, shift: false, alt: false, key: normaliseKey(key) };
+  const normalised = normaliseKey(key);
+  const chord: Chord = {
+    primary: false,
+    shift: false,
+    alt: false,
+    key: normalised,
+    shiftMatters: normalised.length !== 1 || /[A-Z0-9]/.test(normalised),
+  };
   for (const part of parts) {
     const modifier = part.toLowerCase();
     if (modifier === 'ctrl' || modifier === 'cmd' || modifier === 'meta') chord.primary = true;
@@ -95,11 +110,18 @@ function chordOf(event: KeyboardEvent): Chord {
     shift: event.shiftKey,
     alt: event.altKey,
     key: normaliseKey(event.key),
+    shiftMatters: true,
   };
 }
 
-function sameChord(a: Chord, b: Chord): boolean {
-  return a.primary === b.primary && a.shift === b.shift && a.alt === b.alt && a.key === b.key;
+/** Whether a keystroke is the chord a command asked for. `binding` decides whether Shift counts. */
+function sameChord(pressed: Chord, binding: Chord): boolean {
+  return (
+    pressed.primary === binding.primary &&
+    pressed.alt === binding.alt &&
+    pressed.key === binding.key &&
+    (!binding.shiftMatters || pressed.shift === binding.shift)
+  );
 }
 
 /** True while the keystroke belongs to a text field rather than to the editor. */

@@ -153,6 +153,21 @@ export interface CommandContext {
   audio: AudioEngine;
   toast: ToastHost;
   workspace: Workspace;
+  /** The chrome, for the two commands that open a panel over the command list itself. */
+  chrome: Chrome;
+}
+
+/**
+ * What a command may ask the chrome to show.
+ *
+ * @remarks Only the panels built out of the command list itself. Everything else a command opens
+ * is a dialog it builds, because the chrome has no business knowing what an export looks like.
+ */
+export interface Chrome {
+  /** Opens the command palette, or closes it when it is already open. */
+  toggleCommandPalette(): void;
+  /** Opens the keyboard cheatsheet, or closes it when it is already open. */
+  toggleCheatsheet(): void;
 }
 
 /** Nominal viewport the zoom commands measure against, so zoom needs no canvas. */
@@ -777,6 +792,26 @@ export function buildCommands(): Command[] {
       },
     },
 
+    {
+      id: 'view.commandPalette',
+      label: 'Find Command',
+      group: 'View',
+      shortcut: 'Ctrl+Shift+P',
+      enabled: () => true,
+      run: (ctx) => {
+        ctx.chrome.toggleCommandPalette();
+      },
+    },
+    {
+      id: 'help.shortcuts',
+      label: 'Keyboard Shortcuts',
+      group: 'Help',
+      shortcut: '?',
+      enabled: () => true,
+      run: (ctx) => {
+        ctx.chrome.toggleCheatsheet();
+      },
+    },
     {
       // One Help entry: the diagnostics dialog already carries the Source Code offer at its
       // foot, so a second button for it was the same dialog by another name.

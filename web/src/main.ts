@@ -1397,7 +1397,7 @@ async function start(): Promise<void> {
       showContextMenu(blobMenu(hit.blob !== null, commands, hooks), at);
     },
   });
-  context = { store, editor, audio, toast, workspace };
+  context = { store, editor, audio, toast, workspace, chrome: shell };
 
   dismissSplash();
 
