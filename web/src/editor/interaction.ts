@@ -45,7 +45,7 @@ import {
   SNAP_PIXELS,
   snapTime,
 } from './tools.js';
-import { fitView, RULER_HEIGHT, Viewport } from './view.js';
+import { fitView, isVisible, RULER_HEIGHT, snapViewTo, Viewport } from './view.js';
 
 /** Everything the controller needs from the shell around it. */
 export interface EditorControllerOptions {
@@ -59,6 +59,8 @@ export interface EditorControllerOptions {
   audition?(start: number, end: number): void;
   /** Moves the transport to a position, for ruler scrubbing. */
   seek?(seconds: number): void;
+  /** Sets or clears the loop the transport plays, in output seconds. */
+  setLoop?(range: { start: number; end: number } | null): void;
   /** Reports what a gesture did, for the live region. */
   announce?(message: string): void;
   /** Opens the menu for what was right-clicked, at a viewport position. */
@@ -71,18 +73,17 @@ type Gesture =
   | { kind: 'rubberBand'; additive: boolean; extend: boolean }
   | { kind: 'scrub' }
   | { kind: 'loop'; anchorTime: number }
+  | { kind: 'rulerDrag'; anchorTime: number; drawing: boolean }
   | { kind: 'pitch'; blobs: BlobId[]; semitones: number }
   | { kind: 'anchor'; blob: BlobId; index: number; time: number; midi: number }
   | { kind: 'pen'; points: GesturePoint[] }
   | { kind: 'line'; from: GesturePoint; to: GesturePoint; curved: boolean }
-  | { kind: 'smooth'; blob: BlobId; start: number; end: number; amount: number }
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
   | { kind: 'edge'; blob: BlobId; edge: Edge; sourceTime: number; scale: number | null }
   | { kind: 'audition'; start: number; end: number }
   | { kind: 'pan'; from: ViewState }
   | { kind: 'split'; blob: BlobId; time: number };
 
-const SMOOTH_TRAVEL = 150;
 const WHEEL_ZOOM = 0.002;
 const KEY_ZOOM = 1.3;
 
@@ -645,14 +646,24 @@ export class EditorController {
       case '_':
         this.zoomTime(1 / KEY_ZOOM);
         break;
-      case '0':
+      case '.':
         this.zoomFit();
         break;
+      // Home, End and the page keys read the timeline, the way they read a document. Shift keeps
+      // the page keys on the pitch axis, which is the only axis they used to have.
+      case 'Home':
+        this.goTo(0);
+        break;
+      case 'End':
+        this.goTo(this.#projectEnd());
+        break;
       case 'PageUp':
-        this.panBy(0, -this.viewport.plotHeight / 2);
+        if (event.shiftKey) this.panBy(0, -this.viewport.plotHeight / 2);
+        else this.panBy(-this.viewport.width, 0);
         break;
       case 'PageDown':
-        this.panBy(0, this.viewport.plotHeight / 2);
+        if (event.shiftKey) this.panBy(0, this.viewport.plotHeight / 2);
+        else this.panBy(this.viewport.width, 0);
         break;
       default:
         return;
@@ -672,10 +683,10 @@ export class EditorController {
         const loop = state.transport.loop;
         return { kind: 'loop', anchorTime: hit.edge === 'start' ? loop.end : loop.start };
       }
-      // No loop drawing here: the ruler places the playhead, the same as anywhere else. A loop
-      // comes from the selection through Loop Selection, and its edges are dragged once it does.
+      // A press on the ruler places the playhead and a drag across it draws a loop, which is
+      // where every other editor puts the loop and where people reach for it first.
       this.#scrubTo(hit.time);
-      return { kind: 'scrub' };
+      return { kind: 'rulerDrag', anchorTime: hit.time, drawing: false };
     }
 
     switch (state.tool) {
@@ -710,16 +721,6 @@ export class EditorController {
         const from = { time: hit.time, midi: hit.midi };
         return { kind: 'line', from, to: from, curved: modifiers.fine };
       }
-      case 'smooth':
-        return hit.blob === null
-          ? this.#beginScrub(hit)
-          : {
-              kind: 'smooth',
-              blob: hit.blob,
-              start: hit.sourceTime,
-              end: hit.sourceTime,
-              amount: 0.15,
-            };
       case 'time': {
         if (hit.blob === null) {
           return this.#beginScrub(hit);
@@ -767,6 +768,19 @@ export class EditorController {
       case 'scrub':
         this.#scrubTo(time);
         break;
+      case 'rulerDrag': {
+        // Under the slop the press is still a click, so the playhead keeps following the pointer
+        // and no loop is drawn from a hand that never meant to move.
+        if (!gesture.drawing && Math.abs(this.#current.x - this.#origin.x) <= CLICK_SLOP) {
+          this.#scrubTo(time);
+          break;
+        }
+        gesture.drawing = true;
+        const start = Math.min(gesture.anchorTime, time);
+        const end = Math.max(gesture.anchorTime, time);
+        this.#setLoop(start, end);
+        break;
+      }
       case 'loop': {
         const start = Math.min(gesture.anchorTime, time);
         const end = Math.max(gesture.anchorTime, time);
@@ -819,17 +833,6 @@ export class EditorController {
           : snapMidi(midi, this.#pitchSnap(modifiers), this.#store.state.edits?.scale ?? null);
         gesture.to = { time: this.#snapTime(time, modifiers), midi: value };
         gesture.curved = modifiers.fine;
-        break;
-      }
-      case 'smooth': {
-        const blob = this.#blob(gesture.blob);
-        if (blob === undefined) {
-          break;
-        }
-        gesture.end = clamp(outputToSource(blob, time), blob.start, blob.end);
-        const travel = Math.abs(this.#current.y - this.#origin.y) / SMOOTH_TRAVEL;
-        const amount = clamp(travel, 0, 1);
-        gesture.amount = modifiers.fine ? amount * FINE_FACTOR : Math.max(0.15, amount);
         break;
       }
       case 'time': {
@@ -943,14 +946,6 @@ export class EditorController {
           points: [gesture.from, gesture.to],
           label: `Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
         };
-      case 'smooth':
-        return {
-          kind: 'span',
-          blob: gesture.blob,
-          start: gesture.start,
-          end: gesture.end,
-          label: `Smooth ${Math.round(gesture.amount * 100)}%`,
-        };
       case 'split':
         return {
           kind: 'split',
@@ -1034,17 +1029,6 @@ export class EditorController {
           gesture.curved ? 'smooth' : 'linear',
           `Draw Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
         );
-        break;
-      }
-      case 'smooth': {
-        const start = Math.min(gesture.start, gesture.end);
-        const end = Math.max(gesture.start, gesture.end);
-        if (end - start >= MIN_BLOB_SECONDS && gesture.amount > 0) {
-          this.#commit(
-            { type: 'smoothSpan', blob: gesture.blob, start, end, amount: gesture.amount },
-            `Smooth Span ${Math.round(gesture.amount * 100)}%`,
-          );
-        }
         break;
       }
       case 'time':
@@ -1289,18 +1273,48 @@ export class EditorController {
     return origin + (midi - origin) * FINE_FACTOR;
   }
 
+  /**
+   * Puts the playhead at a time and brings the view with it.
+   *
+   * @remarks What Home and End do. Following is switched off, because arriving somewhere by hand
+   * and then being scrolled off it again is not what either key was pressed for.
+   */
+  goTo(seconds: number): void {
+    const position = Math.max(0, seconds);
+    this.#scrubTo(position);
+    if (!isVisible(this.#store.state.view, position)) {
+      this.#store.update({ view: snapViewTo(this.#store.state.view, position), follow: false });
+    }
+  }
+
+  /** End of the material, which is the source when there is one and the last blob otherwise. */
+  #projectEnd(): number {
+    const state = this.#store.state;
+    return state.source?.duration ?? state.blobs.at(-1)?.end ?? 0;
+  }
+
   #scrubTo(seconds: number): void {
     const position = Math.max(0, seconds);
     this.#store.update({ view: { ...this.#store.state.view, playhead: position } });
     this.#options.seek?.(position);
   }
 
+  /**
+   * Sets the loop the transport plays.
+   *
+   * @remarks Goes to the audio engine as well as to the store. Writing only the store drew a loop
+   * the transport then played straight past, which is the one thing a loop must not do.
+   */
   #setLoop(start: number, end: number): void {
     const state = this.#store.state;
+    if (end - start <= this.viewport.secondsPerPixel) {
+      return;
+    }
     this.#store.update({
       transport: { ...state.transport, loop: { start, end } },
       view: { ...state.view, loopStart: start, loopEnd: end },
     });
+    this.#options.setLoop?.({ start, end });
   }
 
   #setSelection(selection: Selection): void {

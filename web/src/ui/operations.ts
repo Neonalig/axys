@@ -13,7 +13,15 @@
  */
 
 import { Dialog } from './dialog.js';
-import { checkboxInput, field, numberInput, rangeInput, selectInput } from './inspector.js';
+import {
+  checkboxInput,
+  field,
+  guidedLabel,
+  numberInput,
+  rangeInput,
+  scopeLine,
+  selectInput,
+} from './inspector.js';
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
 import type { EditOp, FormantMode, ScaleSettings } from '../core/types.js';
@@ -78,16 +86,16 @@ function hint(text: string): HTMLElement {
 }
 
 /**
- * Which blobs an operation applies to, and the edits that confine it to them.
+ * The edits that confine an operation to the selection.
  *
  * @remarks Correction is compiled project-wide, so applying it to a span means leaving every
  * blob outside that span out of it. Those exclusions are part of the operation: discarding it
  * takes them back with everything else.
  */
-function scopeOf(state: AppState): { label: string; ops: EditOp[] } {
+function scopeOf(state: AppState): EditOp[] {
   const selected = new Set(state.selection.blobs);
   if (selected.size === 0 || state.blobs.length === 0) {
-    return { label: 'Applies to the whole project.', ops: [] };
+    return [];
   }
   const ops: EditOp[] = [];
   for (const blob of state.blobs) {
@@ -96,11 +104,7 @@ function scopeOf(state: AppState): { label: string; ops: EditOp[] } {
       ops.push({ type: 'setExcluded', blob: blob.id, excluded: wanted });
     }
   }
-  const count = selected.size;
-  return {
-    label: `Applies to the ${String(count)} selected ${count === 1 ? 'blob' : 'blobs'}.`,
-    ops,
-  };
+  return ops;
 }
 
 /** Opens an operation panel and wires Apply and Discard to the preview it is running. */
@@ -153,7 +157,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
     ctx.toast.warn('Open a vocal before correcting it.');
     return Dialog.open({ title: 'Correction', content: hint('Nothing to correct.') });
   }
-  const scope = scopeOf(state);
+  const scopeOps = scopeOf(state);
 
   const content = document.createElement('div');
   content.className = 'axys-panel';
@@ -175,9 +179,11 @@ export function showCorrection(ctx: CommandContext): Dialog {
 
   const strengthRow = document.createElement('div');
   strengthRow.className = 'axys-field';
-  const strengthLabel = document.createElement('label');
+  const strengthLabel = guidedLabel(
+    'Strength',
+    'How far correction pulls a blob onto its scale degree. 0% leaves it where it was sung.',
+  );
   strengthLabel.htmlFor = strength.id;
-  strengthLabel.textContent = 'Strength';
   const pair = document.createElement('div');
   pair.className = 'axys-control-pair';
   pair.append(strength, strengthReadout);
@@ -203,11 +209,15 @@ export function showCorrection(ctx: CommandContext): Dialog {
   }
 
   content.append(
-    field('Key', key, 'Tonic the scale is built on.'),
-    field('Scale', scale, 'Allowed scale degrees correction pulls towards.'),
+    field('Key', key, 'Tonic the scale is built on. Every scale degree is measured from it.'),
+    field(
+      'Scale',
+      scale,
+      'The degrees correction is allowed to pull a blob onto. Anything not in the scale is moved to the nearest degree that is.',
+    ),
     strengthRow,
     excluded,
-    hint(`${scope.label} Play while this is open to hear it.`),
+    scopeLine(state),
   );
 
   const apply = (): void => {
@@ -219,7 +229,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
       strength: readNumber(strength, current.strength),
       excluded: boxes.flatMap((box, index) => (box.checked ? [index] : [])),
     };
-    ctx.workspace.previewEdits([...scope.ops, { type: 'setScale', scale: settings }]);
+    ctx.workspace.previewEdits([...scopeOps, { type: 'setScale', scale: settings }]);
   };
 
   strength.addEventListener('input', () => {
@@ -273,18 +283,16 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
     labelText: string,
     control: HTMLInputElement,
     readout: HTMLElement,
-    tooltip: string,
+    guide: string,
   ): HTMLElement => {
     const wrapper = document.createElement('div');
     wrapper.className = 'axys-field';
-    const label = document.createElement('label');
+    const label = guidedLabel(labelText, guide);
     label.htmlFor = control.id;
-    label.textContent = labelText;
     const pair = document.createElement('div');
     pair.className = 'axys-control-pair';
     pair.append(control, readout);
     wrapper.append(label, pair);
-    control.title = tooltip;
     return wrapper;
   };
 
@@ -296,7 +304,7 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
     row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones.'),
     // Drift, vibrato and formants are properties of the voice rather than of a span, and the
     // core compiles them over the whole take, so this one has no selection to narrow it to.
-    hint('Applies to the whole project. Play while this is open to hear it.'),
+    hint('Affects whole project.'),
   );
 
   const readouts = (): void => {

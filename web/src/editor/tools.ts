@@ -43,7 +43,7 @@ export interface ToolDefinition {
   label: string;
   /** One-line tooltip describing the gesture. */
   hint: string;
-  /** Single-key shortcut. */
+  /** Single-key shortcut, empty when the tool has none. */
   key: string;
   /** CSS cursor used while the tool is armed. */
   cursor: string;
@@ -55,43 +55,36 @@ export const TOOLS: readonly ToolDefinition[] = [
     id: 'select',
     label: 'Select',
     hint: 'Click a blob, drag a band, Shift adds',
-    key: 'v',
+    key: 'V',
     cursor: 'default',
   },
   {
     id: 'split',
-    label: 'Split Blob',
-    hint: 'Click a blob to split it',
-    key: 's',
+    label: 'Slice',
+    hint: 'Click a blob to slice it in two',
+    key: 'X',
     cursor: 'col-resize',
   },
   {
     id: 'pitch',
     label: 'Move Pitch',
     hint: 'Drag in pitch, Shift semitones, Alt fine, Ctrl scale',
-    key: 'p',
+    key: 'P',
     cursor: 'ns-resize',
   },
-  { id: 'pen', label: 'Draw Curve', hint: 'Drag a freehand target', key: 'd', cursor: 'crosshair' },
+  { id: 'pen', label: 'Draw Curve', hint: 'Drag a freehand target', key: 'B', cursor: 'crosshair' },
   {
     id: 'line',
     label: 'Draw Ramp',
     hint: 'Drag a ramp, Alt curves it',
-    key: 'l',
-    cursor: 'crosshair',
-  },
-  {
-    id: 'smooth',
-    label: 'Smooth Span',
-    hint: 'Drag across a span, further down smooths more',
-    key: 'm',
+    key: '',
     cursor: 'crosshair',
   },
   {
     id: 'time',
     label: 'Move Time',
     hint: 'Drag a blob or its edges in time',
-    key: 't',
+    key: 'T',
     cursor: 'ew-resize',
   },
 ];

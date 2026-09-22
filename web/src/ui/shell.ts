@@ -11,6 +11,7 @@ import '../styles.css';
 
 import type { ThemeChoice } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
+import { toolDefinition } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../editor/view.js';
 import type { AppState, CompareMode, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
@@ -23,6 +24,7 @@ import { showContextMenu } from './menu.js';
 import type { MenuEntry } from './menu.js';
 import { THEME_LABELS, THEME_NAMES } from './theme.js';
 import { ToastHost } from './toast.js';
+import { ProgressBar } from './progress.js';
 import { Scrollbar } from './scrollbar.js';
 import { setTooltip, TooltipHost } from './tooltip.js';
 import { ZoomControl } from './zoom-control.js';
@@ -87,11 +89,10 @@ interface ToolEntry {
 
 const TOOLS: readonly ToolEntry[] = [
   { id: 'select', label: 'Select Tool', icon: 'select', tooltip: 'Selects blobs and anchors.' },
-  { id: 'split', label: 'Split Tool', icon: 'split', tooltip: 'Splits a blob where you click.' },
+  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob where you click.' },
   { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Drags whole blobs in pitch.' },
-  { id: 'pen', label: 'Pen Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target.' },
-  { id: 'line', label: 'Line Tool', icon: 'line', tooltip: 'Draws a straight pitch transition.' },
-  { id: 'smooth', label: 'Smooth Tool', icon: 'smooth', tooltip: 'Reduces jitter over a span.' },
+  { id: 'pen', label: 'Draw Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target.' },
+  { id: 'line', label: 'Ramp Tool', icon: 'line', tooltip: 'Draws a straight pitch transition.' },
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time.' },
 ];
 
@@ -128,7 +129,6 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'file.saveProject': 'Save',
   'file.exportWav': 'Export',
   'file.importMidi': 'Import',
-  'edit.splitBlob': 'Split',
   'edit.joinBlobs': 'Join',
   'edit.excludeBlob': 'Exclude',
   'edit.voiceCharacter': 'Voice',
@@ -197,9 +197,14 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
   },
 };
 
-/** How a theme choice names itself. */
+/** How a theme choice names itself in the menu. */
 function themeLabel(choice: ThemeChoice): string {
   return choice === 'system' ? 'Follow System' : THEME_LABELS[choice];
+}
+
+/** The theme button's tooltip: what pressing it does, and which theme is on. */
+function themeTip(choice: ThemeChoice): string {
+  return `Pick Theme (${choice === 'system' ? 'System' : THEME_LABELS[choice]})`;
 }
 
 /**
@@ -253,7 +258,6 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Export Audio': 'export',
   Undo: 'undo',
   Redo: 'redo',
-  'Split Blob': 'split',
   'Join Blobs': 'join',
   Reset: 'reset',
   Correction: 'correct',
@@ -389,13 +393,13 @@ export class AppShell {
   readonly #statusSelection: HTMLElement;
   readonly #statusConflicts: { wrapper: HTMLElement; value: HTMLElement };
   readonly #statusPlayback: { wrapper: HTMLElement; value: HTMLElement };
-  readonly #progress: HTMLProgressElement;
+  readonly #progress: ProgressBar;
   readonly #timeBar: Scrollbar;
   readonly #pitchBar: Scrollbar;
   readonly #zoom: ZoomControl;
   readonly #busy: HTMLElement;
   readonly #busyStage: HTMLElement;
-  readonly #busyProgress: HTMLProgressElement;
+  readonly #busyProgress: ProgressBar;
   readonly #drop: HTMLElement;
 
   #announced = '';
@@ -524,16 +528,15 @@ export class AppShell {
 
     const busyStage = document.createElement('p');
     busyStage.className = 'axys-busy-stage';
-    const busyProgress = document.createElement('progress');
-    busyProgress.className = 'axys-busy-progress';
-    busyProgress.max = 1;
+    const busyProgress = new ProgressBar('Import Progress');
+    busyProgress.element.classList.add('axys-busy-progress');
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.textContent = 'Cancel Import';
     cancel.addEventListener('click', () => {
       this.#hooks.runCommand('file.cancelImport');
     });
-    busy.append(busyStage, busyProgress, cancel);
+    busy.append(busyStage, busyProgress.element, cancel);
     main.append(busy);
     this.#busy = busy;
     this.#busyStage = busyStage;
@@ -581,13 +584,10 @@ export class AppShell {
     this.#statusConflicts = statusItem(footer, 'Conflicts');
     this.#statusPlayback = statusItem(footer, 'Playback');
 
-    const progress = document.createElement('progress');
-    progress.max = 1;
-    progress.value = 0;
-    progress.hidden = true;
-    setTooltip(progress, 'Analysis Progress');
-    progress.setAttribute('aria-label', 'Analysis Progress');
-    footer.append(progress);
+    const progress = new ProgressBar('Analysis Progress');
+    progress.element.hidden = true;
+    setTooltip(progress.element, 'Analysis Progress');
+    footer.append(progress.element);
     this.#progress = progress;
 
     const spacerEnd = document.createElement('span');
@@ -733,18 +733,15 @@ export class AppShell {
 
     this.#busy.hidden = !state.analysis.running;
     this.#busyStage.textContent = state.analysis.stage === '' ? 'Working' : state.analysis.stage;
-    // A stage that reports no progress leaves the bar indeterminate rather than pinned at zero,
-    // which reads as stalled.
-    if (state.analysis.progress > 0) {
-      this.#busyProgress.value = state.analysis.progress;
-    } else {
-      this.#busyProgress.removeAttribute('value');
-    }
+    // One reading of the same work, so the cover and the status bar never show two different
+    // pictures of one import.
+    const measured = state.analysis.progress > 0 ? state.analysis.progress : null;
+    this.#busyProgress.set(measured);
+    this.#progress.set(measured);
 
-    this.#progress.hidden = !state.analysis.running;
-    this.#progress.value = state.analysis.progress;
+    this.#progress.element.hidden = !state.analysis.running;
     setTooltip(
-      this.#progress,
+      this.#progress.element,
       state.analysis.stage === '' ? 'Analysis Progress' : state.analysis.stage,
     );
 
@@ -818,7 +815,7 @@ export class AppShell {
   /** Shows a theme as the chosen one, without applying it. */
   setTheme(choice: ThemeChoice): void {
     this.#themeChoice = choice;
-    setTooltip(this.#themeButton, `${themeLabel(choice)}. Choose A Theme`);
+    setTooltip(this.#themeButton, themeTip(choice));
   }
 
   /**
@@ -957,7 +954,9 @@ export class AppShell {
       button.innerHTML = ICONS[tool.icon];
       button.setAttribute('aria-label', tool.label);
       button.setAttribute('aria-pressed', 'false');
-      setTooltip(button, `${tool.label}: ${tool.tooltip}`);
+      const key = toolDefinition(tool.id).key;
+      const named = key === '' ? tool.label : `${tool.label} (${key})`;
+      setTooltip(button, `${named}: ${tool.tooltip}`);
       button.addEventListener('click', () => {
         this.#hooks.setTool(tool.id);
         this.announce(`${tool.label} active.`);
@@ -988,7 +987,7 @@ export class AppShell {
     button.append(icon, text);
     button.setAttribute('aria-label', 'Choose A Theme');
     button.setAttribute('aria-haspopup', 'menu');
-    setTooltip(button, `${themeLabel(this.#themeChoice)}. Choose A Theme`);
+    setTooltip(button, themeTip(this.#themeChoice));
     button.addEventListener('click', () => {
       this.#openButtonMenu(button, (shell) =>
         // No icon per entry: four copies of the same palette would say nothing, and the mark

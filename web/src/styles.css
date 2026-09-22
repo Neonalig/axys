@@ -481,6 +481,29 @@ input[type='checkbox'] {
   color: var(--axys-text-muted);
 }
 
+/* A field's explainer hangs off its label, so the tip never covers the control */
+
+.axys-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.axys-info {
+  display: inline-flex;
+  opacity: 0.55;
+}
+
+.axys-label:hover > .axys-info,
+.axys-label:focus-visible > .axys-info {
+  opacity: 1;
+}
+
+.axys-info > svg {
+  width: 12px;
+  height: 12px;
+}
+
 .axys-readout {
   font-family: var(--axys-font-mono);
   font-variant-numeric: tabular-nums;
@@ -569,6 +592,12 @@ input[type='checkbox'] {
   color: var(--axys-text-muted);
 }
 
+/* The selection count is a subheading, so the fields start below it rather than against it */
+
+.axys-selection-count {
+  margin-bottom: var(--axys-pad);
+}
+
 .axys-warning {
   color: var(--axys-warning);
 }
@@ -602,8 +631,6 @@ input[type='checkbox'] {
 
 .axys-busy-progress {
   width: min(320px, 60%);
-  height: 4px;
-  accent-color: var(--axys-accent);
 }
 
 .axys-drop {
@@ -863,7 +890,50 @@ input[type='checkbox'] {
   border-top: 1px solid var(--axys-border);
 }
 
+/* The one progress bar, determinate and indeterminate */
+
+.axys-progress {
+  overflow: hidden;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--axys-border);
+}
+
+.axys-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--axys-accent);
+}
+
+/*
+ * A stage that reports no figure marches a short fill from one edge to the other and starts
+ * again, the way the platform draws work of unknown length. A fill that bounces back reads as
+ * something going wrong and being retried.
+ */
+
+.axys-progress.is-indeterminate > .axys-progress-fill {
+  width: 25%;
+  animation: axys-march 1.1s linear infinite;
+}
+
+@keyframes axys-march {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(400%);
+  }
+}
+
 /* Diagnostics and capability lists */
+
+/* The licence offer reads as its own section, so it is spaced like one */
+
+.axys-blurb {
+  margin-top: var(--axys-pad);
+}
 
 .axys-caps {
   margin: 0;

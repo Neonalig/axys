@@ -20,7 +20,9 @@ use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
 use axys_core::dsp::formant::FormantMode;
 use axys_core::edit::{apply_with_baseline, EditOp, History};
-use axys_core::midi::{measure_drift, parse_smf, propose_mappings, MidiFile};
+use axys_core::midi::{
+    measure_drift, parse_smf, propose_mappings, MappingReport, MidiFile, NoteMapping,
+};
 use axys_core::project::{AnalysisInfo, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION};
 use axys_core::render::{Quality, Renderer};
 use axys_core::target::{compile_plan, GuideInputs, PlanInputs, RenderPlan};
@@ -235,6 +237,19 @@ struct ExportPreview {
     conflicts: usize,
     /// Seconds of the range that map outside the source and render as silence.
     silent: f64,
+}
+
+/// A proposed set of blob-to-note mappings and what it left unmatched.
+///
+/// Returned without being applied, so a caller can narrow the proposal to a selection and commit
+/// what it kept as one edit.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MappingProposal {
+    /// The proposed mappings, covering every blob the guide could be matched against.
+    mappings: Vec<NoteMapping>,
+    /// Blobs and notes the proposal left unmatched or matched more than once.
+    report: MappingReport,
 }
 
 /// Two guide notes that sound at once in a monophonic guide.
@@ -622,6 +637,25 @@ impl Session {
         self.midi_bytes = Some(bytes);
         self.recompile()?;
         Ok(json)
+    }
+
+    /// Proposes blob-to-note mappings without applying them.
+    ///
+    /// The caller decides which of the proposed mappings to keep and commits them as an
+    /// [`EditOp::SetMappings`] of its own, so aligning against a selection and previewing an
+    /// alignment are one edit that one undo takes back.
+    #[wasm_bindgen(js_name = proposeMappingsPreview)]
+    pub fn propose_mappings_preview_js(&self) -> Result<String, JsValue> {
+        let Some((notes, _)) = self.guide_inputs() else {
+            return Err(JsValue::from_str("no MIDI guide is selected"));
+        };
+        let (mappings, report) = propose_mappings(
+            &self.state.blobs,
+            &notes,
+            &self.state.timeline,
+            &self.state.mappings,
+        );
+        dump(&MappingProposal { mappings, report })
     }
 
     /// Proposes blob-to-note mappings, keeping manual ones, and returns the report.

@@ -25,6 +25,7 @@ import type {
   GuideOverlap,
   GuideSelection,
   History,
+  MappingProposal,
   MappingReport,
   MeterEvent,
   MidiFile,
@@ -431,6 +432,16 @@ export function isMappingReport(value: unknown): value is MappingReport {
     isNumberArray(value.unmappedNotes) &&
     isNumberArray(value.multiplyMappedNotes) &&
     isNumberArray(value.overlappingNotes)
+  );
+}
+
+/** Accepts a mapping proposal: the mappings and the report over them. */
+export function isMappingProposal(value: unknown): value is MappingProposal {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.mappings) &&
+    value.mappings.every(isNoteMapping) &&
+    isMappingReport(value.report)
   );
 }
 

@@ -30,6 +30,7 @@ import type {
   EditOp,
   ExportPreview,
   GuideOverlap,
+  MappingProposal,
   Project,
   RenderPlan,
   ViewState,
@@ -242,6 +243,9 @@ class AxysWorkspace implements Workspace {
       const chosen = op.selection;
       const track = guide?.track !== chosen?.track || guide?.channel !== chosen?.channel;
       this.#reportGuideOverlaps(track);
+    }
+    if (op.type === 'setMappings' || op.type === 'setMapping') {
+      this.#store.update({ drift: session.drift() });
     }
   }
 
@@ -501,19 +505,16 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  alignGuide(): void {
+  proposeMappings(): MappingProposal | null {
     const session = this.#session;
-    if (!session) return;
+    if (!session) return null;
     try {
-      const report = session.proposeMappings();
-      this.#publish();
-      this.#store.update({ mappingReport: report, drift: session.drift() });
-      this.#toast.info(
-        `Guide aligned. ${String(report.unmappedBlobs.length)} blobs and ${String(report.unmappedNotes.length)} notes unmapped.`,
-      );
-      this.#reportGuideOverlaps(true);
+      const proposal = session.proposeMappingsPreview();
+      this.#store.update({ mappingReport: proposal.report });
+      return proposal;
     } catch (error) {
       this.#fail('Align Guide', error);
+      return null;
     }
   }
 
@@ -857,7 +858,6 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
   });
   return [
     item('edit.reset', 'Reset To Origin', 'reset'),
-    item('edit.splitBlob', 'Split Blob', 'split'),
     item('edit.joinBlobs', 'Join Blobs', 'join'),
     { separator: true },
     item('edit.excludeBlob', 'Exclude Blob', 'exclude'),
@@ -1292,6 +1292,9 @@ async function start(): Promise<void> {
     },
     seek: (seconds: number) => {
       audio.seek(seconds);
+    },
+    setLoop: (range) => {
+      audio.setLoop(range);
     },
     announce: (message: string) => {
       shell.announce(message);

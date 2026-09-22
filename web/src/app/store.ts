@@ -58,7 +58,7 @@ export interface Selection {
 }
 
 /** Editor tool in use. */
-export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time';
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'time';
 
 /** Which audio the transport plays. */
 export type CompareMode = 'processed' | 'original' | 'split';

@@ -27,6 +27,7 @@ import {
   isExportReport,
   isGuideOverlap,
   isHistoryLabels,
+  isMappingProposal,
   isMappingReport,
   isMidiFile,
   isPitchTrack,
@@ -52,6 +53,7 @@ import type {
   ExportReport,
   F0Params,
   GuideOverlap,
+  MappingProposal,
   MappingReport,
   MidiFile,
   PitchTrackArrays,
@@ -434,6 +436,21 @@ export class Session {
       () => this.#alive().midiJson(),
       nullable(isMidiFile),
       'MIDI file',
+    );
+  }
+
+  /**
+   * Proposes blob-to-note mappings without applying them.
+   *
+   * @remarks The caller keeps what it wants of the proposal and commits it as a `setMappings`
+   * edit of its own, so aligning a selection and previewing an alignment are one undo step.
+   */
+  proposeMappingsPreview(): MappingProposal {
+    return this.#read(
+      'Align Guide',
+      () => this.#alive().proposeMappingsPreview(),
+      isMappingProposal,
+      'mapping proposal',
     );
   }
 

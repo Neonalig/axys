@@ -11,12 +11,12 @@
 import { selectionSpan } from './selection.js';
 import type { AppState, AppStore, CompareMode } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
-import { MIN_BLOB_SECONDS } from '../core/types.js';
-import type { Blob, EditOp, ExportPreview, TimelineMap } from '../core/types.js';
+import type { Blob, EditOp, ExportPreview, MappingProposal, TimelineMap } from '../core/types.js';
 import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
+import { showAlignGuide } from '../ui/align-guide.js';
 import { showDiagnostics } from '../ui/diagnostics.js';
 import { showCorrection, showVoiceCharacter } from '../ui/operations.js';
 import { showExportDialog } from '../ui/export-dialog.js';
@@ -29,6 +29,13 @@ export interface Command {
   label: string;
   group: 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
   shortcut?: string;
+  /**
+   * A second key that runs the same command.
+   *
+   * @remarks Never shown. It is there for the keys a second editor has trained people to reach
+   * for, such as Ctrl+Y for redo, and the one the toolbar names stays the one it names.
+   */
+  altShortcut?: string;
   enabled(ctx: CommandContext): boolean;
   run(ctx: CommandContext): void | Promise<void>;
 }
@@ -117,8 +124,13 @@ export interface Workspace {
   /** Abandons an import still being analysed. Does nothing when none is running. */
   cancelImport(): void;
 
-  /** Proposes blob-to-note mappings against the guide and reports drift. */
-  alignGuide(): void;
+  /**
+   * Proposes blob-to-note mappings against the guide, without applying them.
+   *
+   * @remarks `null` when there is no session or no guide to align against. The caller commits
+   * what it keeps of the proposal as an edit of its own.
+   */
+  proposeMappings(): MappingProposal | null;
 
   /** Source time a source time snaps to on the musical grid. */
   snapTime(seconds: number): number;
@@ -146,6 +158,9 @@ const ZOOM_STEP = 1.6;
 
 /** Default span a Smooth Span command applies when the user has not set an amount. */
 const SMOOTH_AMOUNT = 0.5;
+
+/** Longest gap in seconds two blobs may leave between them and still count as neighbours. */
+const ADJACENT_SECONDS = 0.05;
 
 /** Pitch margin above and below the content Zoom Fit frames, in semitones. */
 const FIT_MARGIN = 3;
@@ -242,29 +257,36 @@ function clampTo(seconds: number, blob: Blob): number {
   return seconds < blob.start ? blob.start : seconds > blob.end ? blob.end : seconds;
 }
 
-/** The pair a Join Blobs command acts on: two selected neighbours, else a blob and its successor. */
-function joinPair(state: AppState): { first: Blob; second: Blob } | null {
+/**
+ * The blobs a Join Blobs command folds together.
+ *
+ * @remarks Two or more selected neighbours, and nothing else. Joining the blob under the playhead
+ * with whatever followed it took a neighbour nobody had pointed at, and the pair it chose was
+ * invisible until the join had already happened.
+ */
+function joinRun(state: AppState): Blob[] | null {
   const selected = selectedBlobs(state);
-  const firstSelected = selected[0];
-  if (selected.length >= 2) {
-    const second = selected[1];
-    if (firstSelected && second) return { first: firstSelected, second };
+  if (selected.length < 2) return null;
+  for (let index = 1; index < selected.length; index += 1) {
+    const previous = selected[index - 1];
+    const current = selected[index];
+    if (!previous || !current) return null;
+    if (state.blobs.indexOf(current) !== state.blobs.indexOf(previous) + 1) return null;
+    if (current.start - previous.end > ADJACENT_SECONDS) return null;
   }
-  const anchor = firstSelected ?? blobAtPlayhead(state);
-  if (!anchor) return null;
-  const index = state.blobs.indexOf(anchor);
-  const next = state.blobs[index + 1];
-  if (!next) return null;
-  return { first: anchor, second: next };
+  return selected;
 }
 
-/** True when the playhead sits far enough inside a blob to split it into two usable halves. */
-function splitTarget(state: AppState): { blob: Blob; time: number } | null {
-  const blob = blobAtPlayhead(state);
-  if (!blob) return null;
-  const time = state.view.playhead;
-  if (time - blob.start < MIN_BLOB_SECONDS || blob.end - time < MIN_BLOB_SECONDS) return null;
-  return { blob, time };
+/**
+ * Whether the whole loop is on screen.
+ *
+ * @remarks A loop both of whose bounds are in sight needs no scrolling to be watched, so a view
+ * that follows the playhead round it only swings back and forth.
+ */
+function loopFullyVisible(state: AppState): boolean {
+  const loop = state.transport.loop;
+  if (loop === null) return false;
+  return isVisible(state.view, loop.start) && isVisible(state.view, loop.end);
 }
 
 function zoomBy(store: AppStore, factor: number): void {
@@ -298,12 +320,18 @@ function timelineOf(state: AppState): TimelineMap | null {
   return state.edits?.timeline ?? null;
 }
 
-function toolCommand(id: ToolCommandId, label: string, shortcut: string): Command {
+function toolCommand(
+  id: ToolCommandId,
+  label: string,
+  shortcut: string | undefined,
+  alt: string | undefined,
+): Command {
   return {
     id: `tools.${id}`,
     label,
     group: 'Tools',
-    shortcut,
+    ...(shortcut === undefined ? {} : { shortcut }),
+    ...(alt === undefined ? {} : { altShortcut: alt }),
     enabled: (ctx) => ctx.store.state.phase === 'ready',
     run: (ctx) => {
       ctx.store.update({ tool: id });
@@ -313,14 +341,19 @@ function toolCommand(id: ToolCommandId, label: string, shortcut: string): Comman
 
 type ToolCommandId = AppState['tool'];
 
-const TOOLS: readonly { id: ToolCommandId; label: string; shortcut: string }[] = [
-  { id: 'select', label: 'Select Tool', shortcut: '1' },
-  { id: 'split', label: 'Split Tool', shortcut: '2' },
-  { id: 'pitch', label: 'Pitch Tool', shortcut: '3' },
-  { id: 'pen', label: 'Pen Tool', shortcut: '4' },
-  { id: 'line', label: 'Line Tool', shortcut: '5' },
-  { id: 'smooth', label: 'Smooth Tool', shortcut: '6' },
-  { id: 'time', label: 'Time Tool', shortcut: '7' },
+/**
+ * The tool keys, in the letters Melodyne and Ableton have already trained.
+ *
+ * @remarks Slice answers to both X and S, because the two editors disagree about which one it is
+ * and neither is worth being wrong about.
+ */
+const TOOLS: readonly { id: ToolCommandId; label: string; shortcut?: string; alt?: string }[] = [
+  { id: 'select', label: 'Select Tool', shortcut: 'V' },
+  { id: 'split', label: 'Slice Tool', shortcut: 'X', alt: 'S' },
+  { id: 'pitch', label: 'Pitch Tool', shortcut: 'P' },
+  { id: 'pen', label: 'Draw Tool', shortcut: 'B' },
+  { id: 'line', label: 'Ramp Tool' },
+  { id: 'time', label: 'Time Tool', shortcut: 'T' },
 ];
 
 /** Builds the full command list. */
@@ -461,61 +494,36 @@ export function buildCommands(): Command[] {
       label: 'Redo',
       group: 'Edit',
       shortcut: 'Ctrl+Shift+Z',
+      altShortcut: 'Ctrl+Y',
       enabled: editable,
       run: (ctx) => {
         if (!ctx.workspace.redo()) ctx.toast.info('Nothing To Redo');
       },
     },
     {
-      id: 'edit.splitBlob',
-      label: 'Split Blob',
-      group: 'Edit',
-      shortcut: 'S',
-      enabled: (ctx) => editable(ctx) && splitTarget(ctx.store.state) !== null,
-      run: (ctx) => {
-        const target = splitTarget(ctx.store.state);
-        if (!target) {
-          ctx.toast.warn('Put the playhead inside a blob to split.');
-          return;
-        }
-        ctx.workspace.apply({
-          type: 'splitBlob',
-          blob: target.blob.id,
-          time: ctx.workspace.snapTime(target.time),
-        });
-      },
-    },
-    {
+      // Splitting is the Slice tool's, and only the Slice tool's: a command that split wherever
+      // the playhead happened to be was a second way to cut that nothing on screen pointed at.
       id: 'edit.joinBlobs',
       label: 'Join Blobs',
       group: 'Edit',
       shortcut: 'J',
-      enabled: (ctx) =>
-        editable(ctx) &&
-        (selectedBlobs(ctx.store.state).length >= 2 || joinPair(ctx.store.state) !== null),
+      enabled: (ctx) => editable(ctx) && joinRun(ctx.store.state) !== null,
       run: (ctx) => {
-        const selected = selectedBlobs(ctx.store.state);
-        if (selected.length >= 2) {
-          // Each join folds the next blob into the first, so the survivor stays addressable and
-          // the whole selection ends up as one blob however many were covered. One group, so
-          // undoing a join of six blobs is one press rather than five.
-          const first = selected[0];
-          if (first === undefined) return;
-          ctx.workspace.apply(
-            grouped(
-              selected
-                .slice(1)
-                .map((blob) => ({ type: 'joinBlobs', first: first.id, second: blob.id })),
-            ),
-          );
-          return;
-        }
-        const pair = joinPair(ctx.store.state);
-        if (!pair) {
+        const run = joinRun(ctx.store.state);
+        if (!run) {
           ctx.toast.warn('Select two or more neighbouring blobs to join.');
           return;
         }
-        ctx.workspace.apply({ type: 'joinBlobs', first: pair.first.id, second: pair.second.id });
+        // Each join folds the next blob into the first, so the survivor stays addressable and
+        // the whole selection ends up as one blob however many were covered. One group, so
+        // undoing a join of six blobs is one press rather than five.
+        const first = run[0];
+        if (first === undefined) return;
+        ctx.workspace.apply(
+          grouped(
+            run.slice(1).map((blob) => ({ type: 'joinBlobs', first: first.id, second: blob.id })),
+          ),
+        );
       },
     },
     {
@@ -563,7 +571,7 @@ export function buildCommands(): Command[] {
       id: 'edit.excludeBlob',
       label: 'Exclude Blob',
       group: 'Edit',
-      shortcut: 'X',
+      shortcut: '0',
       enabled: (ctx) => editable(ctx) && targetBlobs(ctx.store.state).length > 0,
       run: (ctx) => {
         const blobs = targetBlobs(ctx.store.state);
@@ -589,8 +597,14 @@ export function buildCommands(): Command[] {
         }
         // Playing from a playhead already in sight is a request to watch it, so the view
         // takes the playhead back up. Playing from one off screen leaves the view alone.
+        // A loop whose bounds are both on screen is watched where it is, so following it is
+        // scrolling for the sake of scrolling.
         const state = ctx.store.state;
-        if (!state.follow && isVisible(state.view, state.view.playhead)) {
+        if (
+          !state.follow &&
+          isVisible(state.view, state.view.playhead) &&
+          !loopFullyVisible(state)
+        ) {
           ctx.store.update({ follow: true });
         }
         await ctx.audio.play();
@@ -687,7 +701,7 @@ export function buildCommands(): Command[] {
       id: 'view.zoomFit',
       label: 'Zoom Fit',
       group: 'View',
-      shortcut: '0',
+      shortcut: '.',
       enabled: () => true,
       run: (ctx) => {
         fitToContent(ctx.store);
@@ -737,15 +751,9 @@ export function buildCommands(): Command[] {
       group: 'MIDI',
       shortcut: 'Ctrl+Alt+A',
       // A file being loaded is not a guide; the core refuses until a track is chosen.
-      enabled: (ctx) => (ctx.store.state.edits?.guide ?? null) !== null,
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.guide ?? null) !== null,
       run: (ctx) => {
-        ctx.workspace.alignGuide();
-        // Mapping blobs to notes changes nothing that can be seen or heard while the guide is
-        // only being shown, which is what made Align look like it had done nothing.
-        const mode = ctx.store.state.edits?.guide?.mode ?? 'visualOnly';
-        if (mode === 'visualOnly') {
-          ctx.toast.warn('Guide Mode is Visual Only, so the mapping does not move the vocal yet.');
-        }
+        showAlignGuide(ctx);
       },
     },
 
@@ -764,7 +772,7 @@ export function buildCommands(): Command[] {
   ];
 
   for (const tool of TOOLS) {
-    commands.push(toolCommand(tool.id, tool.label, tool.shortcut));
+    commands.push(toolCommand(tool.id, tool.label, tool.shortcut, tool.alt));
   }
   return commands;
 }

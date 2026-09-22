@@ -41,6 +41,7 @@ export type IconName =
   | 'diagnostics'
   | 'sourceCode'
   | 'warning'
+  | 'info'
   | 'close';
 
 function stroked(body: string): string {
@@ -158,6 +159,9 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   sourceCode: stroked(`<path d="M5.9 4.6 2.6 8l3.3 3.4"/><path d="M10.1 4.6 13.4 8l-3.3 3.4"/>`),
   warning: stroked(
     `<path d="M8 2.6 14 13H2Z"/><path d="M8 6.4v3.1"/><path fill="currentColor" stroke="none" d="M8 10.7a.7.7 0 1 1 0 1.4.7.7 0 0 1 0-1.4Z"/>`,
+  ),
+  info: stroked(
+    `<circle cx="8" cy="8" r="5.5"/><path d="M8 7.4v3.4"/><path fill="currentColor" stroke="none" d="M8 4.6a.7.7 0 1 1 0 1.4.7.7 0 0 1 0-1.4Z"/>`,
   ),
   close: stroked(`<path d="m4.2 4.2 7.6 7.6M11.8 4.2l-7.6 7.6"/>`),
 };

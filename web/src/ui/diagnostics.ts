@@ -153,7 +153,7 @@ export function renderSourceCode(): HTMLElement {
   section.append(list);
 
   const paragraph = document.createElement('p');
-  paragraph.className = 'axys-hint';
+  paragraph.className = 'axys-hint axys-blurb';
   paragraph.textContent =
     'Axys is free software under the GNU Affero General Public License, version 3 or later. The corresponding source for this build is at:';
   section.append(paragraph);

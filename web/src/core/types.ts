@@ -274,6 +274,12 @@ export interface NoteMapping {
   optedOut: boolean;
 }
 
+/** A proposed set of blob-to-note mappings and what it left unmatched. */
+export interface MappingProposal {
+  mappings: NoteMapping[];
+  report: MappingReport;
+}
+
 /** Blobs and notes left unmatched or matched more than once by a proposal. */
 export interface MappingReport {
   unmappedBlobs: BlobId[];

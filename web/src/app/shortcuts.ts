@@ -146,9 +146,11 @@ export function bindShortcuts(
 ): () => void {
   const bindings: { chord: Chord; command: Command }[] = [];
   for (const command of commands) {
-    if (command.shortcut === undefined) continue;
-    const chord = parseChord(command.shortcut);
-    if (chord) bindings.push({ chord, command });
+    for (const shortcut of [command.shortcut, command.altShortcut]) {
+      if (shortcut === undefined) continue;
+      const chord = parseChord(shortcut);
+      if (chord) bindings.push({ chord, command });
+    }
   }
 
   const onKeyDown = (event: Event): void => {
