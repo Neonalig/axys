@@ -723,3 +723,98 @@ A CSS animation on a timer of its own was never on the beat and its brightest po
 of the cycle. The flash is now computed from the playhead against the timeline: full brightness at
 the click, fading over 120 ms, over a darkened ground that still says the metronome is on while the
 transport is stopped.
+
+## Editor interaction, after the fourth testing round
+
+### The tools answer to letters, not to a numbered row
+
+The tools had no keys of their own beyond the digits `1` to `7`, which is a row nobody reaches for
+and an order nobody remembers. They now carry the letters Melodyne and Ableton have already
+trained: `V` select, `X` or `S` slice, `P` pitch, `B` draw, `T` time. Slice answers to both because
+the two editors disagree about which one it is and neither is worth being wrong about. That took
+`X` off Exclude Blob, which moved to `0`, which took `0` off Zoom Fit, which moved to `.`.
+
+Commands now carry an optional `altShortcut` alongside `shortcut`. It is never shown, so the key a
+button names stays the key it names, and it is what lets Redo answer to `Ctrl+Y` as well as to
+`Ctrl+Shift+Z`, and Slice to both of its letters.
+
+### One way to cut, one way to smooth
+
+Splitting existed twice: a Slice tool, and a Split Blob command on the playhead with a context-menu
+entry beside it. The command cut wherever the playhead happened to be, which is not where anyone
+was pointing, and it is gone. Join Blobs lost its other half too: it used to fall back to the blob
+under the playhead and its successor, which took a neighbour nobody had named. It now needs two or
+more selected blobs that are actually neighbours.
+
+Smoothing existed twice the same way, as a tool and as a command. The tool is gone; Smooth Span on
+`H` reads the selected span, which is the same span the rest of the span commands read.
+
+### Aligning the guide is an operation
+
+Align Guide was a button that had already happened: it proposed mappings, committed them and put
+the result in a toast, and with the guide in Visual Only it moved nothing at all, which is what made
+it look broken. It is now an operation like Correction and Voice Character. It carries the guide
+mode and strength, previews against the material while it is open, and is kept with Apply or thrown
+away with Discard.
+
+That needed a proposal the core would hand back without applying it. `proposeMappingsPreview`
+returns the mappings and the report; the panel narrows them to the selection, leaving every blob
+outside it mapped as it was, and commits what it kept as one `setMappings` edit inside the preview
+group. One alignment is therefore one undo step whatever it covered.
+
+### An explainer belongs on the label, not on the control
+
+Every field put its description on the control, so the tooltip appeared over the slider or the
+drop-down at the moment it was being reached for. The description now hangs off the label, marked
+with an info icon, and the control carries none. Hovering the label or the icon shows it; hovering
+the field shows nothing.
+
+The same rule settled what an operation says about its extent. Each now says `Affects 3 selected
+blobs.` or `No selection. Affects whole project.` and nothing else. The line is read at a glance
+before pressing Apply, and the sentence about playing to hear it was read once and then read past
+forever.
+
+### A selection is one set of fields with one dash
+
+The blob panel addressed the primary selection and said "One blob selected." under a heading that
+had already named it. The heading now names the whole selection, collapsing runs to ranges and
+eliding a list too long for a line, and the count under it appears only above one blob. Every field
+but Start and End reads across the selection: a figure they agree on, or a dash where they do not,
+and typing into one writes it to all of them as a single undo step. Start and End are one blob's
+own boundaries, so they stay on the blob the heading leads with.
+
+### The guide panel is not there until there is a guide
+
+A MIDI Guide panel in a project with no MIDI is a row of dead controls under a heading about a file
+that is not there. It is hidden until one is imported. Strength and Mute go with it while the mode
+is Visual Only, which moves nothing and makes no sound for either of them to act on.
+
+### One progress bar, marching rather than bouncing
+
+The import cover and the status bar both used `<progress>`, which draws its own indeterminate state
+differently per browser and differently again at a second size, so one import was reported by two
+different animations. Both now use `ui/progress.ts`, drawn by the page: a short fill crossing from
+one edge to the other and starting again, the way the platform draws work of unknown length. A fill
+that bounces back reads as something going wrong and being retried.
+
+### The ruler draws loops
+
+A loop could only come from Loop Selection, and dragging the ruler scrubbed. A press on the ruler
+still places the playhead, and a drag across it now draws a loop, which is where every other editor
+puts it. Dragging a loop edge also reaches the audio engine now: it used to write the loop to the
+store alone, so the drawn loop and the loop being played disagreed.
+
+### A loop in sight is not followed
+
+Playing from a visible playhead switched following on, which is right until there is a loop whose
+bounds are both on screen. Then the view swings back and forth round a loop that needed no
+scrolling to be watched. Following now defaults on only when the playhead is visible and the loop
+is not wholly visible with it.
+
+### The detected line is joined across the frames a zoom leaves between
+
+Zoomed in past one frame per pixel, most columns of the detected track hold no frame at all, and
+the line fell apart into ticks that drew further apart the further in the zoom went. A gap no wider
+than the frame spacing is the zoom rather than an unvoiced stretch, so the frames either side of it
+are joined; anything wider is material with no pitch in it and stays open. The collection window
+also reaches one frame past each edge of the view, so the line reaches the edges.

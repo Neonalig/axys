@@ -68,7 +68,8 @@ export interface AxysCore {
 
 `Session` wraps the Rust `Session` class: `applyEdit(op: EditOp): void`, `undo(): boolean`,
 `redo(): boolean`, `state(): EditState`, `track(): PitchTrackArrays`, `blobs(): Blob[]`,
-`plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `guideOverlaps(): GuideOverlap[]`, `history(): { undo: string | null; redo:
+`plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `guideOverlaps(): GuideOverlap[]`,
+`proposeMappingsPreview(): MappingProposal`, `history(): { undo: string | null; redo:
 string | null }`, `project(name: string, view: ViewState): string`, `exportPreview(range): ExportPreview`,
 `exportWav(range, depth, sampleRate?): { bytes: Uint8Array; report: ExportReport }`,
 `free(): void`.
@@ -76,6 +77,11 @@ string | null }`, `project(name: string, view: ViewState): string`, `exportPrevi
 `AnalysedSessionInput` carries `samples`, `sampleRate`, `name`, the analysis worker's `trackJson`
 and `blobsJson`, and the optional `f0` and `segment` parameters it ran with. It is the import path:
 the analysis runs in the worker and only the session assembly happens on the main thread.
+
+`proposeMappingsPreview()` proposes blob-to-note mappings and returns them with their report
+without applying anything, so Align Guide can narrow the proposal to a selection and commit what it
+kept as a `setMappings` edit of its own. That makes an alignment one preview and one undo step,
+which is what lets it be an operation rather than a button that has already happened.
 
 `exportPreview(range)` measures an output range without encoding anything, so the Export WAV modal
 can report duration, frames, peak, clipping, timing conflicts and silent spans before a file is
@@ -156,7 +162,7 @@ export interface Selection {
 export type FollowMode = 'page' | 'centre';
 
 /** Editor tool in use. */
-export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time';
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'time';
 
 /** Which audio the transport plays. */
 export type CompareMode = 'processed' | 'original' | 'split';
@@ -194,6 +200,8 @@ export interface Command {
   label: string;
   group: 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
   shortcut?: string;
+  /** A second key that runs the same command, never shown. */
+  altShortcut?: string;
   enabled(ctx: CommandContext): boolean;
   run(ctx: CommandContext): void | Promise<void>;
 }
@@ -214,19 +222,23 @@ export function findCommand(commands: Command[], id: string): Command | undefine
 ```
 
 Commands must cover, at minimum: Open, Save Project, Save As, Import MIDI, Export Audio, Cancel
-Import, Undo, Redo, Select All, Split Blob, Join Blobs, Reset, Smooth Span, Exclude Blob,
-Correction, Voice Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Compare, Zoom In,
-Zoom Out, Zoom Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
+Import, Undo, Redo, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
+Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Compare, Zoom In, Zoom Out, Zoom
+Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
 
 One Open covers a project or a vocal; a MIDI guide is imported into an open project and has its own
 command. Reset is one command whose extent comes from the selected span. A command that addresses a
 blob addresses every selected blob, so its key does what its menu entry does whether or not the
-menu is open. Not every command is drawn in the toolbar: zoom lives in the footer, Save As lives in
-the Save button's own menu, the bars-and-beats toggle lives in the inspector, and Cancel Import
-lives under the import progress it cancels. Each keeps its shortcut wherever it is presented.
+menu is open. Splitting is the Slice tool's alone, and Join Blobs takes two or more selected
+neighbours and nothing else. Not every command is drawn in the toolbar: zoom lives in the footer,
+Save As lives in the Save button's own menu, the bars-and-beats toggle lives in the inspector, and
+Cancel Import lives under the import progress it cancels. Each keeps its shortcut wherever it is
+presented.
 
-Shortcuts avoid the chords the browser answers first, so Reset is `R` and Smooth Span is `H` rather
-than `Ctrl+R` and `Ctrl+H`.
+The tools carry the letters Melodyne and Ableton have already trained: `V` select, `X` or `S`
+slice, `P` pitch, `B` draw, `T` time. Everything else avoids the chords the browser answers first,
+so Reset is `R` and Smooth Span is `H` rather than `Ctrl+R` and `Ctrl+H`. Zoom Fit is `.` and
+Exclude Blob is `0`.
 
 An operation previews through the workspace rather than committing as it goes:
 
@@ -252,8 +264,10 @@ export function bindShortcuts(
 ): () => void;
 ```
 
-Space toggles play, Escape clears selection, arrow keys nudge, Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z undo
-and redo. Shortcuts must not fire while a text input has focus.
+Space toggles play, Escape clears selection, arrow keys nudge, Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z
+or Ctrl+Y redoes. Home and End take the playhead to the start and the end, and the page keys page
+the view along the timeline, with Shift keeping them on the pitch axis. Shortcuts must not fire
+while a text input has focus.
 
 ## Audio: `audio/engine.ts`
 
@@ -375,17 +389,28 @@ selection and edit results.
 `currentColor`. `ui/toast.ts` exports `class ToastHost` with `info`, `warn` and `error`, each
 auto-dismissing and stacking.
 
-`ui/dialog.ts` exports `class Dialog`, the one panel system. Every panel is draggable by its title
-bar and closes on Escape, on its close button, or on a press outside it. `blocking` defaults to
-true, which darkens what is behind and keeps the keyboard inside; an operation that shows its
-result in the editor passes `false`, so the transport and the canvas stay reachable.
+`ui/dialog.ts` exports `class Dialog`, the one panel system every panel goes through, export
+included. Each is draggable by its title bar, which carries a dotted grip across the top saying so,
+and closes on Escape, on its close button, or on a press outside it. `blocking` defaults to true,
+which darkens what is behind and keeps the keyboard inside; an operation that shows its result in
+the editor passes `false`, so the transport and the canvas stay reachable.
 
-`ui/operations.ts` exports `showCorrection(ctx)` and `showVoiceCharacter(ctx)`. Each opens a
-non-blocking panel that applies its settings through the workspace preview API as its controls are
-moved, so the blobs move and the transport plays the result while the panel is open, and leaves the
-history with one entry however long it was open. Apply keeps it; Discard, Escape and closing throw
-it away. With a span selected the operation applies to that span by excluding every blob outside
-it, and those exclusions are part of what Discard takes back.
+`ui/progress.ts` exports `class ProgressBar`, the one bar the chrome draws. `set(null)` marches a
+short fill from one edge to the other and starts again, the way the platform draws work of unknown
+length; the host `<progress>` element draws that differently per browser and differently again at a
+second size, which is why neither the import cover nor the status bar uses one.
+
+`ui/operations.ts` exports `showCorrection(ctx)` and `showVoiceCharacter(ctx)`, and
+`ui/align-guide.ts` exports `showAlignGuide(ctx)`. Each opens a non-blocking panel that applies its
+settings through the workspace preview API as its controls are moved, so the blobs move and the
+transport plays the result while the panel is open, and leaves the history with one entry however
+long it was open. Apply keeps it; Discard, Escape and closing throw it away. With a span selected
+the operation applies to that span by excluding every blob outside it, and those exclusions are
+part of what Discard takes back. Align Guide narrows its proposal to the selected blobs instead,
+leaving every blob outside the selection mapped as it was.
+
+Each names its extent in one line, the same line everywhere: `Affects 3 selected blobs.` or `No
+selection. Affects whole project.` Nothing else goes in it.
 
 `ui/export-dialog.ts` exports `showExportDialog(options: ExportDialogOptions): Dialog`, the Export
 WAV panel: a range choice of whole project or selection defaulting to the selection when there is
@@ -396,6 +421,15 @@ change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `
 `ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
 settings, each bound to an `EditOp`. Correction and voice character are not here: they are
 operations.
+
+A field's explainer hangs off its label, marked with an info icon, rather than off the control: a
+tooltip over the control covers the slider or the drop-down being reached for. The blob panel is
+headed with the ids that are selected, collapsing runs to ranges and eliding a long list, and the
+count under it appears only above one. Every field but Start and End reads across the whole
+selection, showing a dash where the selection disagrees and writing what is typed to all of it as
+one undo step; Start and End are one blob's own boundaries and stay on the blob the heading leads
+with. The guide panel is hidden until a MIDI file is imported, and its strength and mute go with it
+while the mode is Visual Only.
 
 `editor/layers/readout.ts` draws every readout the canvas floats over itself, in a monospaced face
 and sized in whole character columns, so a figure counting up does not resize its own box. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
