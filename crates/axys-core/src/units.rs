@@ -21,19 +21,14 @@ impl Default for Tuning {
 }
 
 /// How accidentals are spelled when a note is named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccidentalStyle {
     /// C#, D#, F#, G#, A#.
+    #[default]
     Sharps,
     /// Db, Eb, Gb, Ab, Bb.
     Flats,
-}
-
-impl Default for AccidentalStyle {
-    fn default() -> Self {
-        Self::Sharps
-    }
 }
 
 const SHARP_NAMES: [&str; 12] = [

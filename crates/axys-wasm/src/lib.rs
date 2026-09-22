@@ -21,9 +21,7 @@ use axys_core::blob::BlobSet;
 use axys_core::dsp::formant::FormantMode;
 use axys_core::edit::{apply, EditOp, History};
 use axys_core::midi::{measure_drift, parse_smf, propose_mappings, MidiFile};
-use axys_core::project::{
-    AnalysisInfo, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION,
-};
+use axys_core::project::{AnalysisInfo, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION};
 use axys_core::render::{Quality, Renderer};
 use axys_core::target::{compile_plan, GuideInputs, PlanInputs, RenderPlan};
 use axys_core::timeline::TimelineMap;
@@ -59,7 +57,7 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, JsValue> {
     serde_json::from_str(json).map_err(json_err)
 }
 
-fn dump<T: serde::Serialize>(value: &T) -> Result<String, JsValue> {
+fn dump<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, JsValue> {
     serde_json::to_string(value).map_err(json_err)
 }
 
@@ -140,11 +138,7 @@ impl Analysis {
 /// `params_json` carries `{ "f0": F0Params, "segment": SegmentParams }`; omit either to
 /// take its default.
 #[wasm_bindgen]
-pub fn analyse(
-    samples: &[f32],
-    sample_rate: f64,
-    params_json: &str,
-) -> Result<Analysis, JsValue> {
+pub fn analyse(samples: &[f32], sample_rate: f64, params_json: &str) -> Result<Analysis, JsValue> {
     #[derive(serde::Deserialize, Default)]
     #[serde(rename_all = "camelCase", default)]
     struct Params {
@@ -233,8 +227,10 @@ impl Session {
             f0: params.f0,
             segment: params.segment,
         };
-        let mut timeline = TimelineMap::default();
-        timeline.sample_rate = sample_rate;
+        let timeline = TimelineMap {
+            sample_rate,
+            ..TimelineMap::default()
+        };
 
         let state = EditState {
             blobs: analysis.blobs.clone(),
@@ -387,8 +383,10 @@ impl Session {
     /// Rebuilds edit state from the immutable analysis by replaying the applied history.
     fn replay(&mut self) -> Result<(), JsValue> {
         let ops: Vec<EditOp> = self.history.applied().to_vec();
-        let mut timeline = TimelineMap::default();
-        timeline.sample_rate = self.sample_rate;
+        let timeline = TimelineMap {
+            sample_rate: self.sample_rate,
+            ..TimelineMap::default()
+        };
         let energy = analyse_energy(
             &self.samples,
             self.sample_rate,
@@ -515,7 +513,11 @@ impl Session {
     /// Source seconds that move the given guide note onto `target_seconds`.
     #[wasm_bindgen(js_name = anchorOffset)]
     pub fn anchor_offset(&self, note_tick: f64, target_seconds: f64) -> f64 {
-        axys_core::midi::anchor_offset(&self.state.timeline, note_tick.max(0.0) as u64, target_seconds)
+        axys_core::midi::anchor_offset(
+            &self.state.timeline,
+            note_tick.max(0.0) as u64,
+            target_seconds,
+        )
     }
 
     /// Bar lines and beats in a time window, as JSON, for the ruler and snapping.
@@ -608,15 +610,9 @@ impl Session {
         let resampled = if sample_rate as f64 == self.sample_rate {
             rendered
         } else {
-            axys_core::dsp::resample::resample(
-                &rendered,
-                self.sample_rate,
-                sample_rate as f64,
-                16,
-            )
+            axys_core::dsp::resample::resample(&rendered, self.sample_rate, sample_rate as f64, 16)
         };
-        let (bytes, report) =
-            encode_wav(&[resampled], sample_rate, depth).map_err(to_js)?;
+        let (bytes, report) = encode_wav(&[resampled], sample_rate, depth).map_err(to_js)?;
         self.last_report = Some(report);
         Ok(bytes)
     }

@@ -6,23 +6,18 @@ use crate::{limits, AxysError, Result};
 use serde::{Deserialize, Serialize};
 
 /// Interpolation character leaving an anchor toward the next one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Interp {
     /// Straight line in semitones against time.
     Linear,
     /// Monotone cubic Hermite, tangent-limited so no overshoot is introduced.
+    #[default]
     Cubic,
     /// Holds the anchor value until the next anchor time.
     Hold,
     /// Smoothstep ease between the two anchor values.
     Smooth,
-}
-
-impl Default for Interp {
-    fn default() -> Self {
-        Self::Cubic
-    }
 }
 
 /// One editable point on a pitch curve.
