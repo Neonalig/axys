@@ -280,6 +280,8 @@ pub struct Session {
     midi_bytes: Option<Vec<u8>>,
     plan: RenderPlan,
     plan_hop: f64,
+    /// Built on first use and kept, because its epoch map costs a pass over the whole source.
+    renderer: Option<Renderer>,
     last_report: Option<ExportReport>,
 }
 
@@ -381,6 +383,7 @@ impl Session {
             midi_bytes: None,
             plan: RenderPlan::passthrough(sample_rate, duration),
             plan_hop: 0.005,
+            renderer: None,
             last_report: None,
         };
         session.recompile()?;
@@ -433,6 +436,7 @@ impl Session {
             midi_bytes,
             plan: RenderPlan::passthrough(sample_rate, duration),
             plan_hop: 0.005,
+            renderer: None,
             last_report: None,
         };
         session.recompile()?;
@@ -472,7 +476,26 @@ impl Session {
             compile_plan(&inputs).map_err(to_js)?
         };
         self.plan = plan;
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_plan(self.plan.clone());
+        }
         Ok(())
+    }
+
+    /// The renderer for this session, built once.
+    ///
+    /// @remarks Its epoch map is a pass over the whole source, so building one per measurement
+    /// made a question about one second of a long take cost as much as the take.
+    fn renderer(&mut self) -> &Renderer {
+        if self.renderer.is_none() {
+            self.renderer = Some(Renderer::new(
+                self.samples.clone(),
+                &self.track,
+                self.plan.clone(),
+                Quality::Offline,
+            ));
+        }
+        self.renderer.as_ref().expect("just built")
     }
 
     /// Applies one edit operation and recompiles the plan.
@@ -728,14 +751,8 @@ impl Session {
 
     /// Output length of the current plan, in samples.
     #[wasm_bindgen(js_name = outputFrames)]
-    pub fn output_frames(&self) -> u32 {
-        let renderer = Renderer::new(
-            self.samples.clone(),
-            &self.track,
-            self.plan.clone(),
-            Quality::Preview,
-        );
-        renderer.output_frames() as u32
+    pub fn output_frames(&mut self) -> u32 {
+        self.renderer().output_frames() as u32
     }
 
     /// Renders and encodes a WAV file at export quality.
@@ -757,18 +774,12 @@ impl Session {
             "float32" => BitDepth::Float32,
             other => return Err(JsValue::from_str(&format!("unknown bit depth {other}"))),
         };
-        let renderer = Renderer::new(
-            self.samples.clone(),
-            &self.track,
-            self.plan.clone(),
-            Quality::Offline,
-        );
         let range = if end > start && end > 0.0 {
             Some((start.max(0.0), end))
         } else {
             None
         };
-        let rendered = renderer.render_all(range);
+        let rendered = self.renderer().render_all(range);
         let resampled = if sample_rate as f64 == self.sample_rate {
             rendered
         } else {
@@ -785,20 +796,14 @@ impl Session {
     /// Returns an [`ExportPreview`] as JSON so the range can be reviewed before the user
     /// commits to a file.
     #[wasm_bindgen(js_name = exportPreview)]
-    pub fn export_preview(&self, start: f64, end: f64) -> Result<String, JsValue> {
-        let renderer = Renderer::new(
-            self.samples.clone(),
-            &self.track,
-            self.plan.clone(),
-            Quality::Offline,
-        );
+    pub fn export_preview(&mut self, start: f64, end: f64) -> Result<String, JsValue> {
         let ranged = end > start && end > 0.0;
         let range = if ranged {
             Some((start.max(0.0), end))
         } else {
             None
         };
-        let rendered = renderer.render_all(range);
+        let rendered = self.renderer().render_all(range);
 
         let first = if ranged {
             (start.max(0.0) * self.sample_rate).round().max(0.0)
@@ -1173,15 +1178,15 @@ mod export_preview_tests {
         Session::create(samples, RATE, "tone".into(), &analysis, "").expect("session")
     }
 
-    fn preview(session: &Session, start: f64, end: f64) -> serde_json::Value {
+    fn preview(session: &mut Session, start: f64, end: f64) -> serde_json::Value {
         let json = session.export_preview(start, end).expect("preview");
         serde_json::from_str(&json).expect("preview json")
     }
 
     #[test]
     fn export_preview_reports_the_range_it_would_write() {
-        let session = session();
-        let whole = preview(&session, 0.0, -1.0);
+        let mut session = session();
+        let whole = preview(&mut session, 0.0, -1.0);
         for key in [
             "start",
             "end",
@@ -1203,7 +1208,7 @@ mod export_preview_tests {
         assert!(whole["peak"].as_f64().unwrap_or(0.0) > 0.0);
         assert!((whole["duration"].as_f64().unwrap_or(0.0) - 1.0).abs() < 0.01);
 
-        let half = preview(&session, 0.25, 0.75);
+        let half = preview(&mut session, 0.25, 0.75);
         assert_eq!(half["frames"].as_u64(), Some(RATE as u64 / 2));
         assert!((half["start"].as_f64().unwrap_or(-1.0) - 0.25).abs() < 1e-9);
         assert!((half["end"].as_f64().unwrap_or(-1.0) - 0.75).abs() < 1e-9);
@@ -1212,8 +1217,8 @@ mod export_preview_tests {
 
     #[test]
     fn a_range_past_the_end_previews_as_silence() {
-        let session = session();
-        let past = preview(&session, 5.0, 6.0);
+        let mut session = session();
+        let past = preview(&mut session, 5.0, 6.0);
         assert_eq!(past["frames"].as_u64(), Some(RATE as u64));
         assert_eq!(past["peak"].as_f64(), Some(0.0));
         assert_eq!(past["clips"].as_bool(), Some(false));
