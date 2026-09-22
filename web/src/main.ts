@@ -11,6 +11,7 @@
 
 import { buildCommands, findCommand } from './app/commands.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
+import { startOffline } from './app/offline.js';
 import { bindShortcuts } from './app/shortcuts.js';
 import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
@@ -1318,6 +1319,10 @@ async function start(): Promise<void> {
 
   dismissSplash();
 
+  // Only the built app has a worker to register. In development the module graph is served
+  // file by file, so there is nothing precached and nothing to update against.
+  const releaseOffline = import.meta.env.PROD ? startOffline() : (): void => {};
+
   const releaseEngine = watchEngine(audio, shell, toast);
   const releaseStore = store.subscribe((state) => {
     shell.update(state);
@@ -1342,6 +1347,7 @@ async function start(): Promise<void> {
       releaseDrop();
       releaseStore();
       releaseEngine();
+      releaseOffline();
       releaseSystemTheme();
       stopPlayhead();
       open.dispose();

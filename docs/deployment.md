@@ -70,6 +70,22 @@ The primary documented target.
    for `/assets/*`, which are content-hashed, and `no-cache` for `/index.html`. That gives instant
    updates without stale asset references.
 
+## Offline install
+
+The build emits `sw.js` and `version.json` at the root of `dist/` alongside the page. The worker
+precaches the whole build on the first visit, so Axys runs with no network afterwards and can be
+installed as a desktop app from the browser's own install control.
+
+Two requirements on the host:
+
+- serve `/sw.js` and `/version.json` with `Cache-Control: no-cache`, which `_headers` does. A
+  cached copy of either reports the build it came from as the current one forever;
+- serve `/sw.js` from the same directory the page is served from. The worker can only control what
+  sits under it, and the build puts it beside `index.html` for that reason.
+
+A running Axys compares `version.json` against its own revision when the network returns and when
+the tab is focused again, and offers a reload rather than taking one.
+
 ### `_headers`
 
 `web/public/_headers` is copied into `dist/` and applied by Cloudflare Pages. It sets a strict

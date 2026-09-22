@@ -42,6 +42,7 @@ Every item in design bible 13.1 has tests. Where they live:
 | Project serialization and migration                    | `crates/axys-core/src/project.rs`                            |
 | Rust/WASM APIs and TypeScript integration              | `tests/wasm-integration.test.ts`                             |
 | Static asset loading at `/` and a subpath              | `tests/static-deployment.test.ts`                            |
+| Offline install and the update stamp                   | `tests/offline-cache.test.ts`, `static-deployment.test.ts`   |
 | Malformed and adversarial import limits                | `crates/axys-core/src/audio/wav.rs`, `midi.rs`, `project.rs` |
 | DSP fixture properties                                 | `tests/dsp-quality.test.ts`                                  |
 

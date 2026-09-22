@@ -12,6 +12,14 @@
 /index.html
   Cache-Control: no-cache
 
+# The worker and the build stamp are how a running Axys learns there is a newer one, so a cached
+# copy of either would report the build it came from as the current one forever.
+/sw.js
+  Cache-Control: no-cache
+
+/version.json
+  Cache-Control: no-cache
+
 # Cross-origin isolation is OPTIONAL. Axys works without it and uses neither
 # SharedArrayBuffer nor WASM threads. Uncommenting these enables isolation for
 # future measurement, at the cost of blocking non-CORP cross-origin subresources.

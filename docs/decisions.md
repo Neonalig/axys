@@ -855,3 +855,44 @@ column of its own rather than a handle laid over either neighbour, because the i
 and a handle inside it would scroll away with the settings. Arrow keys move it and a double-click
 puts it back, which is what every other divider does. The width is a device preference, and it is
 clamped so the column can be neither hidden nor made to swallow the editor.
+
+## Offline install
+
+### One cache per build, filled as one unit
+
+The service worker precaches the whole build into a cache named for the version and the revision,
+in a single `addAll`. The core is WebAssembly and the bindings that call it are JavaScript with a
+matched ABI, so a cache holding new bindings and an old core is not a slow editor, it is a broken
+one. `addAll` is all-or-nothing: a partial download leaves the previous build serving as it was,
+and a build that does install never mixes its files with another's. Activation deletes every other
+`axys-` cache and nobody else's.
+
+The precache list is the build's own output rather than a list kept by hand, emitted by a plugin in
+`vite.config.ts` that reads the bundle and the public directory. A file that stops being emitted
+stops being cached, and one that starts being emitted is cached without anyone remembering to say
+so.
+
+### The worker is compiled separately and lands at the scope root
+
+`web/src/app/service-worker.ts` is TypeScript like everything else, but it does not go through the
+bundler. A worker can only control what sits under it, so a hashed name in `assets/` would scope it
+to `assets/` and could never be replaced. The plugin compiles it with the esbuild Vite already
+carries and emits it as `sw.js` beside the page, with the file list and the cache name injected as
+constants.
+
+### An update is offered, never taken
+
+`version.json` is written beside the page with the same version and revision the page was built
+with. On regaining the network, and on returning to the tab, Axys reads it past every cache and
+asks the worker to update only when the revision differs. The new worker installs and then waits:
+the swap happens when the user presses Reload in the panel, because an update that replaced the
+running build under an open project would reload the editor out from under an edit.
+
+Nothing is lost either way. Projects are in IndexedDB and their audio is in OPFS, and a reload
+touches neither.
+
+### Development registers nothing
+
+`npm run dev` serves the module graph file by file, so there is no build to precache and no stamp
+to compare against. Registration happens in the production build only, which also keeps a stale
+worker from serving yesterday's bundle over a dev server.

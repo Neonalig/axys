@@ -176,6 +176,10 @@ function probeFilePickers(): boolean {
   );
 }
 
+function probeServiceWorker(): boolean {
+  return safe(() => typeof globalThis.navigator?.serviceWorker === 'object');
+}
+
 function probeSecureContext(): boolean {
   return safe(() => globalThis.isSecureContext === true);
 }
@@ -299,6 +303,14 @@ export async function probeCapabilities(): Promise<Capability[]> {
       opfs,
       'Decoded audio is cached between sessions.',
       'Decoded audio is not cached, so reopening a project decodes the source file again.',
+    ),
+    capability(
+      'service-worker',
+      'Offline Install',
+      false,
+      probeServiceWorker(),
+      'Axys runs with no network after one visit, and can be installed as an app.',
+      'Axys needs the network on every visit and cannot be installed as an app.',
     ),
     capability(
       'file-pickers',

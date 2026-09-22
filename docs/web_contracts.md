@@ -473,6 +473,26 @@ export class MediaStore {
 fingerprint and refuses a different file with a clear message. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
 
+## Offline install: `app/service-worker.ts` and `app/offline.ts`
+
+`app/service-worker.ts` is the service worker, compiled on its own by the `axys-service-worker`
+plugin in `vite.config.ts` and emitted as `sw.js` beside the page with two constants injected:
+`__AXYS_PRECACHE__`, every file the build produced, and `__AXYS_CACHE__`, a cache name carrying the
+version and the revision. Install fills one cache with the whole list in one `addAll`, so the core
+and the bindings that call it are cached together or not at all. Activate drops every older `axys-`
+cache. A GET to this origin is answered from the cache, a navigation falls back to the cached page,
+and the worker swaps to a new build only when the page sends it `{ type: 'skipWaiting' }`.
+
+```ts
+/** Registers the worker and watches for a newer build. Returns a disposer. */
+export function startOffline(): () => void;
+```
+
+The plugin also writes `version.json`, which `startOffline` reads past every cache on regaining the
+network and on returning to the tab. A different revision asks the registration to update; the new
+worker installs and waits, and a non-blocking Dialog offers Reload. Registration happens in the
+production build only.
+
 ## Entry: `main.ts`
 
 Probes capabilities, shows an explicit unsupported-browser state when a required one is missing,

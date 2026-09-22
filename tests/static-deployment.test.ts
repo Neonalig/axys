@@ -173,6 +173,53 @@ describe('static deployment', () => {
     });
   }
 
+  it('precaches the core and its bindings as one unit', () => {
+    const worker = readFileSync(join(dist, 'sw.js'), 'utf8');
+    const listed = JSON.parse(worker.match(/=\s*(\[[^\]]*\])/)?.[1] ?? '[]') as string[];
+    expect(listed.length).toBeGreaterThan(0);
+    // One list in one cache filled by one addAll. A cache holding new bindings and an old core
+    // is a broken editor, so neither may be precached without the other.
+    expect(listed.some((file) => file.endsWith('.wasm'))).toBe(true);
+    expect(listed.some((file) => /axys_wasm-.*\.js$/.test(file))).toBe(true);
+    expect(listed).toContain('index.html');
+    expect(listed).toContain('manifest.webmanifest');
+    expect(listed).not.toContain('_headers');
+    for (const file of listed) {
+      expect(existsSync(join(dist, file)), `${file} is precached but was not built`).toBe(true);
+      expect(file.endsWith('.map'), `${file} is a source map and need not be cached`).toBe(false);
+    }
+  });
+
+  it('stamps the build so a running Axys can tell it is out of date', () => {
+    const stamp = JSON.parse(readFileSync(join(dist, 'version.json'), 'utf8')) as {
+      version: string;
+      revision: string;
+    };
+    expect(stamp.version).toBeTruthy();
+    expect(stamp.revision).toBeTruthy();
+    const worker = readFileSync(join(dist, 'sw.js'), 'utf8');
+    expect(worker).toContain(`axys-${stamp.version}-${stamp.revision}`);
+  });
+
+  it('declares an installable app with a maskable icon', () => {
+    const manifest = JSON.parse(readFileSync(join(dist, 'manifest.webmanifest'), 'utf8')) as {
+      display: string;
+      icons: { src: string; purpose: string }[];
+    };
+    expect(manifest.display).toBe('standalone');
+    expect(manifest.icons.some((icon) => icon.purpose.includes('maskable'))).toBe(true);
+    for (const icon of manifest.icons) {
+      expect(existsSync(join(dist, icon.src.replace('./', '')))).toBe(true);
+    }
+    expect(readFileSync(join(dist, 'index.html'), 'utf8')).toContain('manifest.webmanifest');
+  });
+
+  it('serves the worker and the build stamp uncached', () => {
+    const headers = readFileSync(join(dist, '_headers'), 'utf8');
+    expect(headers).toMatch(/\/sw\.js\s+Cache-Control: no-cache/);
+    expect(headers).toMatch(/\/version\.json\s+Cache-Control: no-cache/);
+  });
+
   it('ships the optional host headers without mandating cross-origin isolation', () => {
     const headers = readFileSync(join(dist, '_headers'), 'utf8');
     expect(headers).toContain('Content-Security-Policy');
