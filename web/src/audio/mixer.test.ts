@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { amplitude, DEFAULT_MIXER, mixLevels, swapped, vocalMonitor } from './mixer.js';
+import { amplitude, DEFAULT_MIXER, mixLevels, vocalMonitor } from './mixer.js';
 import type { MixerSettings } from '../core/types.js';
 
 function desk(patch: Partial<MixerSettings> = {}): MixerSettings {
@@ -50,22 +50,6 @@ describe('mixLevels', () => {
   it('treats a closed fader as silence', () => {
     const levels = mixLevels(desk({ processed: { ...DEFAULT_MIXER.processed, gainDb: -60 } }));
     expect(levels.processed.audible).toBe(false);
-  });
-});
-
-describe('swapped', () => {
-  it('exchanges which vocal is heard and leaves both levels where they were', () => {
-    const before = desk({ processed: { gainDb: -3, pan: 0.5, mute: false, solo: false } });
-    const after = swapped(before);
-    expect(vocalMonitor(before)).toBe('processed');
-    expect(vocalMonitor(after)).toBe('original');
-    expect(after.processed.gainDb).toBe(-3);
-    expect(after.processed.pan).toBe(0.5);
-    expect(after.original.gainDb).toBe(before.original.gainDb);
-  });
-
-  it('is its own inverse', () => {
-    expect(swapped(swapped(DEFAULT_MIXER))).toEqual(DEFAULT_MIXER);
   });
 });
 

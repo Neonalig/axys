@@ -156,6 +156,32 @@ export class AudioEngine {
     if (this.#metronome) this.#sendClicks();
   }
 
+  /**
+   * Lets go of the source, so an empty editor has nothing to play.
+   *
+   * @remarks The context and the worklet stay up: the next project loads into them without
+   * paying for a second audio graph, and a transport with nothing loaded outputs silence.
+   */
+  unloadSource(): void {
+    if (this.#readyTimer !== null) {
+      clearTimeout(this.#readyTimer);
+      this.#readyTimer = null;
+    }
+    this.#ready = false;
+    this.#plan = null;
+    this.#planBytes = null;
+    this.#timeline = null;
+    this.#metronome = false;
+    this.#sourceRate = null;
+    this.#duration = 0;
+    this.#playing = false;
+    this.#reported = 0;
+    this.#reportedAt = now();
+    this.#send({ type: 'unload' });
+    this.#syncTransport();
+    this.#notify();
+  }
+
   /** Hands the worklet the monitor desk: level, pan, mute and solo for every strip. */
   setMixer(mixer: MixerSettings): void {
     this.#send({ type: 'mixer', mixer });

@@ -147,6 +147,56 @@ class AxysWorkspace implements Workspace {
   }
 
   /**
+   * Closes what is open and returns the editor to an empty project.
+   *
+   * @remarks Asks before discarding unsaved work, the same question Open asks, and offers to
+   * save first. The device's own settings are left alone: how the editor is laid out is not
+   * part of the project being closed.
+   */
+  async newProject(): Promise<void> {
+    if (this.#importing) {
+      this.#toast.warn('An import is already running.');
+      return;
+    }
+    if (!(await this.#mayReplaceProject('Starting a new project', 'Discard And Start'))) return;
+
+    this.#autosave?.dispose();
+    this.#autosave = null;
+    this.#session?.free();
+    this.#session = null;
+    this.#pending = null;
+    this.#plan = null;
+    this.#projectFile = null;
+    this.#projectId = null;
+    this.#name = 'Untitled';
+    clearPeaks();
+    this.#audio.unloadSource();
+
+    const fresh = initialState();
+    const view = this.#store.state.view;
+    this.#store.update({
+      phase: 'empty',
+      message: null,
+      source: null,
+      track: null,
+      blobs: [],
+      conflicts: [],
+      edits: null,
+      plan: null,
+      // How time reads and what edits snap to follow the person, not the project that closed.
+      view: { ...fresh.view, timeDisplay: view.timeDisplay, snapDivision: view.snapDivision },
+      midi: null,
+      mappingReport: null,
+      guideOverlaps: [],
+      drift: null,
+      selection: emptySelection(),
+      transport: fresh.transport,
+      analysis: fresh.analysis,
+      dirty: false,
+    });
+  }
+
+  /**
    * Opens whatever the user picked, routed by what the file turned out to be.
    *
    * @remarks One picker rather than three commands. A project opened from disk also remembers
@@ -333,16 +383,19 @@ class AxysWorkspace implements Workspace {
   /**
    * Whether opening something else may replace what is open.
    *
-   * @remarks Opening replaces the whole project, so unsaved work would go without a word. The
-   * question offers to save first, because that is what someone who did not mean to discard it
-   * wants next.
+   * @remarks Opening, and starting again, replace the whole project, so unsaved work would go
+   * without a word. The question offers to save first, because that is what someone who did not
+   * mean to discard it wants next, and it names what is about to happen.
    */
-  async #mayReplaceProject(): Promise<boolean> {
+  async #mayReplaceProject(
+    what = 'Opening something else',
+    confirm = 'Discard And Open',
+  ): Promise<boolean> {
     if (!this.#session || !this.#store.state.dirty) return true;
     const answer = await confirmAction({
       title: 'Unsaved Changes',
-      message: `${this.#name} has edits that are not saved. Opening something else discards them.`,
-      confirm: 'Discard And Open',
+      message: `${this.#name} has edits that are not saved. ${what} discards them.`,
+      confirm,
       alternative: 'Save First',
       icon: 'warning',
     });

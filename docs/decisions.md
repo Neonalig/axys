@@ -1022,3 +1022,46 @@ the panel opens centred. It is not forgotten, because the window may be that siz
 
 "Guide notes are shown over the vocal" described what was already on screen. The line now carries
 what the mapping left unmapped and how many notes overlap, and is hidden when there is neither.
+
+### The mixer answers for the monitoring on its own
+
+Swap Vocal is gone, command and all. Two strips with their own mutes already say which take is
+playing and set it, and a second way to say it is a second thing to keep in step. `C` is free.
+
+### A strip's value sits under its control
+
+The pan readout was beside the slider, which left the slider about sixty pixels to say the whole
+stereo field in. Each control now gets the width of the strip and its value gets the line under it.
+
+The centre detent had the same fault in a different place: it wrote the detented value back to the
+slider mid-drag, which does not move the drag the browser is running, so the raw position came back
+on release and a pan dragged to centre landed a few percent off it. The slider is left where the
+pointer puts it and the detent is applied to what is heard and committed, which is what the readout
+was already saying.
+
+### New Project is a command of its own
+
+Opening a file replaced the project and nothing emptied it. New Project sits before Open, asks the
+same question about unsaved work in its own words, and returns the editor to the state it starts a
+session in, leaving the device's own settings alone. It lets go of the source in the worklet as
+well, so an empty editor has nothing to play; the context and the processor stay up for the next
+project. Not `Ctrl+N`, which the browser answers first with a window of its own.
+
+### A number field is dragged sideways
+
+Typing a figure is exact and slow, and a slider is fast and imprecise. Every number field in the
+inspector is now also a drag, from the field or from its label, one step per pixel with the
+modifiers the canvas already uses: Shift coarse, Alt fine. The pointer is locked for the length of
+the drag where the browser allows it, so the cursor stays put and the travel never runs out at the
+edge of the screen; a browser that refuses the lock drags exactly as well.
+
+Two details make it behave. The drag takes focus so the panel does not rewrite the field under the
+hand, and gives it back before committing, or the field goes on showing the number the drag wrote
+while the project holds another. And the click that ends a drag is swallowed, because a label's
+click puts the keyboard back in the field it names.
+
+### Pressing a menu button again closes its menu
+
+A menu dismisses itself on a press outside it, and that press is the button's own, so the click
+that followed reopened it and the menu never closed. The menu now knows which control it hangs off
+and ignores the click from the press that dismissed it.

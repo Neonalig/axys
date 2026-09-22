@@ -52,11 +52,19 @@ function isItem(entry: MenuEntry): entry is MenuItem {
  * @remarks Returns a function that closes it. Only one menu is open at a time: opening a second
  * closes the first. Closing always restores focus to whatever held it, so a menu dismissed with
  * Escape leaves the keyboard where it was.
+ *
+ * `opener` is the control the menu hangs off, and pressing that control again closes the menu
+ * rather than opening a second one. The press that dismisses a menu arrives before the click
+ * that would reopen it, so the opener is remembered for as long as that pair takes.
  */
 export function showContextMenu(
   entries: readonly MenuEntry[],
   at: { x: number; y: number },
+  opener?: Element,
 ): () => void {
+  if (opener !== undefined && dismissedBy(opener)) {
+    return () => {};
+  }
   closeOpenMenu();
 
   const previous = document.activeElement;
@@ -145,9 +153,15 @@ export function showContextMenu(
   };
 
   const onPointerDown = (event: Event): void => {
-    if (!(event.target instanceof Node) || !element.contains(event.target)) {
-      close();
+    if (event.target instanceof Node && element.contains(event.target)) {
+      return;
     }
+    // A press on the control the menu hangs off is the control being pressed again, which means
+    // close. Without this the press dismisses the menu and the click that follows reopens it.
+    if (opener !== undefined && event.target instanceof Node && opener.contains(event.target)) {
+      dismissedAt = { opener, when: Date.now() };
+    }
+    close();
   };
 
   let closed = false;
@@ -185,6 +199,23 @@ export function closeOpenMenu(): void {
 }
 
 let openMenu: (() => void) | null = null;
+
+/** The control whose own press dismissed a menu, and when. */
+let dismissedAt: { opener: Element; when: number } | null = null;
+
+/** How long after a press dismisses a menu the click from that press is ignored. */
+const REOPEN_GUARD_MS = 400;
+
+/** Whether this control's own press has just closed its menu, so it must not reopen it. */
+function dismissedBy(opener: Element): boolean {
+  const dismissed = dismissedAt;
+  dismissedAt = null;
+  return (
+    dismissed !== null &&
+    dismissed.opener === opener &&
+    Date.now() - dismissed.when < REOPEN_GUARD_MS
+  );
+}
 
 /** Puts a menu at a position, flipped back inside the viewport at either edge. */
 function place(element: HTMLElement, at: { x: number; y: number }): void {

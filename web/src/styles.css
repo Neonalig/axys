@@ -20,7 +20,7 @@
   --axys-inspector-rail: 34px;
   --axys-toolbar-height: 44px;
   --axys-status-height: 26px;
-  --axys-mixer-height: 224px;
+  --axys-mixer-height: 248px;
   --axys-scrollbar: 12px;
   --axys-motion: 120ms;
 }
@@ -306,7 +306,8 @@ body {
 /* Only the fader grows; everything else keeps the height it asks for */
 
 .axys-mixer-name,
-.axys-mixer-row,
+.axys-mixer-pan,
+.axys-mixer-pan-readout,
 .axys-mixer-level,
 .axys-mixer-switches {
   flex: 0 0 auto;
@@ -321,22 +322,9 @@ body {
   white-space: nowrap;
 }
 
-.axys-mixer-row {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  width: 100%;
-}
-
 .axys-mixer-pan {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
-}
-
-.axys-mixer-pan-readout {
-  flex: 0 0 auto;
-  width: 2.2rem;
-  text-align: right;
 }
 
 /* The fader is vertical, which is what a desk looks like and how a level is read at a glance */
@@ -659,6 +647,13 @@ input[type='checkbox'] {
 .axys-readout-label {
   font-size: var(--axys-size-sm);
   color: var(--axys-text-muted);
+}
+
+/* A number field is dragged sideways to set it, so the label says so with its cursor */
+
+.is-adjustable {
+  cursor: ew-resize;
+  touch-action: none;
 }
 
 /* A field's explainer hangs off its label, so the tip never covers the control */

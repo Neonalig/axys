@@ -123,6 +123,7 @@ const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
  * "Blob" and "Audio" are the words the icon repeats. Anything not listed shows its own label.
  */
 const SHORT_LABEL: Readonly<Record<string, string>> = {
+  'file.newProject': 'New',
   'file.saveProject': 'Save',
   'file.exportWav': 'Export',
   'file.importMidi': 'Import',
@@ -222,9 +223,6 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   // The mixer is opened from the footer, beside the other controls that say how the editor
   // is laid out rather than what is in it.
   'view.toggleMixer',
-  // Which vocal is playing is the mixer's question now: two strips with their own mute, rather
-  // than a button with three faces. The shortcut is still there for a quick A/B.
-  'transport.swapVocal',
   // Where a save goes is a variation on Save, so it lives in that button's own menu.
   'file.saveProjectAs',
 ]);
@@ -253,6 +251,7 @@ const GROUP_ICON: Readonly<Record<CommandGroup, IconName>> = {
 };
 
 const LABEL_ICON: Readonly<Record<string, IconName>> = {
+  'New Project': 'newProject',
   Open: 'openProject',
   'Save Project': 'save',
   'Save As': 'save',
@@ -973,10 +972,10 @@ export class AppShell {
     return button;
   }
 
-  /** Opens a button's own menu directly under it. */
+  /** Opens a button's own menu directly under it, or closes the one it has open. */
   #openButtonMenu(button: HTMLButtonElement, entries: (shell: AppShell) => MenuEntry[]): void {
     const bounds = button.getBoundingClientRect();
-    showContextMenu(entries(this), { x: bounds.left, y: bounds.bottom + 4 });
+    showContextMenu(entries(this), { x: bounds.left, y: bounds.bottom + 4 }, button);
   }
 
   /** Runs a command from a button menu. */

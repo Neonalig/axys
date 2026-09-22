@@ -114,7 +114,111 @@ export function field(labelText: string, control: HTMLElement, guide: string): H
   const label = guidedLabel(labelText, guide);
   label.htmlFor = control.id;
   row.append(label, control);
+  bindDragAdjust(control, label);
   return row;
+}
+
+/**
+ * Locks the pointer to the handle for the length of a drag.
+ *
+ * @remarks Never throws and never rejects: a browser that refuses the lock drags exactly as
+ * well, it simply moves the cursor while it does.
+ */
+function lock(handle: HTMLElement): void {
+  try {
+    const request: unknown = handle.requestPointerLock?.();
+    if (request instanceof Promise) void request.catch(() => undefined);
+  } catch {
+    // The drag reads its own movement, so the lock is a convenience rather than a requirement.
+  }
+}
+
+/** Pixels a press has to travel before it counts as a drag rather than a click. */
+const DRAG_THRESHOLD = 3;
+
+/** How far one pixel of travel moves a field, as a multiple of its own step. */
+const DRAG_COARSE = 10;
+const DRAG_FINE = 0.1;
+
+/**
+ * Lets a number field be dragged sideways to set its value, the way every editor's fields are.
+ *
+ * @remarks The label is a handle as well as the field, which is what makes the gesture reachable
+ * without putting a caret in the way. One pixel is one step, Shift is ten and Alt a tenth, the
+ * same modifiers the canvas uses. The pointer is locked while it is dragged, so the cursor stays
+ * where the hand left it and the travel never runs out at the edge of the screen; a browser that
+ * refuses the lock still drags, it just moves the cursor.
+ *
+ * The drag commits once, on release, so a field dragged across half its range is one undo step.
+ */
+export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLElement[]): void {
+  if (!(control instanceof HTMLInputElement) || control.type !== 'number') return;
+  const step = Number.parseFloat(control.step) || 1;
+  const decimals = (control.step.split('.')[1] ?? '').length;
+  const low = control.min === '' ? Number.NEGATIVE_INFINITY : Number.parseFloat(control.min);
+  const high = control.max === '' ? Number.POSITIVE_INFINITY : Number.parseFloat(control.max);
+
+  for (const handle of [control, ...handles]) {
+    handle.classList.add('is-adjustable');
+    let dragging = false;
+    /** Set while the click that ends a drag is still to arrive, so it is not taken as a click. */
+    let dragged = false;
+    let origin = 0;
+    let last = 0;
+
+    handle.addEventListener('pointerdown', (event: PointerEvent) => {
+      if (event.button !== 0 || control.disabled || control.readOnly) return;
+      dragging = false;
+      dragged = false;
+      origin = event.clientX;
+      last = event.clientX;
+      handle.setPointerCapture(event.pointerId);
+    });
+
+    handle.addEventListener('pointermove', (event: PointerEvent) => {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      const locked = document.pointerLockElement === handle;
+      const travel = locked ? event.movementX : event.clientX - last;
+      last = event.clientX;
+      if (!dragging) {
+        if (Math.abs(event.clientX - origin) < DRAG_THRESHOLD) return;
+        dragging = true;
+        control.focus();
+        lock(handle);
+      }
+      event.preventDefault();
+      const scale = event.shiftKey ? DRAG_COARSE : event.altKey ? DRAG_FINE : 1;
+      const current = Number.parseFloat(control.value);
+      const from = Number.isFinite(current) ? current : 0;
+      const next = Math.min(Math.max(from + travel * step * scale, low), high);
+      control.value = next.toFixed(decimals);
+      control.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const release = (event: PointerEvent): void => {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      handle.releasePointerCapture(event.pointerId);
+      if (document.pointerLockElement === handle) document.exitPointerLock();
+      if (!dragging) return;
+      dragging = false;
+      dragged = true;
+      // Focus was taken to keep the panel from rewriting the field mid-drag, and is given back
+      // before the edit, so the field it leaves behind is the one the session settled on rather
+      // than the last number the drag wrote.
+      control.blur();
+      // One change for the whole drag: the field's own listener turns that into one edit.
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    handle.addEventListener('pointerup', release);
+    handle.addEventListener('pointercancel', release);
+    // A press that became a drag must not also count as a click: a label's click puts the
+    // keyboard in the field it names, which would take back the focus the drag just gave up.
+    handle.addEventListener('click', (event: MouseEvent) => {
+      if (!dragged) return;
+      dragged = false;
+      event.preventDefault();
+    });
+  }
 }
 
 /**
@@ -813,6 +917,7 @@ export class Inspector {
     pair.className = 'axys-control-pair';
     pair.append(control, readout);
     row.append(label, pair);
+    bindDragAdjust(control, label);
     return row;
   }
 

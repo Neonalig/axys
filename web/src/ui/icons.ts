@@ -2,6 +2,7 @@
 
 /** Name of one command icon. */
 export type IconName =
+  | 'newProject'
   | 'openAudio'
   | 'openMidi'
   | 'openProject'
@@ -60,6 +61,9 @@ const FOLDER =
  * @remarks The markup is author-controlled and safe to assign with `innerHTML`.
  */
 export const ICONS: Readonly<Record<IconName, string>> = {
+  newProject: stroked(
+    `<path d="M4 2.4h5l3 3v8.2H4Z"/><path d="M8.9 2.5v3.1h3.05"/><path d="M8 7.6v4.2M5.9 9.7h4.2"/>`,
+  ),
   openAudio: stroked(
     `<path d="${FOLDER}"/><path d="M5.2 9.6v1.4M7.1 8.2v4.2M9 9.1v2.6M10.9 9.9v1.2"/>`,
   ),

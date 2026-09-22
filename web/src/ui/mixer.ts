@@ -142,16 +142,14 @@ export class MixerPanel {
     switches.className = 'axys-mixer-switches';
     switches.append(mute, solo);
 
-    const panRow = document.createElement('div');
-    panRow.className = 'axys-mixer-row';
-    panRow.append(pan, panReadout);
-
     const faderRow = document.createElement('div');
     faderRow.className = 'axys-mixer-fader-row';
     faderRow.append(gain);
 
+    // Each control gets the width of the strip and its value gets its own line under it. A
+    // readout beside a slider takes the room the slider needs to be worth dragging.
     name.htmlFor = gain.id;
-    strip.append(name, panRow, faderRow, gainReadout, switches);
+    strip.append(name, pan, panReadout, faderRow, gainReadout, switches);
     this.#strips.set(id, { gain, gainReadout, pan, panReadout, mute, solo });
 
     // Heard as it moves, kept when it is let go: one drag is one undo step rather than one per
@@ -166,27 +164,30 @@ export class MixerPanel {
     });
     // The detent belongs to the hand on the slider, not to the value: the arrow keys step
     // through the middle of the field one hundredth at a time and must not be dragged to zero.
-    let dragging = false;
+    let keyboard = false;
     const panValue = (): number => {
       const value = readNumber(pan, this.#mixer[id].pan);
-      return dragging && Math.abs(value) < PAN_DETENT ? 0 : value;
+      return !keyboard && Math.abs(value) < PAN_DETENT ? 0 : value;
     };
-    pan.addEventListener('pointerdown', () => {
-      dragging = true;
+    pan.addEventListener('keydown', () => {
+      keyboard = true;
     });
-    for (const ended of ['pointerup', 'pointercancel', 'keydown'] as const) {
-      pan.addEventListener(ended, () => {
-        dragging = false;
-      });
-    }
+    pan.addEventListener('pointerdown', () => {
+      keyboard = false;
+    });
     pan.addEventListener('input', () => {
+      // The slider's own value is left where the pointer put it. Writing the detented value
+      // back mid-drag does not move the drag, so the browser restores the raw position on
+      // release and the centre the readout promised turns back into a few percent off it.
       const value = panValue();
-      pan.value = String(value);
       panReadout.textContent = panText(value);
       this.#hooks.previewMixer(this.#with(id, { pan: value }));
     });
     pan.addEventListener('change', () => {
-      this.#commit(id, { pan: panValue() });
+      const value = panValue();
+      pan.value = String(value);
+      panReadout.textContent = panText(value);
+      this.#commit(id, { pan: value });
     });
     // A double-click puts a control back where it started, which is what every other one does.
     gain.addEventListener('dblclick', () => {

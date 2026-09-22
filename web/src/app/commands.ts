@@ -12,7 +12,6 @@ import { savePreferences } from './preferences.js';
 import { selectionSpan } from './selection.js';
 import type { AppState, AppStore } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
-import { DEFAULT_MIXER, swapped, vocalMonitor } from '../audio/mixer.js';
 import type { Blob, EditOp, ExportPreview, MappingProposal, TimelineMap } from '../core/types.js';
 import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
@@ -106,6 +105,9 @@ export interface Workspace {
    * picker, which is how a copy is saved somewhere else.
    */
   saveProject(askWhere?: boolean): Promise<void>;
+
+  /** Closes what is open and returns the editor to an empty project. */
+  newProject(): Promise<void>;
 
   /** Opens whatever the user picked, routing it by what kind of file it turned out to be. */
   openAny(): Promise<void>;
@@ -371,6 +373,17 @@ export function buildCommands(): Command[] {
     ready(ctx) && !ctx.store.state.transport.playing && !ctx.workspace.previewing;
 
   const commands: Command[] = [
+    {
+      id: 'file.newProject',
+      label: 'New Project',
+      group: 'File',
+      // Not Ctrl+N: the browser answers that one first, with a window of its own.
+      shortcut: 'Ctrl+Alt+N',
+      enabled: (ctx) => !ctx.workspace.importing,
+      run: async (ctx) => {
+        await ctx.workspace.newProject();
+      },
+    },
     {
       // One Open. The picker lists the kinds, so choosing a project, a vocal or a guide is a
       // choice made in the host's own dialog rather than before reaching it.
@@ -667,23 +680,6 @@ export function buildCommands(): Command[] {
         const timeline = timelineOf(ctx.store.state);
         if (!timeline) return;
         ctx.audio.setMetronome(!ctx.store.state.transport.metronome, timeline);
-      },
-    },
-    {
-      id: 'transport.swapVocal',
-      label: 'Swap Vocal',
-      group: 'Transport',
-      shortcut: 'C',
-      enabled: ready,
-      run: (ctx) => {
-        const mixer = ctx.store.state.edits?.mixer ?? DEFAULT_MIXER;
-        // Hearing both, or neither, is an answer a swap cannot improve on, so it says so
-        // rather than silently changing which strip is muted.
-        if (vocalMonitor(mixer) === 'processed' || vocalMonitor(mixer) === 'original') {
-          ctx.workspace.apply({ type: 'setMixer', mixer: swapped(mixer) });
-          return;
-        }
-        ctx.toast.info('Mute One Vocal To Swap');
       },
     },
 

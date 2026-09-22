@@ -84,21 +84,7 @@ export const DEFAULT_MIXER: MixerSettings = {
   click: { gainDb: DEFAULT_CLICK_DB, pan: 0, mute: false, solo: false },
 };
 
-/**
- * The desk with the two vocal strips exchanging which of them is heard.
- *
- * @remarks Only mute and solo move. A swap answers which take is being listened to, and taking
- * each strip's level and pan with it would answer a question nobody asked.
- */
-export function swapped(mixer: MixerSettings): MixerSettings {
-  return {
-    ...mixer,
-    processed: { ...mixer.processed, mute: mixer.original.mute, solo: mixer.original.solo },
-    original: { ...mixer.original, mute: mixer.processed.mute, solo: mixer.processed.solo },
-  };
-}
-
-/** Which of the two vocal strips is being heard, for the control that swaps them. */
+/** Which of the two vocal strips is being heard, which is what the editor draws solid. */
 export function vocalMonitor(mixer: MixerSettings): 'processed' | 'original' | 'both' | 'neither' {
   const levels = mixLevels(mixer);
   if (levels.processed.audible && levels.original.audible) return 'both';

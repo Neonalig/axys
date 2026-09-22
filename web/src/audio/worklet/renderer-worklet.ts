@@ -50,6 +50,7 @@ export type EngineMessage =
       plan: Uint8Array;
     }
   | { type: 'plan'; plan: Uint8Array }
+  | { type: 'unload' }
   | { type: 'mixer'; mixer: MixerSettings }
   | { type: 'play'; from: number | null; countIn: boolean; seq: number }
   | { type: 'pause'; seq: number }
@@ -460,6 +461,9 @@ class RendererProcessor extends AudioWorkletProcessor {
       case 'plan':
         this.#setPlan(message.plan);
         break;
+      case 'unload':
+        this.#unload();
+        break;
       case 'mixer':
         this.#levels = mixLevels(message.mixer);
         break;
@@ -549,6 +553,22 @@ class RendererProcessor extends AudioWorkletProcessor {
       this.#outputFrames = 0;
       this.#fail(thrown);
     }
+  }
+
+  /** Drops the source and its renderer, leaving the processor up and outputting silence. */
+  #unload(): void {
+    this.#playing = false;
+    this.#preroll = 0;
+    this.#audition = null;
+    this.#position = 0;
+    this.#release();
+    this.#source = new Float32Array(0);
+    this.#track = null;
+    this.#plan = null;
+    this.#outputFrames = 0;
+    this.#metronome = false;
+    this.#failure = null;
+    this.#report();
   }
 
   #setPlan(plan: Uint8Array): void {
@@ -871,6 +891,7 @@ function asEngineMessage(value: unknown): EngineMessage | null {
     case 'init':
     case 'source':
     case 'plan':
+    case 'unload':
     case 'mixer':
     case 'play':
     case 'pause':

@@ -229,12 +229,11 @@ export function findCommand(commands: Command[], id: string): Command | undefine
 
 Commands must cover, at minimum: Open, Save Project, Save As, Import MIDI, Export Audio, Cancel
 Import, Undo, Redo, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
-Character, Play, Stop, Loop Selection, Toggle Metronome, Swap Vocal, Toggle Mixer, Zoom In, Zoom
-Out, Zoom Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
+Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Mixer, Zoom In, Zoom Out, Zoom Fit,
+Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics. New Project empties the
+editor and comes before Open, asking the same question about unsaved work.
 
-Not every command is drawn: the mixer is opened from the footer and Swap Vocal has no button at all,
-because which vocal is playing is a pair of mutes in the mixer rather than a button with three
-faces. Both keep their keys.
+Not every command is drawn where its group is: the mixer is opened from the footer, beside the zoom.
 
 One Open covers a project or a vocal; a MIDI guide is imported into an open project and has its own
 command. Reset is one command whose extent comes from the selected span. A command that addresses a
@@ -392,7 +391,9 @@ and `EXPORT_KIND` type lists.
 
 `ui/tooltip.ts` exports `TooltipHost` and `setTooltip`. Nothing in the application sets `title`:
 the host tooltip appears only after its own delay and only while the window holds focus. `ui/menu.ts`
-exports `showContextMenu`, whose items each name the key that runs them while the menu is open.
+exports `showContextMenu`, whose items each name the key that runs them while the menu is open. It
+takes the control the menu hangs off, and pressing that control again closes the menu rather than
+reopening it.
 `ui/scrollbar.ts` and `ui/zoom-control.ts` are the navigation controls around and below the canvas.
 
 `ui/shell.ts` builds the whole DOM chrome with semantic elements: a `<header>` toolbar of
@@ -448,10 +449,9 @@ arrow keys step past. The panel is opened from the footer, beside the zoom, and 
 is a device preference like the inspector's fold.
 
 The mixer is monitoring and never reaches the render plan, so an export is unchanged by it. It
-supersedes Compare, which has no button: the processed and original takes are two strips with their
-own mutes, and Swap Vocal on `C` exchanges which of them is heard. `audio/mixer.ts` is the one place
-the desk is turned into amplitudes, read by the worklet and by the blob layer that draws what is
-audible.
+supersedes Compare outright: which vocal is playing is the processed and original strips with their
+own mutes, and there is no command or button beside them. `audio/mixer.ts` is the one place the desk
+is turned into amplitudes, read by the worklet and by the blob layer that draws what is audible.
 
 `ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
 settings, each bound to an `EditOp`. Correction and voice character are not here: they are
@@ -463,6 +463,11 @@ project state. The shell owns the column width and the divider, because the grid
 the panel owns nothing but its own class. The divider is a grid column of its own rather than
 something laid over either neighbour, because the inspector scrolls and a handle inside it would
 scroll away with the settings.
+
+A number field is dragged sideways to set it, from the field or from its label, one step per pixel
+with Shift for ten and Alt for a tenth. The pointer is locked for the length of the drag where the
+browser allows it, so the travel never runs out at the edge of the screen. The drag commits once, on
+release, and gives focus back before it does.
 
 A field's explainer hangs off its label, marked with an info icon, rather than off the control: a
 tooltip over the control covers the slider or the drop-down being reached for. The blob panel is
