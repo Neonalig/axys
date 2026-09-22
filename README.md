@@ -24,7 +24,7 @@ The name is a double entendre on axis, for movement along the time and pitch axe
 
 ## Requirements
 
-- Node 20.19 or newer (see `.nvmrc`).
+- Node 22.12 or newer (see `.nvmrc`).
 - Rust stable 1.82 or newer with the `wasm32-unknown-unknown` target (see `rust-toolchain.toml`).
 - No C or C++ toolchain. No MSVC, Clang, GCC, CMake or Python.
 

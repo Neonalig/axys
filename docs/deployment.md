@@ -14,7 +14,7 @@ on every push to `main`; `.github/workflows/ci.yml` validates pull requests on L
 | ---------------- | ------------------------- |
 | Build command    | `npm ci && npm run build` |
 | Output directory | `dist`                    |
-| Node version     | `20.19.0` (`.nvmrc`)      |
+| Node version     | `22.17.0` (`.nvmrc`)      |
 | Install command  | `npm ci`                  |
 | Server runtime   | none                      |
 
