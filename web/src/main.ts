@@ -55,6 +55,7 @@ import {
 } from './persistence/file-access.js';
 import type { FileHandle } from './persistence/file-access.js';
 import { importProject, relink } from './persistence/project-io.js';
+import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
@@ -465,6 +466,28 @@ class AxysWorkspace implements Workspace {
   }
 
   /**
+   * Opens a recovery copy, reporting rather than announcing a document it cannot read.
+   *
+   * @remarks Startup restore is not an action the user took, so a copy written by a build whose
+   * project contract has since changed leaves the editor empty rather than showing a failure over
+   * an empty canvas. The caller decides what becomes of the copy.
+   */
+  async restoreProjectJson(json: string): Promise<boolean> {
+    try {
+      const project = parseJson(json, isProject, 'project');
+      await this.#openProject(json, project);
+      return true;
+    } catch {
+      this.#store.update({
+        phase: 'empty',
+        message: null,
+        analysis: { running: false, progress: 0, stage: '' },
+      });
+      return false;
+    }
+  }
+
+  /**
    * Writes the project document, and keeps a copy on the device as a safety net.
    *
    * @remarks The file it last wrote to is reused without a dialog, which is the whole point of a
@@ -632,12 +655,8 @@ class AxysWorkspace implements Workspace {
       return;
     }
     this.#progress('Open Project', 0.4);
-    try {
-      const session = this.#core.openSession(json, samples);
-      await this.#install(session, samples, project.name, project.view);
-    } catch (error) {
-      this.#fail('Open Project', error);
-    }
+    const session = this.#core.openSession(json, samples);
+    await this.#install(session, samples, project.name, project.view);
   }
 
   async #relinkPending(file: File): Promise<void> {
@@ -1093,18 +1112,25 @@ async function openStore<T>(opening: Promise<T>): Promise<T | null> {
   }
 }
 
-/** Reopens the most recently saved project, when one is stored. */
+/**
+ * Reopens the newest stored project this build can still read.
+ *
+ * @remarks A copy that cannot be read is discarded by {@link restoreNewest}, so the one report
+ * the user gets is this one, and only when something was actually thrown away.
+ */
 async function restoreLastProject(
   workspace: AxysWorkspace,
   projects: ProjectStore | null,
+  toast: ToastHost,
 ): Promise<void> {
   if (!projects) return;
-  try {
-    const newest = (await projects.list())[0];
-    if (!newest) return;
-    await workspace.openProjectJson(await projects.load(newest.id));
-  } catch {
-    // Nothing recoverable is stored; the editor opens empty, which is the normal first run.
+  const { discarded } = await restoreNewest(projects, (json) => workspace.restoreProjectJson(json));
+  if (discarded > 0) {
+    toast.info(
+      discarded === 1
+        ? 'Discarded a recovery copy this version cannot read'
+        : `Discarded ${String(discarded)} recovery copies this version cannot read`,
+    );
   }
 }
 
@@ -1441,7 +1467,7 @@ async function start(): Promise<void> {
     { once: true },
   );
 
-  await restoreLastProject(workspace, projects);
+  await restoreLastProject(workspace, projects, toast);
   noteDegradedCapabilities(caps, toast);
 }
 

@@ -12,6 +12,8 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { isProject, parseJson } from '../web/src/core/json';
+import { SCHEMA_VERSION } from '../web/src/core/types';
 import {
   analyseFixture,
   correlation,
@@ -828,6 +830,31 @@ describe('core workflow acceptance (design bible 13.4)', () => {
       expect(() =>
         core.Session.openProject(projectText, different, fixture.sampleRate),
       ).toThrowError();
+    });
+
+    it('writes a document the reader accepts', () => {
+      const document = parseJson(edited.session.projectJson(''), isProject, 'project');
+      expect(document.schemaVersion).toBe(SCHEMA_VERSION);
+    });
+
+    /*
+     * `base` was added to the document after the first recovery copies were written, so a copy
+     * from before it is the real shape this rejects rather than an invented one. It still claims
+     * the current schema version, which is what leaves nothing to migrate it from: the core takes
+     * it, because serde fills the field it no longer finds, and the reader is what refuses it.
+     */
+    it('refuses a document written under an older contract, which the core would have taken', () => {
+      const document = JSON.parse(edited.session.projectJson('')) as Record<string, unknown>;
+      expect(document.base).toBeDefined();
+      delete document.base;
+      const older = JSON.stringify(document);
+
+      expect(() => parseJson(older, isProject, 'project')).toThrowError(
+        'Malformed project: payload does not match its contract',
+      );
+
+      const taken = core.Session.openProject(older, fixture.samples, fixture.sampleRate);
+      taken.free();
     });
   });
 
