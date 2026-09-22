@@ -97,6 +97,41 @@ approximation leaves. Below roughly three semitones the difference is subtle; ab
 formants is audibly wrong on voice, so Preserve is the default and `Follow` is offered for the
 cases where a user wants the resampled character. `Shift` exposes an independent adjustment.
 
+### Pitch marks are picked by correlation on a free-running grid
+
+`dsp::psola::build_epochs` places each voiced mark by normalised cross-correlation of the
+candidate neighbourhood against the window around the previous mark, and predicts the next mark on
+a free-running grid stepped by the local period rather than re-anchoring on the mark it just
+picked.
+
+The first implementation took the raw squared-energy argmax and re-anchored on it. A harmonically
+rich glottal pulse has several energy maxima inside the search window, so the pick could land on a
+secondary lobe, and re-anchoring made that error permanent: the sequence settled into a fixed two-
+or four-mark cycle of alternating phase. Overlap-adding grains whose content is displaced by that
+jitter gives an output whose true period is two or four times the fundamental, so an unedited
+passthrough rendered notes an octave or two octaves down. Measured on `fixtures/audio/phrase.wav`,
+four source notes came back as nine fragments, one of them 24 semitones low, and a vowel of
+`consonants.wav` rendered at 13 percent of its source level.
+
+Three details carry the fix. Candidate spacings are confined to within five percent of the local
+period. Among candidates within 0.01 correlation of the best, the one nearest the prediction wins,
+without which the pick locks onto a constant integer spacing and walks off a fractional grid. And
+each mark stores its actual spacing to the next mark rather than the nominal period, because the
+synthesiser walks marks by summing periods and a fractional error there leaves every grain reading
+content up to half a sample off its own mark. That rounding alone cost 26 percent of RMS.
+
+The passthrough now correlates 1.0000 with the source and recovers every fixture's span count
+within about a cent.
+
+### Export restores each frame's level after envelope correction
+
+`Quality::Offline` adds a cepstral envelope pass that `Quality::Preview` does not run. The pass
+matches the rendered and source envelopes on their log means, not their energy, so it moves a
+frame's level by tens of percent wherever the two spectra differ. Preview and export then disagree
+by about 35 percent on level, which breaks the rule that the two paths differ in fidelity and never
+in interpretation. `render::Renderer` therefore restores each frame's pre-correction RMS after the
+correction, so the envelope pass changes spectral shape only.
+
 ### Modulation is split by a zero-phase low-pass
 
 Drift and vibrato are separated at a configurable boundary, 3 Hz by default, using a 2nd-order

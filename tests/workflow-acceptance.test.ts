@@ -10,7 +10,7 @@
  * pitch and onset figure is measured from rendered audio with the code the app ships.
  */
 
-import { beforeAll, describe, expect, it, test } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
   analyseFixture,
