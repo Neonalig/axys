@@ -23,6 +23,8 @@ export interface Preferences {
   followMode: FollowMode;
   /** Whether the ruler reads clock time or bars and beats. */
   timeDisplay: TimeDisplay;
+  /** Whether the toolbar buttons carry their names beside their icons. */
+  toolbarLabels: boolean;
 }
 
 /** Local storage key holding the settings document. */
@@ -34,7 +36,7 @@ const TIME_DISPLAYS: readonly TimeDisplay[] = ['seconds', 'barsBeats'];
 
 /** The settings a device with nothing stored starts from. */
 export function defaultPreferences(): Preferences {
-  return { theme: 'system', followMode: 'page', timeDisplay: 'seconds' };
+  return { theme: 'system', followMode: 'page', timeDisplay: 'seconds', toolbarLabels: false };
 }
 
 /** Reads the stored settings, falling back to the defaults value by value. */
@@ -63,6 +65,10 @@ export function loadPreferences(): Preferences {
     theme: oneOf(record['theme'], THEME_CHOICES, defaults.theme),
     followMode: oneOf(record['followMode'], FOLLOW_MODES, defaults.followMode),
     timeDisplay: oneOf(record['timeDisplay'], TIME_DISPLAYS, defaults.timeDisplay),
+    toolbarLabels:
+      typeof record['toolbarLabels'] === 'boolean'
+        ? record['toolbarLabels']
+        : defaults.toolbarLabels,
   };
 }
 

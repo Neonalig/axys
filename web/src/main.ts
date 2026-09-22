@@ -43,6 +43,7 @@ import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import {
   EXPORT_KIND,
+  MIDI_KIND,
   openFile,
   OPENABLE,
   PROJECT_KIND,
@@ -265,6 +266,23 @@ class AxysWorkspace implements Workspace {
   cancelImport(): void {
     if (!this.#importing) return;
     this.#analysis.cancel();
+  }
+
+  /** Asks for a MIDI file and imports it into the open project. */
+  async importMidi(): Promise<void> {
+    if (!this.#session) {
+      this.#toast.warn('Open a vocal before a MIDI guide.');
+      return;
+    }
+    let picked;
+    try {
+      picked = await openFile(MIDI_KIND);
+    } catch (error) {
+      this.#fail('Open MIDI', error);
+      return;
+    }
+    if (picked === null) return;
+    await this.openMidiFile(picked.file);
   }
 
   async openMidiFile(file: File): Promise<void> {
@@ -1083,6 +1101,10 @@ function buildHooks(
     setAccidentals(style: AccidentalStyle): void {
       workspace()?.setAccidentals(style);
     },
+    setToolbarLabels(on: boolean): void {
+      savePreferences({ toolbarLabels: on });
+      store.update({ toolbarLabels: on });
+    },
     setTheme(choice: ThemeChoice): void {
       savePreferences({ theme: choice });
       applyTheme(resolvedTheme(choice));
@@ -1120,6 +1142,7 @@ async function start(): Promise<void> {
   const store = new AppStore(initialState());
   store.update({
     followMode: preferences.followMode,
+    toolbarLabels: preferences.toolbarLabels,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });
   const commands = buildCommands();
@@ -1147,7 +1170,13 @@ async function start(): Promise<void> {
       releaseSystemTheme = watchSystemTheme(choice, redraw);
     },
   );
-  const shell = AppShell.mount({ root: mount, commands, hooks, theme: preferences.theme });
+  const shell = AppShell.mount({
+    root: mount,
+    commands,
+    hooks,
+    theme: preferences.theme,
+    toolbarLabels: preferences.toolbarLabels,
+  });
   releaseSystemTheme = watchSystemTheme(preferences.theme, redraw);
   const toast = shell.toasts;
   shell.setCapabilities(caps);

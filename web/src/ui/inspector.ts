@@ -31,6 +31,8 @@ export interface InspectorHooks {
   setView(patch: Partial<ViewState>): void;
   /** Chooses how the view keeps up with a playing playhead. */
   setFollowMode(mode: FollowMode): void;
+  /** Shows or hides the names beside the toolbar icons. */
+  setToolbarLabels(on: boolean): void;
   /** Sets the concert reference in Hz. */
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
@@ -263,6 +265,7 @@ export class Inspector {
   readonly #snap: HTMLSelectElement;
   readonly #timeDisplay: HTMLSelectElement;
   readonly #followMode: HTMLSelectElement;
+  readonly #toolbarLabels: HTMLInputElement;
 
   readonly #guideMode: HTMLSelectElement;
   readonly #guideStrength: HTMLInputElement;
@@ -460,6 +463,7 @@ export class Inspector {
       { value: 'page', label: 'Page Ahead' },
       { value: 'centre', label: 'Keep Centred' },
     ]);
+    this.#toolbarLabels = checkboxInput();
 
     displayPanel.append(
       field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz.'),
@@ -475,6 +479,7 @@ export class Inspector {
         this.#followMode,
         'Whether a following view jumps ahead a screen at a time or holds the playhead centred.',
       ),
+      field('Button Names', this.#toolbarLabels, 'Shows each toolbar button name beside its icon.'),
     );
     project.append(displayPanel);
 
@@ -699,6 +704,7 @@ export class Inspector {
     setValue(this.#snap, String(state.view.snapDivision));
     setValue(this.#timeDisplay, state.view.timeDisplay);
     setValue(this.#followMode, state.followMode);
+    setChecked(this.#toolbarLabels, state.toolbarLabels);
   }
 
   #updateGuide(state: AppState): void {
@@ -912,6 +918,9 @@ export class Inspector {
     });
     this.#followMode.addEventListener('change', () => {
       this.#hooks.setFollowMode(this.#followMode.value === 'centre' ? 'centre' : 'page');
+    });
+    this.#toolbarLabels.addEventListener('change', () => {
+      this.#hooks.setToolbarLabels(this.#toolbarLabels.checked);
     });
 
     this.#guideMode.addEventListener('change', () => {

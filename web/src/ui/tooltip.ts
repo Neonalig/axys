@@ -21,13 +21,20 @@ const MARGIN = 6;
 /** Attribute carrying a control's tooltip text. */
 export const TIP_ATTRIBUTE = 'data-axys-tip';
 
-/** Puts a tooltip on an element, in place of `title`. */
+/**
+ * Puts a tooltip on an element, in place of `title`.
+ *
+ * @remarks A control whose tooltip changes while it is being pointed at, such as Play becoming
+ * Pause under a keyboard shortcut, has the shown tooltip rewritten under the cursor rather than
+ * left saying what the control used to do.
+ */
 export function setTooltip(element: HTMLElement, text: string): void {
   if (text === '') {
     element.removeAttribute(TIP_ATTRIBUTE);
-    return;
+  } else {
+    element.setAttribute(TIP_ATTRIBUTE, text);
   }
-  element.setAttribute(TIP_ATTRIBUTE, text);
+  installed?.refresh(element);
 }
 
 /**
@@ -63,11 +70,29 @@ export class TooltipHost {
 
   /** Installs the tooltip layer over a subtree and returns it. */
   static install(root: HTMLElement): TooltipHost {
-    return new TooltipHost(root);
+    installed = new TooltipHost(root);
+    return installed;
+  }
+
+  /** Rewrites the shown tooltip when its own control's text has changed. */
+  refresh(element: HTMLElement): void {
+    if (this.#target !== element) {
+      return;
+    }
+    const text = element.getAttribute(TIP_ATTRIBUTE);
+    if (text === null || text === '') {
+      this.#cancel();
+      return;
+    }
+    this.#element.textContent = text;
+    this.#place(element);
   }
 
   /** Removes the tooltip layer and its listeners. */
   dispose(): void {
+    if (installed === this) {
+      installed = null;
+    }
     this.#cancel();
     this.#root.removeEventListener('pointerover', this.#onOver);
     this.#root.removeEventListener('pointerout', this.#onOut);
@@ -149,6 +174,9 @@ export class TooltipHost {
     this.#element.hidden = true;
   }
 }
+
+/** The one installed host, so a tooltip rewritten from anywhere reaches the shown one. */
+let installed: TooltipHost | null = null;
 
 /** The nearest ancestor carrying tooltip text, or `null` when there is none. */
 function tipTarget(node: EventTarget | null): HTMLElement | null {

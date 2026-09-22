@@ -184,7 +184,12 @@ function pickWithInput(accept: string): Promise<File | null> {
   });
 }
 
-/** Everything Axys can open, as one picker's type list. */
+/**
+ * What Open offers, as one picker's type list.
+ *
+ * @remarks A project or a vocal, both of which open a project. A MIDI guide is imported into an
+ * open project rather than opening one, so it has its own command and its own picker.
+ */
 export const OPENABLE: readonly FileKind[] = [
   { description: 'Axys Project', accept: { 'application/json': ['.axys.json', '.json'] } },
   {
@@ -193,6 +198,10 @@ export const OPENABLE: readonly FileKind[] = [
       'audio/*': ['.wav', '.flac', '.mp3', '.m4a', '.aac', '.ogg', '.opus'],
     },
   },
+];
+
+/** The MIDI kind, for importing a guide. */
+export const MIDI_KIND: readonly FileKind[] = [
   { description: 'MIDI', accept: { 'audio/midi': ['.mid', '.midi'] } },
 ];
 

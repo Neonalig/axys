@@ -40,6 +40,8 @@ export interface AppState {
   follow: boolean;
   /** How the view keeps up while following. */
   followMode: FollowMode;
+  /** Whether the toolbar buttons carry their names beside their icons. */
+  toolbarLabels: boolean;
   dirty: boolean;
 }
 
@@ -187,6 +189,7 @@ export function initialState(): AppState {
     compare: 'processed',
     follow: true,
     followMode: 'page',
+    toolbarLabels: false,
     dirty: false,
   };
 }

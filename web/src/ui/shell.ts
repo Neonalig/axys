@@ -18,6 +18,8 @@ import type { AccidentalStyle, EditOp, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { ICONS, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
+import { showContextMenu } from './menu.js';
+import type { MenuEntry } from './menu.js';
 import { THEME_LABELS, THEME_NAMES } from './theme.js';
 import { ToastHost } from './toast.js';
 import { Scrollbar } from './scrollbar.js';
@@ -59,6 +61,8 @@ export interface ShellHooks {
   setAccidentals(style: AccidentalStyle): void;
   /** Applies and remembers a colour theme, or defers to the operating system. */
   setTheme(choice: ThemeChoice): void;
+  /** Shows or hides the names beside the toolbar icons, and remembers the choice. */
+  setToolbarLabels(on: boolean): void;
 }
 
 /** What the chrome is built from. */
@@ -69,6 +73,8 @@ export interface ShellOptions {
   hooks: ShellHooks;
   /** Theme choice shown as selected. Applying it is the caller's job. */
   theme?: ThemeChoice;
+  /** Whether the toolbar buttons start with their names beside their icons. */
+  toolbarLabels?: boolean;
 }
 
 interface ToolEntry {
@@ -97,11 +103,99 @@ const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
  * @remarks One control with three faces rather than a button beside a drop-down: what is being
  * monitored is a single choice, and the icon is what says which.
  */
-const COMPARE_FACES: Readonly<Record<CompareMode, { icon: IconName; tip: string }>> = {
-  processed: { icon: 'compareProcessed', tip: 'Playing Processed' },
-  original: { icon: 'compareOriginal', tip: 'Playing Original' },
-  split: { icon: 'compareSplit', tip: 'Playing Original Left, Processed Right' },
+const COMPARE_FACES: Readonly<Record<CompareMode, { icon: IconName; label: string; tip: string }>> =
+  {
+    processed: { icon: 'compareProcessed', label: 'Processed', tip: 'Playing Processed' },
+    original: { icon: 'compareOriginal', label: 'Original', tip: 'Playing Original' },
+    split: {
+      icon: 'compareSplit',
+      label: 'Split',
+      tip: 'Playing Original Left, Processed Right',
+    },
+  };
+
+/**
+ * Names the toolbar shows instead of a command's full label.
+ *
+ * @remarks A toolbar name is read beside an icon that already says which group it belongs to, so
+ * "Blob" and "Audio" are the words the icon repeats. Anything not listed shows its own label.
+ */
+const SHORT_LABEL: Readonly<Record<string, string>> = {
+  'file.saveProject': 'Save',
+  'file.exportWav': 'Export',
+  'file.importMidi': 'Import',
+  'edit.splitBlob': 'Split',
+  'edit.joinBlobs': 'Join',
+  'edit.excludeBlob': 'Exclude',
+  'edit.smoothSpan': 'Smooth',
+  'transport.loopSelection': 'Loop',
+  'transport.toggleMetronome': 'Metronome',
+  'transport.toggleCompare': 'Compare',
+  'view.followPlayhead': 'Follow',
+  'midi.alignGuide': 'Align',
+  'help.showDiagnostics': 'Help',
 };
+
+/** A menu a toolbar button carries, beyond the command the button itself runs. */
+interface ButtonMenu {
+  /** Second tooltip line saying the menu is there. */
+  hint: string;
+  /** Whether pressing the button opens the menu instead of running the command. */
+  onPress?: boolean;
+  entries(shell: AppShell): MenuEntry[];
+}
+
+/**
+ * The menus toolbar buttons carry.
+ *
+ * @remarks Save is one button because saving is one action; where the file goes is the variation,
+ * and a variation belongs under the button rather than beside it. Import opens its menu on press
+ * because there is no one import to default to.
+ */
+const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
+  'file.saveProject': {
+    hint: 'Save As (Ctrl+Shift+S). Right-click for both',
+    entries: (shell) => [
+      {
+        label: 'Save Project',
+        icon: 'save',
+        key: 'Ctrl+S',
+        enabled: shell.can('file.saveProject'),
+        run: () => {
+          shell.run('file.saveProject');
+        },
+      },
+      {
+        label: 'Save As',
+        icon: 'save',
+        key: 'Ctrl+Shift+S',
+        enabled: shell.can('file.saveProjectAs'),
+        run: () => {
+          shell.run('file.saveProjectAs');
+        },
+      },
+    ],
+  },
+  'file.importMidi': {
+    hint: 'Choose what to import',
+    onPress: true,
+    entries: (shell) => [
+      {
+        label: 'MIDI Guide',
+        icon: 'openMidi',
+        enabled: shell.can('file.importMidi'),
+        run: () => {
+          shell.run('file.importMidi');
+        },
+      },
+    ],
+  },
+};
+
+/** How a theme choice names itself. */
+function themeLabel(choice: ThemeChoice): string {
+  return choice === 'system' ? 'Follow System' : THEME_LABELS[choice];
+}
 
 /**
  * Commands the toolbar does not draw.
@@ -119,6 +213,8 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'file.cancelImport',
   // Selecting everything is a keyboard action; a button for it would say nothing a drag does not.
   'edit.selectAll',
+  // Where a save goes is a variation on Save, so it lives in that button's own menu.
+  'file.saveProjectAs',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
@@ -147,7 +243,8 @@ const GROUP_ICON: Readonly<Record<CommandGroup, IconName>> = {
 const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Open: 'openProject',
   'Save Project': 'save',
-  'Save A Copy': 'save',
+  'Save As': 'save',
+  'Import MIDI': 'openMidi',
   'Export Audio': 'export',
   Undo: 'undo',
   Redo: 'redo',
@@ -177,6 +274,30 @@ function iconFor(command: ShellCommand): IconName {
 
 function tooltipFor(command: ShellCommand): string {
   return command.shortcut === undefined ? command.label : `${command.label} (${command.shortcut})`;
+}
+
+/**
+ * One toolbar button, kept whole so its face can be rewritten.
+ *
+ * @remarks A button whose meaning changes with state, such as Play becoming Pause, rewrites its
+ * icon, its name, its tooltip and its pressed state together through {@link AppShell.setFace},
+ * so the four can never disagree.
+ */
+interface ToolbarButton {
+  button: HTMLButtonElement;
+  icon: HTMLElement;
+  text: HTMLElement;
+  command: ShellCommand;
+  face: string;
+}
+
+/** What a button shows. */
+interface ButtonFace {
+  icon: IconName;
+  label: string;
+  tooltip: string;
+  /** Whether the button reads as switched on. Omitted for a button that is not a toggle. */
+  pressed?: boolean;
 }
 
 function group(label: string): HTMLElement {
@@ -249,9 +370,12 @@ export class AppShell {
   readonly #tooltips: TooltipHost;
   readonly #inspector: Inspector;
 
-  readonly #commandButtons = new Map<string, HTMLButtonElement>();
-  readonly #commandLabels = new Map<string, ShellCommand>();
+  readonly #commandButtons = new Map<string, ToolbarButton>();
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
+  readonly #header: HTMLElement;
+  readonly #themeButton: HTMLButtonElement;
+
+  #themeChoice: ThemeChoice;
 
   readonly #statusPhase: { wrapper: HTMLElement; value: HTMLElement };
   readonly #statusPosition: HTMLElement;
@@ -273,12 +397,6 @@ export class AppShell {
   /** The newest view state, for the controls that report a change relative to it. */
   #view: ViewState | null = null;
 
-  /** Whether the transport button currently draws the pause icon, so it is rewritten only on a change. */
-  #showingPause = false;
-
-  /** Compare mode the toggle currently shows, so its icon is rewritten only on a change. */
-  #showingCompare: CompareMode | null = null;
-
   private constructor(options: ShellOptions) {
     this.#hooks = options.hooks;
     this.#root = options.root;
@@ -299,7 +417,10 @@ export class AppShell {
       }
     }
 
-    const theme = this.#buildTheme(options.theme ?? 'system');
+    this.#header = header;
+    this.#themeChoice = options.theme ?? 'system';
+    const theme = this.#buildTheme();
+    this.#themeButton = theme;
 
     for (const name of GROUP_ORDER) {
       if (name === 'Tools') {
@@ -333,16 +454,18 @@ export class AppShell {
         section.append(this.#buildCommandButton(command));
       }
       if (name === 'View') {
-        section.append(theme.wrapper);
+        section.append(theme);
       }
       header.append(section);
     }
 
-    if (theme.wrapper.parentElement === null) {
+    if (theme.parentElement === null) {
       const extras = group('View Settings');
-      extras.append(theme.wrapper);
+      extras.append(theme);
       header.append(extras);
     }
+
+    header.classList.toggle('is-labelled', options.toolbarLabels === true);
 
     const spacer = document.createElement('span');
     spacer.className = 'axys-spacer';
@@ -431,6 +554,9 @@ export class AppShell {
       },
       setFollowMode: (mode) => {
         this.#hooks.setFollowMode(mode);
+      },
+      setToolbarLabels: (on) => {
+        this.#hooks.setToolbarLabels(on);
       },
       setTuning: (a4Hz) => {
         this.#hooks.setTuning(a4Hz);
@@ -535,34 +661,57 @@ export class AppShell {
 
   /** Reflects application state in every control. */
   update(state: AppState): void {
-    for (const [id, button] of this.#commandButtons) {
-      button.disabled = !this.#hooks.isCommandEnabled(id);
+    for (const [id, entry] of this.#commandButtons) {
+      entry.button.disabled = !this.#hooks.isCommandEnabled(id);
     }
 
-    const play = this.#byLabel('Play');
-    if (play && state.transport.playing !== this.#showingPause) {
-      const playing = state.transport.playing;
-      this.#showingPause = playing;
-      const command = this.#commandLabels.get(play.id);
-      play.button.innerHTML = playing ? ICONS.pause : ICONS.play;
-      play.button.setAttribute('aria-label', playing ? 'Pause' : 'Play');
-      setTooltip(play.button, playing ? 'Pause' : command ? tooltipFor(command) : 'Play');
-      play.button.setAttribute('aria-pressed', String(playing));
-    }
+    const playing = state.transport.playing;
+    this.#setFace('transport.play', {
+      icon: playing ? 'pause' : 'play',
+      label: playing ? 'Pause' : 'Play',
+      tooltip: playing ? 'Pause (Space)' : 'Play (Space)',
+      pressed: playing,
+    });
 
     for (const [tool, button] of this.#toolButtons) {
       button.setAttribute('aria-pressed', String(state.tool === tool));
       button.disabled = state.phase !== 'ready';
     }
 
-    const compare = this.#byLabel('Toggle Compare');
-    if (compare && state.compare !== this.#showingCompare) {
-      this.#showingCompare = state.compare;
-      const face = COMPARE_FACES[state.compare];
-      compare.button.innerHTML = ICONS[face.icon];
-      compare.button.setAttribute('aria-label', `Toggle Compare: ${face.tip}`);
-      setTooltip(compare.button, `${face.tip} (C)`);
-    }
+    const compare = COMPARE_FACES[state.compare];
+    this.#setFace('transport.toggleCompare', {
+      icon: compare.icon,
+      label: compare.label,
+      tooltip: `${compare.tip} (C)`,
+      pressed: state.compare !== 'processed',
+    });
+
+    // Following, looping and the metronome are switches, so each says whether it is on rather
+    // than only what pressing it would do.
+    this.#setFace('view.followPlayhead', {
+      icon: 'follow',
+      label: 'Follow',
+      tooltip: state.follow ? 'Following Playhead (F)' : 'Follow Playhead (F)',
+      pressed: state.follow,
+    });
+    const looping = state.transport.loop !== null;
+    this.#setFace('transport.loopSelection', {
+      icon: 'loop',
+      label: 'Loop',
+      tooltip: looping ? 'Stop Looping (L)' : 'Loop Selection (L)',
+      pressed: looping,
+    });
+    const metronome = state.transport.metronome;
+    this.#setFace('transport.toggleMetronome', {
+      icon: 'metronome',
+      label: 'Metronome',
+      tooltip: metronome ? 'Metronome On (M)' : 'Metronome Off (M)',
+      pressed: metronome,
+    });
+    // The pulse is the beat, so it runs only while there is a beat to keep.
+    this.#commandButtons
+      .get('transport.toggleMetronome')
+      ?.button.classList.toggle('is-pulsing', metronome && playing);
 
     // A readout earns its place only while it has something to say. A working editor reporting
     // "ready", "0 conflicts" and "nothing selected" is a row of noise to read past.
@@ -600,6 +749,7 @@ export class AppShell {
       state.source === null ? 'Pitch Editor' : `Pitch Editor: ${state.source.name}`,
     );
 
+    this.setToolbarLabels(state.toolbarLabels);
     this.#view = state.view;
     const duration = state.source?.duration ?? 0;
     this.#timeBar.update({
@@ -629,16 +779,42 @@ export class AppShell {
     this.#root.replaceChildren();
   }
 
-  #byLabel(label: string): { id: string; button: HTMLButtonElement } | undefined {
-    for (const [id, command] of this.#commandLabels) {
-      if (command.label === label) {
-        const button = this.#commandButtons.get(id);
-        if (button) {
-          return { id, button };
-        }
-      }
+  /** Shows or hides the names beside the toolbar icons. */
+  setToolbarLabels(on: boolean): void {
+    this.#header.classList.toggle('is-labelled', on);
+  }
+
+  /** Shows a theme as the chosen one, without applying it. */
+  setTheme(choice: ThemeChoice): void {
+    this.#themeChoice = choice;
+    setTooltip(this.#themeButton, `${themeLabel(choice)}. Choose A Theme`);
+  }
+
+  /**
+   * Rewrites what a button shows.
+   *
+   * @remarks Cheap to call on every update: a face that has not changed rewrites nothing, so a
+   * button under the cursor is not rebuilt sixty times a second.
+   */
+  #setFace(id: string, face: ButtonFace): void {
+    const entry = this.#commandButtons.get(id);
+    if (entry === undefined) {
+      return;
     }
-    return undefined;
+    const key = `${face.icon}|${face.label}|${face.tooltip}|${String(face.pressed)}`;
+    if (entry.face === key) {
+      return;
+    }
+    entry.face = key;
+    entry.icon.innerHTML = ICONS[face.icon];
+    entry.text.textContent = face.label;
+    entry.button.setAttribute('aria-label', face.label);
+    setTooltip(entry.button, face.tooltip);
+    if (face.pressed === undefined) {
+      entry.button.removeAttribute('aria-pressed');
+    } else {
+      entry.button.setAttribute('aria-pressed', String(face.pressed));
+    }
   }
 
   #announceSelection(state: AppState): void {
@@ -677,15 +853,66 @@ export class AppShell {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'axys-icon';
-    button.innerHTML = ICONS[iconFor(command)];
+    const icon = document.createElement('span');
+    icon.className = 'axys-button-icon';
+    icon.innerHTML = ICONS[iconFor(command)];
+    const text = document.createElement('span');
+    text.className = 'axys-button-label';
+    text.textContent = SHORT_LABEL[command.id] ?? command.label;
+    button.append(icon, text);
     button.setAttribute('aria-label', command.label);
     setTooltip(button, tooltipFor(command));
     button.addEventListener('click', () => {
       this.#hooks.runCommand(command.id);
     });
-    this.#commandButtons.set(command.id, button);
-    this.#commandLabels.set(command.id, command);
+    const menu = BUTTON_MENUS[command.id];
+    if (menu !== undefined) {
+      setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
+      const open = (event: Event): void => {
+        event.preventDefault();
+        this.#openButtonMenu(button, menu.entries);
+      };
+      button.addEventListener('contextmenu', open);
+      if (menu.onPress) {
+        button.addEventListener('click', open);
+      }
+    }
+    this.#commandButtons.set(command.id, {
+      button,
+      icon,
+      text,
+      command,
+      face: '',
+    });
     return button;
+  }
+
+  /** Opens a button's own menu directly under it. */
+  #openButtonMenu(button: HTMLButtonElement, entries: (shell: AppShell) => MenuEntry[]): void {
+    const bounds = button.getBoundingClientRect();
+    showContextMenu(entries(this), { x: bounds.left, y: bounds.bottom + 4 });
+  }
+
+  /** Runs a command from a button menu. */
+  run(id: string): void {
+    this.#hooks.runCommand(id);
+  }
+
+  /** Whether a command can run, for a button menu. */
+  can(id: string): boolean {
+    return this.#hooks.isCommandEnabled(id);
+  }
+
+  /** The theme currently chosen, for the theme menu. */
+  get themeChoice(): ThemeChoice {
+    return this.#themeChoice;
+  }
+
+  /** Applies and remembers a theme, for the theme menu. */
+  chooseTheme(choice: ThemeChoice): void {
+    this.#hooks.setTheme(choice);
+    this.setTheme(choice);
+    this.announce(themeLabel(choice));
   }
 
   #buildToolGroup(): HTMLElement {
@@ -710,30 +937,40 @@ export class AppShell {
     return section;
   }
 
-  #buildTheme(current: ThemeChoice): { wrapper: HTMLElement; select: HTMLSelectElement } {
-    const wrapper = document.createElement('span');
-    wrapper.className = 'axys-field';
-    const select = document.createElement('select');
-    select.id = 'axys-theme';
-    for (const choice of THEME_CHOICES) {
-      const element = document.createElement('option');
-      element.value = choice;
-      element.textContent = choice === 'system' ? 'Follow System' : THEME_LABELS[choice];
-      select.append(element);
-    }
-    select.value = current;
-    setTooltip(select, 'Colour scheme used by the chrome and the canvas.');
-    const label = document.createElement('label');
-    label.htmlFor = select.id;
-    label.textContent = 'Theme';
-    select.addEventListener('change', () => {
-      const chosen = THEME_CHOICES.find((choice) => choice === select.value);
-      if (chosen) {
-        this.#hooks.setTheme(chosen);
-        this.announce(chosen === 'system' ? 'Following System Theme' : THEME_LABELS[chosen]);
-      }
+  /**
+   * The theme control: a button that opens its choices.
+   *
+   * @remarks A drop-down among icon buttons reads as a form field in a row of controls, and its
+   * closed face is a value rather than an action. A button opens the same choices and sits in
+   * the toolbar as one more control.
+   */
+  #buildTheme(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'axys-icon';
+    const icon = document.createElement('span');
+    icon.className = 'axys-button-icon';
+    icon.innerHTML = ICONS.theme;
+    const text = document.createElement('span');
+    text.className = 'axys-button-label';
+    text.textContent = 'Theme';
+    button.append(icon, text);
+    button.setAttribute('aria-label', 'Choose A Theme');
+    button.setAttribute('aria-haspopup', 'menu');
+    setTooltip(button, `${themeLabel(this.#themeChoice)}. Choose A Theme`);
+    button.addEventListener('click', () => {
+      this.#openButtonMenu(button, (shell) =>
+        // No icon per entry: four copies of the same palette would say nothing, and the mark
+        // against the current choice is what the menu is here to show.
+        THEME_CHOICES.map((choice) => ({
+          label: themeLabel(choice),
+          checked: shell.themeChoice === choice,
+          run: () => {
+            shell.chooseTheme(choice);
+          },
+        })),
+      );
     });
-    wrapper.append(label, select);
-    return { wrapper, select };
+    return button;
   }
 }

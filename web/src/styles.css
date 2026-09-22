@@ -337,6 +337,43 @@ button.axys-icon {
   width: var(--axys-control-height);
 }
 
+/* Button names: off by default, so the toolbar is icons until someone asks for the words */
+
+.axys-button-icon {
+  display: flex;
+}
+
+.axys-button-label {
+  display: none;
+  white-space: nowrap;
+}
+
+.axys-toolbar.is-labelled button.axys-icon {
+  width: auto;
+  padding: 0 10px;
+}
+
+.axys-toolbar.is-labelled .axys-button-label {
+  display: inline;
+}
+
+/* The metronome pulses its ground while it is clicking, and still reads as on while it is not */
+
+@keyframes axys-metronome-pulse {
+  0%,
+  100% {
+    background: var(--axys-accent);
+  }
+
+  50% {
+    background: color-mix(in srgb, var(--axys-accent) 45%, var(--axys-surface-raised));
+  }
+}
+
+button.is-pulsing[aria-pressed='true'] {
+  animation: axys-metronome-pulse 500ms ease-in-out infinite;
+}
+
 button.axys-danger {
   color: var(--axys-danger);
   border-color: var(--axys-danger);
@@ -661,6 +698,7 @@ input[type='checkbox'] {
   position: fixed;
   z-index: 50;
   max-width: 280px;
+  white-space: pre-line;
   padding: 4px 8px;
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius);

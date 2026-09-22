@@ -82,6 +82,9 @@ export interface Workspace {
   /** Opens whatever the user picked, routing it by what kind of file it turned out to be. */
   openAny(): Promise<void>;
 
+  /** Asks for a Standard MIDI File and imports it as the guide for the open project. */
+  importMidi(): Promise<void>;
+
   /**
    * Measures what exporting an output range would produce, before any file is written.
    *
@@ -335,12 +338,23 @@ export function buildCommands(): Command[] {
     },
     {
       id: 'file.saveProjectAs',
-      label: 'Save A Copy',
+      label: 'Save As',
       group: 'File',
       shortcut: 'Ctrl+Shift+S',
       enabled: ready,
       run: async (ctx) => {
         await ctx.workspace.saveProject(true);
+      },
+    },
+    {
+      // Its own button rather than one more thing behind Open: a guide is imported into an open
+      // project instead of replacing it, which is the opposite of what Open does.
+      id: 'file.importMidi',
+      label: 'Import MIDI',
+      group: 'File',
+      enabled: (ctx) => ready(ctx) && !ctx.workspace.importing,
+      run: async (ctx) => {
+        await ctx.workspace.importMidi();
       },
     },
     {
