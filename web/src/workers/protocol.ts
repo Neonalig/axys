@@ -86,6 +86,8 @@ export interface ExportWavRequest {
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
+  /** Rate to write the file at; the core resamples when it differs from the source rate. */
+  sampleRate: number;
 }
 
 /** Everything the render worker accepts. */

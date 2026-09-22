@@ -11,11 +11,13 @@
 import type { AppState, AppStore, CompareMode } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
 import { MIN_BLOB_SECONDS } from '../core/types.js';
-import type { BitDepth, Blob, EditOp, TimelineMap } from '../core/types.js';
+import type { Blob, EditOp, ExportPreview, TimelineMap } from '../core/types.js';
 import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
 import { fitView, Viewport } from '../editor/view.js';
 import { showSourceCode, showDiagnostics } from '../ui/diagnostics.js';
+import { showExportDialog } from '../ui/export-dialog.js';
+import type { ExportChoice, ExportRange } from '../ui/export-dialog.js';
 import type { ToastHost } from '../ui/toast.js';
 
 /** A user-invocable action with a stable id, label and optional shortcut. */
@@ -70,8 +72,18 @@ export interface Workspace {
   /** Writes the project document out as a `.axys.json` download. */
   exportProjectFile(): void;
 
-  /** Renders and encodes a WAV file at offline quality. `range` is in source seconds. */
-  exportWav(range: { start: number; end: number } | null, depth: BitDepth): Promise<void>;
+  /**
+   * Measures what exporting an output range would produce, before any file is written.
+   *
+   * @remarks `null` when there is no session, or when the core could not measure the range.
+   */
+  exportPreview(range: ExportRange): ExportPreview | null;
+
+  /** Renders and encodes a WAV file at offline quality. */
+  exportWav(choice: ExportChoice): Promise<void>;
+
+  /** Abandons an import still being analysed. Does nothing when none is running. */
+  cancelImport(): void;
 
   /** Proposes blob-to-note mappings against the guide and reports drift. */
   alignGuide(): void;
@@ -318,9 +330,32 @@ export function buildCommands(): Command[] {
       group: 'File',
       shortcut: 'Ctrl+E',
       enabled: ready,
-      run: async (ctx) => {
-        const depth: BitDepth = 'pcm24';
-        await ctx.workspace.exportWav(ctx.store.state.selection.range, depth);
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const selection = state.selection.range;
+        showExportDialog({
+          selection:
+            selection === null
+              ? null
+              : {
+                  start: ctx.workspace.outputAt(Math.min(selection.start, selection.end)),
+                  end: ctx.workspace.outputAt(Math.max(selection.start, selection.end)),
+                },
+          sourceRate: state.source?.sampleRate ?? 48_000,
+          preview: (range) => ctx.workspace.exportPreview(range),
+          onExport: (choice) => {
+            void ctx.workspace.exportWav(choice);
+          },
+        });
+      },
+    },
+    {
+      id: 'file.cancelImport',
+      label: 'Cancel Import',
+      group: 'File',
+      enabled: (ctx) => ctx.store.state.analysis.running,
+      run: (ctx) => {
+        ctx.workspace.cancelImport();
       },
     },
 

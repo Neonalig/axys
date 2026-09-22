@@ -237,6 +237,27 @@ struct ExportPreview {
     silent: f64,
 }
 
+/// Two guide notes that sound at once in a monophonic guide.
+///
+/// Note indices address the selected guide's note list, the same list a
+/// [`axys_core::midi::NoteMapping`] indexes. Axys reports an overlap and never resolves it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuideOverlap {
+    /// Index of the earlier note.
+    first: usize,
+    /// Index of the later note.
+    second: usize,
+    /// MIDI key of the earlier note.
+    first_key: u8,
+    /// MIDI key of the later note.
+    second_key: u8,
+    /// Start of the shared span in source seconds.
+    start_seconds: f64,
+    /// End of the shared span in source seconds.
+    end_seconds: f64,
+}
+
 /// An editing session over one source vocal.
 ///
 /// Owns the immutable analysis, the mutable edit state and the undo history, and
@@ -598,9 +619,39 @@ impl Session {
             &self.state.timeline,
             &self.state.mappings,
         );
-        self.state.mappings = mappings;
+        let op = EditOp::SetMappings { mappings };
+        apply(&mut self.state, Some(&self.track), &op).map_err(to_js)?;
+        self.history.push(op);
         self.recompile()?;
         dump(&report)
+    }
+
+    /// Overlapping note pairs in the selected guide, or `[]` when no guide is selected.
+    #[wasm_bindgen(js_name = guideOverlapsJson)]
+    pub fn guide_overlaps_json(&self) -> Result<String, JsValue> {
+        let (Some(selection), Some(file)) = (self.state.guide.as_ref(), self.midi.as_ref()) else {
+            return dump::<[GuideOverlap]>(&[]);
+        };
+        let notes = file.notes_of(selection.track, selection.channel);
+        let overlaps: Vec<GuideOverlap> = file
+            .overlap_indices(selection.track, selection.channel)
+            .into_iter()
+            .filter_map(|(first, second)| {
+                let one = notes.get(first)?;
+                let two = notes.get(second)?;
+                let start = one.start_tick.max(two.start_tick) as f64;
+                let end = one.end_tick.min(two.end_tick) as f64;
+                Some(GuideOverlap {
+                    first,
+                    second,
+                    first_key: one.key,
+                    second_key: two.key,
+                    start_seconds: self.state.timeline.tick_to_seconds(start),
+                    end_seconds: self.state.timeline.tick_to_seconds(end),
+                })
+            })
+            .collect();
+        dump(&overlaps)
     }
 
     /// Measures alignment error between mapped blobs and their guide notes.
@@ -1076,5 +1127,85 @@ mod export_preview_tests {
         assert_eq!(past["peak"].as_f64(), Some(0.0));
         assert_eq!(past["clips"].as_bool(), Some(false));
         assert!((past["silent"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod guide_mapping_tests {
+    use super::*;
+
+    const RATE: f64 = 16_000.0;
+
+    /// Four seconds of tone broken by short gaps, so segmentation yields several blobs.
+    fn tone() -> Vec<f32> {
+        let frames = (RATE * 4.0) as usize;
+        (0..frames)
+            .map(|i| {
+                let t = i as f64 / RATE;
+                if (t % 1.0) > 0.9 {
+                    return 0.0;
+                }
+                (0.5 * (std::f64::consts::TAU * 220.0 * t).sin()) as f32
+            })
+            .collect()
+    }
+
+    /// A session over that tone with melody.mid loaded and track 0 selected as the guide.
+    fn guided() -> Session {
+        let samples = tone();
+        let analysis = analyse(&samples, RATE, "").expect("analysis");
+        let mut session =
+            Session::create(samples, RATE, "take".to_string(), &analysis, "").expect("session");
+        let bytes = std::fs::read("../../fixtures/midi/melody.mid").expect("melody fixture");
+        session.load_midi(bytes).expect("midi");
+        session
+            .apply_edit(
+                r#"{"type":"setGuide","selection":{"track":0,"channel":null,"mode":"combined","strength":1.0,"muted":false}}"#,
+            )
+            .expect("guide");
+        session
+    }
+
+    fn mappings(session: &Session) -> serde_json::Value {
+        let state: serde_json::Value =
+            serde_json::from_str(&session.state_json().expect("state")).expect("state json");
+        state["mappings"].clone()
+    }
+
+    #[test]
+    fn proposing_mappings_is_one_undo_step() {
+        let mut session = guided();
+        assert_eq!(mappings(&session).as_array().map(Vec::len), Some(0));
+        session.propose_mappings_js().expect("propose");
+        let proposed = mappings(&session);
+        assert!(proposed.as_array().is_some_and(|m| !m.is_empty()));
+
+        let history: serde_json::Value =
+            serde_json::from_str(&session.history_json().expect("history")).expect("history json");
+        assert_eq!(history["undo"].as_str(), Some("Set Mappings"));
+
+        assert!(session.undo().expect("undo"));
+        assert_eq!(mappings(&session).as_array().map(Vec::len), Some(0));
+
+        assert!(session.redo().expect("redo"));
+        assert_eq!(mappings(&session), proposed);
+    }
+
+    #[test]
+    fn undoing_an_override_restores_the_proposed_mappings() {
+        let mut session = guided();
+        session.propose_mappings_js().expect("propose");
+        let proposed = mappings(&session);
+        let blob = proposed[0]["blob"].as_u64().expect("a mapped blob");
+
+        session
+            .apply_edit(&format!(
+                r#"{{"type":"setMapping","mapping":{{"blob":{blob},"note":0,"manual":true,"optedOut":false}}}}"#
+            ))
+            .expect("override");
+        assert_ne!(mappings(&session), proposed);
+
+        assert!(session.undo().expect("undo"));
+        assert_eq!(mappings(&session), proposed);
     }
 }

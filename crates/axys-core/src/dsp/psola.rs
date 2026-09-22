@@ -22,6 +22,7 @@ use std::f64::consts::TAU;
 use crate::analysis::f0::PitchTrack;
 use crate::dsp::formant::FormantMode;
 use crate::dsp::resample::sample_at;
+use crate::dsp::window::normalised_correlation;
 
 /// Longest grain half-width, in seconds.
 const MAX_GRAIN_HALF_SECONDS: f64 = 0.05;
@@ -41,6 +42,23 @@ const WINDOW_SUM_FLOOR: f32 = 0.05;
 const OUTPUT_CLAMP: f32 = 4.0;
 /// Fraction of a period searched either side of a predicted mark when peak picking.
 const PEAK_SEARCH_FRACTION: f64 = 0.25;
+/// Samples read from a mark's neighbourhood when two marks are compared for phase.
+///
+/// The neighbourhood spans one period, so a long period is decimated to hold the
+/// comparison at a fixed cost and the whole search stays linear in the period.
+const CORRELATION_TAPS: usize = 64;
+/// Correlation a candidate mark must reach before it is preferred to the prediction.
+const MIN_MARK_CORRELATION: f32 = 0.3;
+/// Largest departure from the local period allowed between two consecutive voiced marks.
+const MAX_SPACING_DEVIATION: f64 = 0.05;
+/// Correlation a candidate mark may sit below the best and still count as its equal.
+///
+/// A period rarely lands on a whole sample, so the candidates around one pulse correlate
+/// almost equally well and the pick would otherwise be free to walk away from the grid
+/// one rounding at a time. The nearest of the equals is taken instead. The tolerance is
+/// far below the correlation gap between one glottal pulse and the next, so it only ever
+/// settles that near-tie.
+const MARK_CORRELATION_TOLERANCE: f32 = 0.01;
 
 /// Pitch marks and their local periods for one source buffer.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -102,11 +120,14 @@ impl EpochMap {
     }
 }
 
-/// Places pitch marks from the detected pitch track by peak picking inside each period.
+/// Places pitch marks from the detected pitch track, one per local period.
 ///
-/// Voiced regions get marks on the strongest local energy peak within a search window
-/// around the predicted next mark, which keeps grains phase-coherent. Unvoiced regions
-/// get evenly spaced marks at `unvoiced_period_seconds`.
+/// Marks are predicted on a free-running grid stepped by the local period, so a single
+/// bad pick cannot bias the marks that follow it. Inside a voiced span each mark is
+/// placed where the waveform best matches the neighbourhood of the previous mark, which
+/// puts every grain of the span at the same point of the glottal cycle. The first mark of
+/// a span, having nothing to match against, goes on the strongest local energy instead.
+/// Unvoiced regions get evenly spaced marks at `unvoiced_period_seconds`.
 pub fn build_epochs(
     samples: &[f32],
     sample_rate: f64,
@@ -131,9 +152,14 @@ pub fn build_epochs(
         }
     };
 
-    let energy = SquaredPrefix::new(&samples[..count]);
+    let source = &samples[..count];
+    let energy = SquaredPrefix::new(source);
+    let mut reference = Vec::with_capacity(CORRELATION_TAPS + 1);
+    let mut probe = Vec::with_capacity(CORRELATION_TAPS + 1);
+    let mut scores = Vec::new();
     let mut predicted = 0.0f64;
     let mut previous: Option<u32> = None;
+    let mut anchor: Option<u32> = None;
 
     while predicted < count as f64 {
         let time = predicted / sample_rate;
@@ -145,20 +171,27 @@ pub fn build_epochs(
             _ => (unvoiced_period, false),
         };
 
-        let candidate = if voiced {
-            let half_window = ((period / 16.0) as usize).max(1);
-            // The first mark searches a whole period forward, because a window centred on
-            // sample zero is truncated and would lock the grain stream to a false peak.
-            let (from, to) = match previous {
-                None => (predicted, predicted + period),
-                Some(_) => {
-                    let radius = (period * PEAK_SEARCH_FRACTION).max(1.0);
-                    (predicted - radius, predicted + radius)
-                }
-            };
-            energy.argmax(from, to, half_window, count)
-        } else {
-            predicted.round().clamp(0.0, (count - 1) as f64) as usize
+        let on_grid = predicted.round().clamp(0.0, (count - 1) as f64) as usize;
+        let mut seeded = false;
+        let candidate = match (voiced, anchor) {
+            (true, Some(last)) => correlated_mark(
+                source,
+                last as usize,
+                predicted,
+                period,
+                &mut reference,
+                &mut probe,
+                &mut scores,
+            )
+            .unwrap_or(on_grid),
+            (true, None) => {
+                // A span's first mark searches a whole period forward, because a window
+                // centred on its own start is truncated and would pick a false peak.
+                seeded = true;
+                let half_window = ((period / 16.0) as usize).max(1);
+                energy.argmax(predicted, predicted + period, half_window, count)
+            }
+            (false, _) => on_grid,
         };
 
         let mut mark = candidate.min(count - 1);
@@ -176,10 +209,110 @@ pub fn build_epochs(
         map.periods.push(period as f32);
         map.voiced.push(voiced);
         previous = Some(mark as u32);
-        predicted = mark as f64 + period;
+        anchor = if voiced { Some(mark as u32) } else { None };
+        if seeded {
+            predicted = mark as f64;
+        }
+        predicted += period;
+    }
+
+    // The synthesiser walks the marks by adding the periods up, so the sum has to land on
+    // the marks themselves: a detected period is fractional and would leave every grain
+    // reading its content up to half a sample off its own mark.
+    for i in 0..map.positions.len().saturating_sub(1) {
+        let spacing = (map.positions[i + 1] - map.positions[i]) as f32;
+        if spacing > 0.0 {
+            map.periods[i] = spacing;
+        }
     }
 
     map
+}
+
+/// Places a mark near `predicted` where the waveform best matches around `previous`.
+///
+/// `None` when nothing in the allowed range reaches the confidence floor, which leaves
+/// the caller on its predicted grid position. The range is the narrower of the search
+/// window around `predicted` and the spacings from `previous` that stay close to
+/// `period`, so a pick can correct phase without stepping to a neighbouring pulse.
+/// `reference`, `probe` and `scores` are scratch buffers; their contents on entry are
+/// ignored.
+fn correlated_mark(
+    samples: &[f32],
+    previous: usize,
+    predicted: f64,
+    period: f64,
+    reference: &mut Vec<f32>,
+    probe: &mut Vec<f32>,
+    scores: &mut Vec<f32>,
+) -> Option<usize> {
+    let count = samples.len();
+    if count == 0 || !predicted.is_finite() || !period.is_finite() {
+        return None;
+    }
+    let half = ((period * 0.5) as usize).max(1);
+    let stride = (half * 2 / CORRELATION_TAPS).max(1);
+
+    let radius = (period * PEAK_SEARCH_FRACTION).max(1.0);
+    let slack = (period * MAX_SPACING_DEVIATION).max(1.0);
+    let lo = (predicted - radius)
+        .max(previous as f64 + period - slack)
+        .max(0.0);
+    let hi = (predicted + radius)
+        .min(previous as f64 + period + slack)
+        .min((count - 1) as f64);
+    if !lo.is_finite() || !hi.is_finite() || lo > hi {
+        return None;
+    }
+
+    let (lo, hi) = (lo as usize, hi as usize);
+    gather(samples, previous, half, stride, reference);
+    scores.clear();
+    let mut strongest = MIN_MARK_CORRELATION;
+    for candidate in lo..=hi {
+        gather(samples, candidate, half, stride, probe);
+        let correlation = normalised_correlation(reference, probe);
+        scores.push(correlation);
+        if correlation > strongest {
+            strongest = correlation;
+        }
+    }
+
+    let floor = strongest - MARK_CORRELATION_TOLERANCE;
+    let mut best = None;
+    let mut best_distance = f64::INFINITY;
+    for (offset, &correlation) in scores.iter().enumerate() {
+        if correlation < MIN_MARK_CORRELATION || correlation < floor {
+            continue;
+        }
+        let candidate = lo + offset;
+        let distance = (candidate as f64 - predicted).abs();
+        if distance < best_distance {
+            best_distance = distance;
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// Collects every `stride`th sample of the `half`-radius neighbourhood of `centre`.
+///
+/// Positions outside the buffer read as its end samples, and a non-finite sample reads as
+/// silence, so the result is always finite and the same length for any `centre`.
+fn gather(samples: &[f32], centre: usize, half: usize, stride: usize, out: &mut Vec<f32>) {
+    out.clear();
+    if samples.is_empty() {
+        return;
+    }
+    let last = (samples.len() - 1) as i64;
+    let start = centre as i64 - half as i64;
+    let mut offset = 0i64;
+    while offset < (half as i64) * 2 {
+        let index = (start + offset).clamp(0, last) as usize;
+        let value = samples[index];
+        out.push(if value.is_finite() { value } else { 0.0 });
+        offset += stride as i64;
+    }
 }
 
 /// Prefix sums of squared samples, for locating the strongest local energy in a window.
@@ -761,21 +894,39 @@ mod tests {
         assert!(!silly.positions.is_empty());
     }
 
+    /// Frequency of a MIDI note in equal temperament at A440.
+    fn hz_of(midi: f64) -> f64 {
+        440.0 * 2.0f64.powf((midi - 69.0) / 12.0)
+    }
+
     #[test]
     fn unit_ratio_reproduces_the_source() {
         let frames = SR as usize / 2;
-        let source = saw(200.0, SR, frames);
-        let map = build_epochs(&source, SR, &track(SR, 0.5, 200.0, true), 0.01);
-        let psola = Psola::new(&source, &map);
-        let mut out = vec![0.0f32; frames];
-        psola.render(0, &mut out, &identity, &|_| 1.0, FormantMode::Preserve);
+        for freq in [200.0, hz_of(65.0), hz_of(72.0)] {
+            let source = saw(freq, SR, frames);
+            let map = build_epochs(&source, SR, &track(SR, 0.5, freq, true), 0.01);
+            let psola = Psola::new(&source, &map);
+            let mut out = vec![0.0f32; frames];
+            psola.render(0, &mut out, &identity, &|_| 1.0, FormantMode::Preserve);
 
-        let a = &source[2_000..20_000];
-        let b = &out[2_000..20_000];
-        let correlation = normalised_correlation(a, b);
-        assert!(correlation > 0.99, "correlation {correlation}");
-        let level = rms(b) / rms(a);
-        assert!((0.8..1.25).contains(&level), "level ratio {level}");
+            let a = &source[2_000..20_000];
+            let b = &out[2_000..20_000];
+            let correlation = normalised_correlation(a, b);
+            assert!(correlation > 0.99, "{freq} Hz correlation {correlation}");
+            let level = rms(b) / rms(a);
+            assert!(
+                (0.8..1.25).contains(&level),
+                "{freq} Hz level ratio {level}"
+            );
+
+            // The period itself, so a rendered octave down cannot pass on correlation.
+            let expected = SR / freq;
+            let period = estimate_period(b, 30, 600);
+            assert!(
+                (period - expected).abs() < expected * 0.05,
+                "{freq} Hz rendered period {period} against {expected}"
+            );
+        }
     }
 
     #[test]

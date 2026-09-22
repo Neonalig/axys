@@ -59,6 +59,8 @@ export interface ExportJob {
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
+  /** Rate to write the file at; the core resamples when it differs from the source rate. */
+  sampleRate: number;
 }
 
 type JobRequest = AnalyseRequest | RenderRangeRequest | ExportWavRequest;
@@ -267,6 +269,7 @@ export class RenderClient extends WorkerClient {
           samples: job.samples,
           range: job.range,
           depth: job.depth,
+          sampleRate: job.sampleRate,
         },
         transfer: [bufferOf(job.samples)],
       }),

@@ -108,7 +108,7 @@ async function exportWav(request: ExportWavRequest): Promise<void> {
     const session = core.openSession(request.projectJson, request.samples);
     try {
       if (abandon(id)) return;
-      const encoded = session.exportWav(request.range, request.depth);
+      const encoded = session.exportWav(request.range, request.depth, request.sampleRate);
       const result: EncodedWav = {
         bytes: encoded.bytes,
         report: encoded.report,

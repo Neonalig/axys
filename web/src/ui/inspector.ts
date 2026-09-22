@@ -26,14 +26,9 @@ export interface InspectorHooks {
   applyEdit(op: EditOp): void;
   /** Changes saved editor view state, such as the snap division or the ruler mode. */
   setView(patch: Partial<ViewState>): void;
-  /**
-   * Sets the concert reference in Hz.
-   *
-   * @remarks Not an edit operation: the core exposes none for tuning, so the value is held in
-   * the edit state and affects how pitch is named and drawn.
-   */
+  /** Sets the concert reference in Hz. */
   setTuning(a4Hz: number): void;
-  /** Sets how accidentals are spelled. Not an edit operation, for the same reason as tuning. */
+  /** Sets how accidentals are spelled. */
   setAccidentals(style: AccidentalStyle): void;
 }
 
@@ -656,9 +651,12 @@ export class Inspector {
     this.#guideStrengthReadout.textContent = `${String(Math.round(strength * 100))}%`;
     setChecked(this.#guideMuted, guide?.muted ?? false);
     const report = state.mappingReport;
-    this.#guideHint.textContent = report
+    const overlaps = state.guideOverlaps.length;
+    const mapping = report
       ? `${String(report.unmappedBlobs.length)} blobs and ${String(report.unmappedNotes.length)} notes unmapped.`
       : 'Guide notes are shown over the vocal.';
+    this.#guideHint.textContent =
+      overlaps > 0 ? `${mapping} ${String(overlaps)} overlapping notes.` : mapping;
   }
 
   #readoutField(

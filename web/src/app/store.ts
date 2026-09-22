@@ -4,6 +4,7 @@ import type {
   Blob,
   DriftReport,
   EditState,
+  GuideOverlap,
   MappingReport,
   MidiFile,
   PitchTrackArrays,
@@ -27,6 +28,8 @@ export interface AppState {
   view: ViewState;
   midi: MidiFile | null;
   mappingReport: MappingReport | null;
+  /** Overlapping note pairs in the selected guide, reported and never resolved for the user. */
+  guideOverlaps: GuideOverlap[];
   drift: DriftReport | null;
   selection: Selection;
   tool: ToolId;
@@ -150,6 +153,7 @@ export function initialState(): AppState {
     view: initialView(),
     midi: null,
     mappingReport: null,
+    guideOverlaps: [],
     drift: null,
     selection: { blobs: [], anchors: [], range: null },
     tool: 'select',

@@ -36,7 +36,10 @@ export interface OutputRange {
 
 /** What the main thread asks the renderer to do. */
 export type EngineMessage =
-  | { type: 'init'; module: WebAssembly.Module }
+  // The module crosses as bytes, not as a compiled WebAssembly.Module. An AudioWorklet
+  // is a separate agent cluster, and a Module posted across one is dropped silently:
+  // no exception on the sending side and no message on the receiving side.
+  | { type: 'init'; bytes: ArrayBuffer }
   | {
       type: 'source';
       samples: ArrayBuffer;
@@ -74,6 +77,15 @@ const ACCENT_HZ = 1760;
 const BEAT_HZ = 880;
 const TWO_PI = Math.PI * 2;
 const MAX_SEGMENTS_PER_BLOCK = 8;
+
+/**
+ * How often the renderer reports its position, in frames.
+ *
+ * @remarks The playhead is drawn from these reports, so a slow report rate reads as a
+ * stuttering playhead however smooth the audio is. About 20 Hz costs one small message
+ * per 50 ms and is below the frame rate the editor redraws at.
+ */
+const REPORT_INTERVAL_FRAMES = 2048;
 
 type WasmFunction = (...args: number[]) => unknown;
 
@@ -410,7 +422,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     }
 
     this.#sinceReport += frames;
-    if (this.#sinceReport >= sampleRate) {
+    if (this.#sinceReport >= REPORT_INTERVAL_FRAMES) {
       this.#sinceReport = 0;
       this.#report();
     }
@@ -420,7 +432,7 @@ class RendererProcessor extends AudioWorkletProcessor {
   #handle(message: EngineMessage): void {
     switch (message.type) {
       case 'init':
-        this.#initialise(message.module);
+        this.#initialise(message.bytes);
         break;
       case 'source':
         this.#loadSource(message);
@@ -461,10 +473,19 @@ class RendererProcessor extends AudioWorkletProcessor {
     }
   }
 
-  #initialise(module: WebAssembly.Module): void {
+  /**
+   * Compiles and instantiates the core from the bytes the main thread sent.
+   *
+   * @remarks Compiling here rather than accepting a compiled module is not an
+   * optimisation choice: a `WebAssembly.Module` cannot cross into a worklet's agent
+   * cluster, and the attempt is dropped without an error on either side. Synchronous
+   * compilation is permitted off the main thread.
+   */
+  #initialise(bytes: ArrayBuffer): void {
     try {
-      this.#core = Core.instantiate(module);
+      this.#core = Core.instantiate(new WebAssembly.Module(bytes));
       this.#failure = null;
+      this.#build();
     } catch (thrown) {
       this.#core = null;
       this.#fail(thrown);

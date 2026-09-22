@@ -18,9 +18,11 @@ import type {
   EditOp,
   EditState,
   EnergyTrack,
+  ExportPreview,
   ExportReport,
   F0Params,
   FormantMode,
+  GuideOverlap,
   GuideSelection,
   History,
   MappingReport,
@@ -428,7 +430,21 @@ export function isMappingReport(value: unknown): value is MappingReport {
     isRecord(value) &&
     isNumberArray(value.unmappedBlobs) &&
     isNumberArray(value.unmappedNotes) &&
-    isNumberArray(value.multiplyMappedNotes)
+    isNumberArray(value.multiplyMappedNotes) &&
+    isNumberArray(value.overlappingNotes)
+  );
+}
+
+/** Accepts a pair of overlapping guide notes. */
+export function isGuideOverlap(value: unknown): value is GuideOverlap {
+  return (
+    isRecord(value) &&
+    isNumber(value.first) &&
+    isNumber(value.second) &&
+    isNumber(value.firstKey) &&
+    isNumber(value.secondKey) &&
+    isNumber(value.startSeconds) &&
+    isNumber(value.endSeconds)
   );
 }
 
@@ -521,10 +537,13 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   setBypass: (op) => isNumber(op.blob) && isBoolean(op.bypassed),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
   setScale: (op) => isScaleSettings(op.scale),
+  setTuning: (op) => isTuning(op.tuning),
+  setAccidentals: (op) => isLiteral(ACCIDENTAL_STYLES, op.accidentals),
   setModulation: (op) => isModulationSettings(op.modulation),
   setFormant: (op) => isFormantMode(op.formant),
   setGuide: (op) => op.selection === null || isGuideSelection(op.selection),
   setMapping: (op) => isNoteMapping(op.mapping),
+  setMappings: (op) => Array.isArray(op.mappings) && op.mappings.every(isNoteMapping),
   setTimelineOrigin: (op) => isNumber(op.seconds),
   setTempoMap: (op) => Array.isArray(op.events) && op.events.every(isTempoEvent),
   setMeterMap: (op) => Array.isArray(op.events) && op.events.every(isMeterEvent),
@@ -563,6 +582,21 @@ export function isExportReport(value: unknown): value is ExportReport {
     isNumber(value.frames) &&
     isNumber(value.peak) &&
     isNumber(value.clippedSamples)
+  );
+}
+
+/** Accepts an export preview. */
+export function isExportPreview(value: unknown): value is ExportPreview {
+  return (
+    isRecord(value) &&
+    isNumber(value.start) &&
+    isNumber(value.end) &&
+    isNumber(value.frames) &&
+    isNumber(value.duration) &&
+    isNumber(value.peak) &&
+    isBoolean(value.clips) &&
+    isNumber(value.conflicts) &&
+    isNumber(value.silent)
   );
 }
 

@@ -96,21 +96,18 @@ impl MidiFile {
     /// Overlapping notes within a guide selection, reported rather than silently resolved.
     pub fn overlaps(&self, track: usize, channel: Option<u8>) -> Vec<(MidiNote, MidiNote)> {
         let notes = self.notes_of(track, channel);
-        let mut pairs = Vec::new();
-        for (i, first) in notes.iter().enumerate() {
-            for second in notes.iter().skip(i + 1) {
-                if second.start_tick >= first.end_tick {
-                    break;
-                }
-                if first.start_tick < second.end_tick {
-                    pairs.push((*first, *second));
-                    if pairs.len() >= MAX_OVERLAP_PAIRS {
-                        return pairs;
-                    }
-                }
-            }
-        }
-        pairs
+        self.overlap_indices(track, channel)
+            .into_iter()
+            .filter_map(|(first, second)| Some((*notes.get(first)?, *notes.get(second)?)))
+            .collect()
+    }
+
+    /// Overlapping note pairs within a guide selection, as indices into
+    /// [`MidiFile::notes_of`] for the same selection.
+    ///
+    /// At most `MAX_OVERLAP_PAIRS` pairs are reported.
+    pub fn overlap_indices(&self, track: usize, channel: Option<u8>) -> Vec<(usize, usize)> {
+        overlap_pairs(&self.notes_of(track, channel))
     }
 
     /// Builds a timeline map from the embedded tempo and meter maps.
@@ -462,6 +459,9 @@ pub struct MappingReport {
     pub unmapped_notes: Vec<usize>,
     /// Note indices more than one blob maps to.
     pub multiply_mapped_notes: Vec<usize>,
+    /// Note indices that sound at once with another note, which a monophonic guide cannot map
+    /// cleanly. Reported, never resolved: no note is truncated or dropped.
+    pub overlapping_notes: Vec<usize>,
 }
 
 /// Weight of temporal agreement in the mapping score.
@@ -586,8 +586,45 @@ pub fn propose_mappings(
             .filter(|(_, c)| **c > 1)
             .map(|(i, _)| i)
             .collect(),
+        overlapping_notes: overlapping_notes(notes),
     };
     (mappings, report)
+}
+
+/// Overlapping pairs within one tick-ordered note list, as index pairs.
+///
+/// At most `MAX_OVERLAP_PAIRS` pairs are reported.
+fn overlap_pairs(notes: &[MidiNote]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for (i, first) in notes.iter().enumerate() {
+        for (j, second) in notes.iter().enumerate().skip(i + 1) {
+            if second.start_tick >= first.end_tick {
+                break;
+            }
+            if first.start_tick < second.end_tick {
+                pairs.push((i, j));
+                if pairs.len() >= MAX_OVERLAP_PAIRS {
+                    return pairs;
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// Indices of notes that sound at once with another note in the same list, ascending.
+fn overlapping_notes(notes: &[MidiNote]) -> Vec<usize> {
+    let mut flagged = vec![false; notes.len()];
+    for (first, second) in overlap_pairs(notes) {
+        flagged[first] = true;
+        flagged[second] = true;
+    }
+    flagged
+        .iter()
+        .enumerate()
+        .filter(|(_, on)| **on)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Agreement between one blob and one note, or None when they do not overlap in time.

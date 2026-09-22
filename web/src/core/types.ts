@@ -281,6 +281,25 @@ export interface MappingReport {
   unmappedBlobs: BlobId[];
   unmappedNotes: number[];
   multiplyMappedNotes: number[];
+  /** Notes that sound at once with another note, reported and never resolved. */
+  overlappingNotes: number[];
+}
+
+/**
+ * Two guide notes that sound at once in a monophonic guide.
+ *
+ * Note indices address the selected guide's note list, the same list a {@link NoteMapping}
+ * indexes. Axys reports an overlap and never resolves it.
+ */
+export interface GuideOverlap {
+  first: number;
+  second: number;
+  firstKey: number;
+  secondKey: number;
+  /** Start of the shared span in source seconds. */
+  startSeconds: number;
+  /** End of the shared span in source seconds. */
+  endSeconds: number;
 }
 
 /** Alignment error between mapped blobs and their guide notes. */
@@ -363,10 +382,13 @@ export type EditOp =
   | { type: 'setBypass'; blob: BlobId; bypassed: boolean }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setScale'; scale: ScaleSettings }
+  | { type: 'setTuning'; tuning: Tuning }
+  | { type: 'setAccidentals'; accidentals: AccidentalStyle }
   | { type: 'setModulation'; modulation: ModulationSettings }
   | { type: 'setFormant'; formant: FormantMode }
   | { type: 'setGuide'; selection: GuideSelection | null }
   | { type: 'setMapping'; mapping: NoteMapping }
+  | { type: 'setMappings'; mappings: NoteMapping[] }
   | { type: 'setTimelineOrigin'; seconds: number }
   | { type: 'setTempoMap'; events: TempoEvent[] }
   | { type: 'setMeterMap'; events: MeterEvent[] }
@@ -386,6 +408,26 @@ export interface ExportReport {
   frames: number;
   peak: number;
   clippedSamples: number;
+}
+
+/**
+ * What an export of one output range would produce, measured before a file is encoded.
+ *
+ * @remarks Times are output seconds and `frames` counts them at the project sample rate.
+ */
+export interface ExportPreview {
+  start: number;
+  end: number;
+  frames: number;
+  duration: number;
+  /** Largest sample magnitude the render reaches. */
+  peak: number;
+  /** Whether a fixed-point export would clamp the peak. */
+  clips: boolean;
+  /** Timing conflicts overlapping the source audio the range reads. */
+  conflicts: number;
+  /** Seconds of the range that map outside the source and render as silence. */
+  silent: number;
 }
 
 /** Immutable facts about the imported source audio. */

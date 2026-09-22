@@ -26,13 +26,22 @@ Hand-written TypeScript mirrors of the serde contracts in `docs/core_contracts.m
 `PitchTrackArrays`, `F0Params`, `EnergyTrack`, `SegmentParams`, `BlobId`, `Voicing`, `Subregion`,
 `Blob`, `BlobSet`, `Edge`, `TimingConflict`, `ConflictKind`, `TempoEvent`, `MeterEvent`, `BarBeat`,
 `TimelineMap`, `BeatGridPoint`, `MidiNote`, `MidiTrackInfo`, `MidiFile`, `GuideMode`,
-`GuideSelection`, `NoteMapping`, `MappingReport`, `DriftReport`, `SampledCurve`, `TimeMap`,
+`GuideSelection`, `NoteMapping`, `MappingReport`, `GuideOverlap`, `DriftReport`, `SampledCurve`, `TimeMap`,
 `ScaleSettings`, `ModulationSettings`, `FormantMode`, `RenderPlan`, `EditOp`, `History`,
-`BitDepth`, `ExportReport`, `SourceInfo`, `AnalysisInfo`, `EditState`, `ViewState`, `TimeDisplay`,
+`BitDepth`, `ExportReport`, `ExportPreview`, `SourceInfo`, `AnalysisInfo`, `EditState`, `ViewState`, `TimeDisplay`,
 `Project`, `Quality`.
 
 `EditOp` is a discriminated union on `type`, matching serde's `#[serde(tag = "type")]` with
 `camelCase` variant names, so `{ type: 'splitBlob', blob: 3, time: 1.25 }`.
+
+Tuning and accidental spelling are edits like any other, so both persist in the project and appear
+in undo:
+
+- `{ type: 'setTuning', tuning: { a4Hz: number } }` replaces the concert reference. The core
+  rejects an `a4Hz` outside 380 to 480, which surfaces as a toast.
+- `{ type: 'setAccidentals', accidentals: 'sharps' | 'flats' }` replaces the spelling convention.
+
+`isEditOp` in `core/json.ts` accepts both.
 
 `FormantMode` serialises as `"follow"`, `"preserve"` or `{ shift: number }`.
 
@@ -48,6 +57,8 @@ export function loadCore(): Promise<AxysCore>;
 export interface AxysCore {
   version: string;
   createSession(input: SessionInput): Session;
+  /** Builds a session from an analysis produced elsewhere, without re-analysing the audio. */
+  openSessionFromAnalysis(input: AnalysedSessionInput): Session;
   openSession(projectJson: string, samples: Float32Array): Session;
   parseMidi(bytes: Uint8Array): MidiFile;
   hzToMidi(hz: number, a4: number): number;
@@ -57,9 +68,20 @@ export interface AxysCore {
 
 `Session` wraps the Rust `Session` class: `applyEdit(op: EditOp): void`, `undo(): boolean`,
 `redo(): boolean`, `state(): EditState`, `track(): PitchTrackArrays`, `blobs(): Blob[]`,
-`plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `history(): { undo: string | null; redo:
-string | null }`, `project(name: string, view: ViewState): string`, `exportWav(range, depth):
-{ bytes: Uint8Array; report: ExportReport }`, `free(): void`.
+`plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `guideOverlaps(): GuideOverlap[]`, `history(): { undo: string | null; redo:
+string | null }`, `project(name: string, view: ViewState): string`, `exportPreview(range): ExportPreview`,
+`exportWav(range, depth, sampleRate?): { bytes: Uint8Array; report: ExportReport }`,
+`free(): void`.
+
+`AnalysedSessionInput` carries `samples`, `sampleRate`, `name`, the analysis worker's `trackJson`
+and `blobsJson`, and the optional `f0` and `segment` parameters it ran with. It is the import path:
+the analysis runs in the worker and only the session assembly happens on the main thread.
+
+`exportPreview(range)` measures an output range without encoding anything, so the Export WAV modal
+can report duration, frames, peak, clipping, timing conflicts and silent spans before a file is
+written. `range` is in output seconds and `null` covers the whole output. `exportWav` takes the
+same range plus an explicit bit depth and sample rate, resampling when the rate differs from the
+source.
 
 Every method that can fail throws an `AxysError` carrying the Rust message. Wrap the raw
 wasm-bindgen calls so nothing outside this file touches generated bindings.
@@ -178,6 +200,7 @@ export function findCommand(commands: Command[], id: string): Command | undefine
 ```
 
 Commands must cover, at minimum: Open Audio, Open MIDI, Open Project, Save Project, Export WAV,
+Cancel Import,
 Undo, Redo, Split Blob, Join Blobs, Reset Blob, Reset Span, Smooth Span, Bypass Blob, Exclude Blob,
 Play, Stop, Loop Selection, Toggle Compare, Zoom In, Zoom Out, Zoom Fit, Toggle Bars Beats,
 Toggle Metronome, Align Guide, Show Diagnostics, Show Source Code.
@@ -235,8 +258,10 @@ fingerprint, and reporting an unsupported format clearly.
 
 `workers/analysis.worker.ts` runs `detect_f0`, `analyse_energy` and `segment` off the main thread,
 posting `{ stage, progress }` messages and honouring a cancel message. `workers/render.worker.ts`
-runs offline rendering and WAV encoding at `Quality.Offline`, with progress and cancel. Both are
-typed by `workers/protocol.ts`, which exports the request and response unions.
+runs offline rendering and WAV encoding at `Quality.Offline`, with progress and cancel, taking the
+chosen `depth` and `sampleRate` on its `exportWav` request. The import path runs through the
+analysis worker rather than the main thread, reports its real stage and progress, and is
+cancellable by the Cancel Import command. Both are typed by `workers/protocol.ts`, which exports the request and response unions.
 
 ## Editor: `editor/`
 
@@ -286,7 +311,12 @@ selection and edit results.
 
 `ui/icons.ts` exports concise inline SVG strings, one per command group, 16px on a 16 grid, using
 `currentColor`. `ui/toast.ts` exports `class ToastHost` with `info`, `warn` and `error`, each
-auto-dismissing and stacking. `ui/dialog.ts` exports a focus-trapped modal. `ui/inspector.ts` shows
+auto-dismissing and stacking. `ui/dialog.ts` exports a focus-trapped modal. `ui/export-dialog.ts` exports
+`showExportDialog(options: ExportDialogOptions): Dialog`, the Export WAV modal: a range choice of
+whole project or selection, a sample rate, a bit depth of 16-bit, 24-bit or 32-bit float, the
+`exportPreview` figures, and a warning whenever the range would clip, is partly silent or holds
+timing conflicts. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through
+`onExport`. `ui/inspector.ts` shows
 the selection's numeric fields and the scale, modulation, formant and guide settings, each bound to
 an `EditOp`. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
 build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`.

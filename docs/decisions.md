@@ -307,6 +307,11 @@ These were resolved while implementing `crates/axys-core`. Each names the module
 - **Mapping score is 0.7 temporal intersection-over-union plus 0.3 pitch proximity**, requiring real
   overlap, with ties broken by index so proposals are deterministic. Nothing is deleted to force a
   one-to-one result; leftovers go in the report.
+- **Overlapping notes in a monophonic guide are reported, never resolved.** `Session.guideOverlaps`
+  lists every overlapping pair in the selected track and channel, and the editor warns and shows the
+  count beside the mapping report. No note is truncated, moved or deleted to force monophony, and
+  mapping assigns at most one blob per note, so the extra notes appear as unmapped rather than
+  merged. Resolving an overlap is the user's call.
 - **`timeline.rs` accepts 60,000 to 16,777,215 microseconds per quarter**, the upper bound being the
   24-bit maximum a Standard MIDI File can carry. A meter change lands a bar line even mid-bar, so
   the interrupted bar is short.
@@ -345,6 +350,27 @@ cannot reach a user.
 
 Plan and track JSON are encoded to UTF-8 on the main thread and posted as `Uint8Array`, so the
 worklet needs no text encoder and a plan update costs one memcpy on the audio thread.
+
+### The core crosses to the worklet as bytes, not as a compiled module
+
+`AudioEngine` fetches the WebAssembly module and posts the raw `ArrayBuffer` to the worklet,
+which compiles it there with `new WebAssembly.Module(bytes)`. Synchronous compilation is
+permitted off the main thread, so this costs nothing.
+
+Posting an already-compiled `WebAssembly.Module` does not work: an AudioWorklet is a separate
+agent cluster, and a module structured-cloned across one is **dropped silently**. There is no
+exception on the sending side and no message on the receiving side. The worklet then holds a
+source, a track and a plan but no core, renders nothing, and reports a healthy transport while
+every block is silence. That is exactly how this shipped until it was measured, so the engine now
+also arms a five-second readiness timer on every source load and reports a failure if the renderer
+never confirms it is ready. Playing nothing has to be visible, not quiet.
+
+### The worklet reports its position about twenty times a second
+
+The playhead is drawn from the worklet's status messages. Reporting once per second made the
+playhead jump in one-second steps however smooth the audio was, so the report interval is 2048
+frames, roughly 43 ms at 48 kHz. That is one small message per interval, below the rate the editor
+redraws at, and well inside the realtime budget.
 
 ### The AudioContext opens at the source sample rate
 

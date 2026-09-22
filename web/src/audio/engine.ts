@@ -35,6 +35,9 @@ const MAX_CLICKS = 20000;
 const MAX_BEATS_PER_BAR = 64;
 const PLAN_HOP = 0.005;
 
+/** How long the renderer has to confirm it is ready before that counts as a failure. */
+const READY_TIMEOUT_MS = 5000;
+
 /**
  * Owns the AudioContext, the worklet and the transport.
  *
@@ -44,7 +47,9 @@ const PLAN_HOP = 0.005;
  */
 export class AudioEngine {
   readonly #store: AppStore;
-  #module: WebAssembly.Module | null = null;
+  #coreBytes: ArrayBuffer | null = null;
+  #ready = false;
+  #readyTimer: ReturnType<typeof setTimeout> | null = null;
   #context: AudioContext | null = null;
   #node: AudioWorkletNode | null = null;
   #desiredRate: number | null = null;
@@ -112,6 +117,27 @@ export class AudioEngine {
       },
       [buffer],
     );
+    this.#watchForReady();
+  }
+
+  /**
+   * Reports a renderer that never confirms it is ready.
+   *
+   * @remarks Without this a worklet that silently fails to build leaves the transport
+   * looking healthy while every block is silence, which is exactly the failure a
+   * dropped init message produces. Playing nothing must be visible, not quiet.
+   */
+  #watchForReady(): void {
+    if (this.#readyTimer !== null) clearTimeout(this.#readyTimer);
+    this.#ready = false;
+    this.#readyTimer = setTimeout(() => {
+      this.#readyTimer = null;
+      if (this.#ready) return;
+      this.#publish(
+        'failed',
+        'The renderer did not start, so playback would be silent. Reload the page.',
+      );
+    }, READY_TIMEOUT_MS);
   }
 
   /** Pushes a compiled plan to the worklet. Cheap, safe to call on every edit. */
@@ -255,17 +281,19 @@ export class AudioEngine {
     this.#publish('idle', null);
   }
 
+  /**
+   * Fetches the core module as bytes for the worklet to compile.
+   *
+   * @remarks The bytes, not a compiled `WebAssembly.Module`, are what cross to the
+   * worklet. A worklet is a separate agent cluster, and a module posted across one is
+   * dropped with no error on either side, which silences playback without a diagnostic.
+   */
   async #compile(): Promise<void> {
     const url = wasmModuleUrl();
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`${String(response.status)} ${response.statusText}`);
-      const buffered = response.clone();
-      try {
-        this.#module = await WebAssembly.compileStreaming(response);
-      } catch {
-        this.#module = await WebAssembly.compile(await buffered.arrayBuffer());
-      }
+      this.#coreBytes = await response.arrayBuffer();
     } catch (thrown) {
       this.#publish('failed', `Playback is unavailable: ${messageOf(thrown)}`);
     }
@@ -275,8 +303,8 @@ export class AudioEngine {
     if (this.#node && this.#desiredRate === rate) return this.#node;
     this.#teardown();
 
-    const module = this.#module;
-    if (!module) {
+    const bytes = this.#coreBytes;
+    if (!bytes) {
       this.#publish('failed', 'Playback is unavailable: the core did not load.');
       return null;
     }
@@ -314,7 +342,8 @@ export class AudioEngine {
     this.#context = context;
     this.#node = node;
     this.#desiredRate = rate;
-    node.port.postMessage({ type: 'init', module } satisfies EngineMessage);
+    // A fresh copy per node: the worklet takes ownership of what it is sent.
+    node.port.postMessage({ type: 'init', bytes: bytes.slice(0) } satisfies EngineMessage);
     this.#publishContextState();
     return node;
   }
@@ -351,6 +380,11 @@ export class AudioEngine {
     if (!message) return;
     switch (message.type) {
       case 'ready':
+        this.#ready = true;
+        if (this.#readyTimer !== null) {
+          clearTimeout(this.#readyTimer);
+          this.#readyTimer = null;
+        }
         this.#duration = message.outputSeconds;
         this.#sourceRate = message.sourceRate;
         if (this.#metronome) this.#sendClicks();

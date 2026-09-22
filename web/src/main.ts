@@ -24,9 +24,9 @@ import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, Session } from './core/wasm.js';
 import type {
   AccidentalStyle,
-  BitDepth,
-  EditState,
   EditOp,
+  ExportPreview,
+  GuideOverlap,
   Project,
   RenderPlan,
   ViewState,
@@ -39,12 +39,14 @@ import { Autosave } from './persistence/autosave.js';
 import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import { exportProject, importProject, relink } from './persistence/project-io.js';
+import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
 import { applyTheme, preferredTheme, THEME_NAMES } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
 import type { ToastHost } from './ui/toast.js';
-import { RenderClient } from './workers/client.js';
+import { AnalysisClient, RenderClient } from './workers/client.js';
+import { WorkerCancelled } from './workers/protocol.js';
 
 /** Pitch margin above and below the content the first view frames, in semitones. */
 const FIT_MARGIN = 3;
@@ -94,6 +96,7 @@ class AxysWorkspace implements Workspace {
   readonly #toast: ToastHost;
   readonly #projects: ProjectStore | null;
   readonly #media: MediaStore | null;
+  readonly #analysis = new AnalysisClient();
   readonly #render = new RenderClient();
 
   #session: Session | null = null;
@@ -102,8 +105,7 @@ class AxysWorkspace implements Workspace {
   #projectId: string | null = null;
   #autosave: Autosave | null = null;
   #pending: PendingProject | null = null;
-  #tuning: number | null = null;
-  #accidentals: AccidentalStyle | null = null;
+  #importing = false;
 
   constructor(deps: WorkspaceDeps) {
     this.#core = deps.core;
@@ -125,6 +127,7 @@ class AxysWorkspace implements Workspace {
   apply(op: EditOp): void {
     const session = this.#session;
     if (!session) return;
+    const guide = this.#store.state.edits?.guide ?? null;
     try {
       session.applyEdit(op);
     } catch (error) {
@@ -132,6 +135,11 @@ class AxysWorkspace implements Workspace {
       return;
     }
     this.#publish();
+    if (op.type === 'setGuide') {
+      const chosen = op.selection;
+      const track = guide?.track !== chosen?.track || guide?.channel !== chosen?.channel;
+      this.#reportGuideOverlaps(track);
+    }
   }
 
   undo(): boolean {
@@ -168,24 +176,44 @@ class AxysWorkspace implements Workspace {
       return;
     }
     this.#progress('Decode Audio', 0.05);
+    this.#importing = true;
     try {
       const decoded = await decodeAudioFile(file);
-      this.#progress('Analyse Audio', 0.3);
-      await nextFrame();
-      const session = this.#core.createSession({
-        samples: decoded.mono,
-        sampleRate: decoded.sampleRate,
-        name: decoded.name,
+      const analysed = await this.#analysis.analyse(
+        { samples: decoded.mono, sampleRate: decoded.sampleRate, name: decoded.name },
+        (stage, progress) => {
+          this.#progress(stage, progress);
+        },
+      );
+      const session = this.#core.openSessionFromAnalysis({
+        samples: analysed.samples,
+        sampleRate: analysed.sampleRate,
+        name: analysed.name,
+        trackJson: analysed.trackJson,
+        blobsJson: analysed.blobsJson,
       });
-      await this.#install(session, decoded.mono, decoded.name, null);
+      await this.#install(session, analysed.samples, analysed.name, null);
       if (decoded.resampled) {
         this.#toast.warn(
           `This browser decoded "${decoded.name}" at ${String(decoded.sampleRate)} Hz rather than its own rate.`,
         );
       }
     } catch (error) {
-      this.#fail('Open Audio', error);
+      if (error instanceof WorkerCancelled) {
+        this.#idle();
+        this.#store.update({ phase: this.#session ? 'ready' : 'empty', message: null });
+        this.#toast.info('The import was cancelled.');
+      } else {
+        this.#fail('Open Audio', error);
+      }
+    } finally {
+      this.#importing = false;
     }
+  }
+
+  cancelImport(): void {
+    if (!this.#importing) return;
+    this.#analysis.cancel();
   }
 
   async openMidiFile(file: File): Promise<void> {
@@ -257,24 +285,33 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  async exportWav(range: { start: number; end: number } | null, depth: BitDepth): Promise<void> {
+  exportPreview(range: ExportRange): ExportPreview | null {
+    const session = this.#session;
+    if (!session) return null;
+    try {
+      return session.exportPreview(range);
+    } catch {
+      return null;
+    }
+  }
+
+  async exportWav(choice: ExportChoice): Promise<void> {
     const session = this.#session;
     const json = this.#projectJson();
     if (!session || json === null) {
       this.#toast.error('There is nothing to export yet.');
       return;
     }
-    const output =
-      range === null
-        ? null
-        : {
-            start: this.outputAt(Math.min(range.start, range.end)),
-            end: this.outputAt(Math.max(range.start, range.end)),
-          };
     this.#progress('Export WAV', 0.02);
     try {
       const encoded = await this.#render.exportWav(
-        { projectJson: json, samples: session.source(), range: output, depth },
+        {
+          projectJson: json,
+          samples: session.source(),
+          range: choice.range,
+          depth: choice.depth,
+          sampleRate: choice.sampleRate,
+        },
         (stage, progress) => {
           this.#progress(stage, progress);
         },
@@ -306,27 +343,20 @@ class AxysWorkspace implements Workspace {
       this.#toast.info(
         `Mapped the guide with ${String(report.unmappedBlobs.length)} blobs and ${String(report.unmappedNotes.length)} notes left over.`,
       );
+      this.#reportGuideOverlaps(true);
     } catch (error) {
       this.#fail('Align Guide', error);
     }
   }
 
-  /**
-   * Sets the concert reference the editor names and measures pitch against.
-   *
-   * @remarks A display setting: the core has no edit operation for tuning, so the choice is held
-   * here and reapplied over the session's state rather than saved with the project.
-   */
+  /** Sets the concert reference the editor names and measures pitch against. */
   setTuning(a4Hz: number): void {
-    if (!Number.isFinite(a4Hz) || a4Hz < 400 || a4Hz > 480) return;
-    this.#tuning = a4Hz;
-    this.#republishState();
+    this.apply({ type: 'setTuning', tuning: { a4Hz } });
   }
 
-  /** Sets how accidentals are spelled. Held beside the session like {@link setTuning}. */
+  /** Sets how accidentals are spelled. */
   setAccidentals(style: AccidentalStyle): void {
-    this.#accidentals = style;
-    this.#republishState();
+    this.apply({ type: 'setAccidentals', accidentals: style });
   }
 
   snapTime(seconds: number): number {
@@ -350,6 +380,7 @@ class AxysWorkspace implements Workspace {
   /** Releases the session, the workers and the autosave timer. */
   dispose(): void {
     this.#autosave?.dispose();
+    this.#analysis.terminate();
     this.#render.terminate();
     this.#session?.free();
     this.#session = null;
@@ -409,8 +440,6 @@ class AxysWorkspace implements Workspace {
     this.#autosave?.dispose();
     this.#session = session;
     this.#name = name;
-    this.#tuning = null;
-    this.#accidentals = null;
 
     const source = session.sourceInfo();
     const blobs = session.blobs();
@@ -443,9 +472,10 @@ class AxysWorkspace implements Workspace {
       track,
       blobs,
       conflicts: session.conflicts(),
-      edits: this.#editState(session),
+      edits: session.state(),
       midi: session.midi(),
       mappingReport: null,
+      guideOverlaps: session.guideOverlaps(),
       drift: session.drift(),
       selection: { blobs: [], anchors: [], range: null },
       view: { ...framed, playhead: 0 },
@@ -494,21 +524,28 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  /** Re-reads the session's edit state, for a setting the core does not model as an edit. */
-  #republishState(): void {
+  /**
+   * Re-reads the selected guide's overlapping notes into the store.
+   *
+   * @remarks Warns once per newly selected guide when `announce` is set; the overlaps are
+   * reported to the user and never resolved for them.
+   */
+  #reportGuideOverlaps(announce: boolean): void {
     const session = this.#session;
     if (!session) return;
-    this.#store.update({ edits: this.#editState(session) });
-  }
-
-  /** The session's edit state with the display-only tuning and spelling choices applied. */
-  #editState(session: Session): EditState {
-    const state = session.state();
-    return {
-      ...state,
-      tuning: this.#tuning === null ? state.tuning : { a4Hz: this.#tuning },
-      accidentals: this.#accidentals ?? state.accidentals,
-    };
+    let overlaps: GuideOverlap[];
+    try {
+      overlaps = session.guideOverlaps();
+    } catch (error) {
+      this.#fail('Read Guide', error);
+      return;
+    }
+    this.#store.update({ guideOverlaps: overlaps });
+    if (announce && overlaps.length > 0) {
+      this.#toast.warn(
+        `The guide has ${String(overlaps.length)} overlapping notes. Each note takes at most one blob, so the rest stay unmapped.`,
+      );
+    }
   }
 
   #publish(): void {
@@ -521,7 +558,7 @@ class AxysWorkspace implements Workspace {
       this.#store.update({
         blobs: session.blobs(),
         conflicts: session.conflicts(),
-        edits: this.#editState(session),
+        edits: session.state(),
         dirty: true,
       });
     } catch (error) {
@@ -624,14 +661,6 @@ function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'the reason was not reported';
-}
-
-function nextFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      resolve();
-    });
-  });
 }
 
 /** Which import a dropped file is, from its name and media type. */
@@ -781,9 +810,19 @@ function startPlayheadLoop(
   const frame = (): void => {
     if (!running) return;
     const state = store.state;
-    const playhead = workspace.sourceAt(audio.position);
-    if (Math.abs(playhead - state.view.playhead) > PLAYHEAD_EPSILON) {
-      store.update({ view: { ...state.view, playhead } });
+    const output = audio.position;
+    const playhead = workspace.sourceAt(output);
+    const movedPlayhead = Math.abs(playhead - state.view.playhead) > PLAYHEAD_EPSILON;
+    const movedTransport =
+      Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
+      audio.playing !== state.transport.playing;
+    if (movedPlayhead || movedTransport) {
+      store.update({
+        ...(movedPlayhead ? { view: { ...state.view, playhead } } : {}),
+        ...(movedTransport
+          ? { transport: { ...state.transport, position: output, playing: audio.playing } }
+          : {}),
+      });
     }
     requestAnimationFrame(frame);
   };

@@ -209,6 +209,11 @@ pub enum EditOp {
         /// Mapping to store.
         mapping: NoteMapping,
     },
+    /// Replaces every blob-to-note mapping with a whole set.
+    SetMappings {
+        /// Mappings to store, one per mapped blob.
+        mappings: Vec<NoteMapping>,
+    },
     /// Places musical tick 0 in the source recording.
     SetTimelineOrigin {
         /// Source seconds at musical tick 0.
@@ -259,6 +264,7 @@ impl EditOp {
             EditOp::SetFormant { .. } => "Set Formant",
             EditOp::SetGuide { .. } => "Set Guide",
             EditOp::SetMapping { .. } => "Set Mapping",
+            EditOp::SetMappings { .. } => "Set Mappings",
             EditOp::SetTimelineOrigin { .. } => "Align Timeline",
             EditOp::SetTempoMap { .. } => "Set Tempo Map",
             EditOp::SetMeterMap { .. } => "Set Meter Map",
@@ -497,6 +503,14 @@ pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> 
                 Some(existing) => *existing = *mapping,
                 None => state.mappings.push(*mapping),
             }
+        }
+        EditOp::SetMappings { mappings } => {
+            for mapping in mappings {
+                if state.blobs.get(mapping.blob).is_none() {
+                    return Err(AxysError::NotFound(format!("blob {}", mapping.blob.0)));
+                }
+            }
+            state.mappings = mappings.clone();
         }
         EditOp::SetTimelineOrigin { seconds } => {
             state.timeline.origin_seconds = finite(*seconds, "timeline origin")?;
@@ -1629,6 +1643,60 @@ mod tests {
             apply(&mut s, None, &EditOp::SetMapping { mapping: missing }),
             Err(AxysError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn set_mappings_replaces_the_whole_set_and_validates() {
+        let mut s = state();
+        let one = NoteMapping {
+            blob: BlobId(1),
+            note: Some(0),
+            manual: false,
+            opted_out: false,
+        };
+        let two = NoteMapping {
+            blob: BlobId(2),
+            note: Some(1),
+            manual: false,
+            opted_out: false,
+        };
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetMappings {
+                mappings: vec![one, two],
+            },
+        )
+        .unwrap();
+        assert_eq!(s.mappings, vec![one, two]);
+
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetMappings {
+                mappings: vec![two],
+            },
+        )
+        .unwrap();
+        assert_eq!(s.mappings, vec![two]);
+
+        let missing = NoteMapping {
+            blob: BlobId(42),
+            note: Some(0),
+            manual: true,
+            opted_out: false,
+        };
+        assert!(matches!(
+            apply(
+                &mut s,
+                None,
+                &EditOp::SetMappings {
+                    mappings: vec![two, missing],
+                },
+            ),
+            Err(AxysError::NotFound(_))
+        ));
+        assert_eq!(s.mappings, vec![two]);
     }
 
     #[test]

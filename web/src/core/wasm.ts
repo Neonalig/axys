@@ -23,7 +23,9 @@ import {
   isBlob,
   isDriftReport,
   isEditState,
+  isExportPreview,
   isExportReport,
+  isGuideOverlap,
   isHistoryLabels,
   isMappingReport,
   isMidiFile,
@@ -46,8 +48,10 @@ import type {
   DriftReport,
   EditOp,
   EditState,
+  ExportPreview,
   ExportReport,
   F0Params,
+  GuideOverlap,
   MappingReport,
   MidiFile,
   PitchTrackArrays,
@@ -98,10 +102,27 @@ export interface SessionInput {
   segment?: SegmentParams;
 }
 
+/** An analysis a worker has already produced, with the audio it was measured from. */
+export interface AnalysedSessionInput {
+  samples: Float32Array;
+  sampleRate: number;
+  name: string;
+  /** A `PitchTrack`, as the analysis worker reports it. */
+  trackJson: string;
+  /** An array of `Blob`, as the analysis worker reports it. */
+  blobsJson: string;
+  /** Pitch detection parameters the analysis ran with; the core's defaults apply when omitted. */
+  f0?: F0Params;
+  /** Segmentation parameters the analysis ran with; the core's defaults apply when omitted. */
+  segment?: SegmentParams;
+}
+
 /** Typed facade over the wasm-bindgen exports. */
 export interface AxysCore {
   version: string;
   createSession(input: SessionInput): Session;
+  /** Builds a session from an analysis produced elsewhere, without re-analysing the audio. */
+  openSessionFromAnalysis(input: AnalysedSessionInput): Session;
   openSession(projectJson: string, samples: Float32Array): Session;
   parseMidi(bytes: Uint8Array): MidiFile;
   hzToMidi(hz: number, a4: number): number;
@@ -210,6 +231,20 @@ function makeCore(version: string): AxysCore {
       } finally {
         analysis.free();
       }
+    },
+    openSessionFromAnalysis(input: AnalysedSessionInput): Session {
+      const params = paramsJson(input.f0, input.segment);
+      const raw = call('Create Session', () =>
+        RawSession.createFromAnalysis(
+          input.samples,
+          input.sampleRate,
+          input.name,
+          input.trackJson,
+          input.blobsJson,
+          params,
+        ),
+      );
+      return new Session(raw);
     },
     openSession(projectJson: string, samples: Float32Array): Session {
       const project = decode('Open Project', projectJson, isProject, 'project');
@@ -324,17 +359,37 @@ export class Session {
   }
 
   /**
+   * Describes what exporting an output range would produce, without encoding a file.
+   *
+   * @remarks `range` is in output seconds and `null` covers the whole output. The figures are
+   * measured at the source sample rate.
+   */
+  exportPreview(range: { start: number; end: number } | null): ExportPreview {
+    const start = range ? Math.max(0, range.start) : 0;
+    const end = range ? range.end : -1;
+    return this.#read(
+      'Export WAV',
+      () => this.#alive().exportPreview(start, end),
+      isExportPreview,
+      'export preview',
+    );
+  }
+
+  /**
    * Renders and encodes the processed audio at export quality.
    *
    * @remarks `range` is in output seconds and `null` exports the whole output. The file keeps the
-   * source sample rate.
+   * source sample rate unless `sampleRate` asks for another, which the core resamples to.
    */
-  exportWav(range: { start: number; end: number } | null, depth: BitDepth): ExportResult {
+  exportWav(
+    range: { start: number; end: number } | null,
+    depth: BitDepth,
+    sampleRate?: number,
+  ): ExportResult {
     const start = range ? Math.max(0, range.start) : 0;
     const end = range ? range.end : -1;
-    const bytes = call('Export WAV', () =>
-      this.#alive().exportWav(start, end, this.sampleRate(), depth),
-    );
+    const rate = sampleRate ?? this.sampleRate();
+    const bytes = call('Export WAV', () => this.#alive().exportWav(start, end, rate, depth));
     const report = this.lastExportReport();
     if (!report) {
       throw new AxysError('Export WAV', 'the core encoded a file but reported no peak figures');
@@ -389,6 +444,16 @@ export class Session {
       () => this.#alive().proposeMappings(),
       isMappingReport,
       'mapping report',
+    );
+  }
+
+  /** Overlapping note pairs in the selected guide, empty when no guide is selected. */
+  guideOverlaps(): GuideOverlap[] {
+    return this.#read(
+      'Read Guide',
+      () => this.#alive().guideOverlapsJson(),
+      arrayOf(isGuideOverlap),
+      'guide overlaps',
     );
   }
 
