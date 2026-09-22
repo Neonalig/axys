@@ -19,7 +19,9 @@ import { ICONS, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
 import { THEME_LABELS, THEME_NAMES } from './theme.js';
 import { ToastHost } from './toast.js';
+import { Scrollbar } from './scrollbar.js';
 import { setTooltip, TooltipHost } from './tooltip.js';
+import { ZoomControl } from './zoom-control.js';
 
 /** Toolbar section a command belongs to. */
 export type CommandGroup = 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
@@ -46,6 +48,8 @@ export interface ShellHooks {
   setTool(tool: ToolId): void;
   /** Chooses how the view keeps up with a playing playhead. */
   setFollowMode(mode: FollowMode): void;
+  /** Zooms the time axis to a visible span in seconds, about the centre of the view. */
+  setSpan(seconds: number): void;
   /** Chooses which audio the transport plays. */
   setCompare(mode: CompareMode): void;
   /** Sets the concert reference in Hz. */
@@ -91,6 +95,20 @@ const COMPARE_OPTIONS: readonly { value: CompareMode; label: string }[] = [
   { value: 'original', label: 'Original' },
   { value: 'split', label: 'Split Compare' },
 ];
+
+/**
+ * Commands the toolbar does not draw.
+ *
+ * @remarks They stay in the registry, so their shortcuts and their enabled state are unchanged;
+ * they are simply presented somewhere the toolbar is not. Zoom lives in the footer, and how time
+ * reads is a display setting in the inspector.
+ */
+const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
+  'view.zoomIn',
+  'view.zoomOut',
+  'view.zoomFit',
+  'view.toggleBarsBeats',
+]);
 
 const GROUP_ORDER: readonly CommandGroup[] = [
   'File',
@@ -205,9 +223,15 @@ export class AppShell {
   readonly #statusConflicts: HTMLElement;
   readonly #statusPlayback: HTMLElement;
   readonly #progress: HTMLProgressElement;
+  readonly #timeBar: Scrollbar;
+  readonly #pitchBar: Scrollbar;
+  readonly #zoom: ZoomControl;
 
   #announced = '';
   #lastSelection = '';
+
+  /** The newest view state, for the controls that report a change relative to it. */
+  #view: ViewState | null = null;
 
   /** Whether the transport button currently draws the pause icon, so it is rewritten only on a change. */
   #showingPause = false;
@@ -243,7 +267,9 @@ export class AppShell {
         header.append(this.#buildToolGroup());
         continue;
       }
-      const commands = byGroup.get(name) ?? [];
+      const commands = (byGroup.get(name) ?? []).filter(
+        (command) => !PRESENTED_ELSEWHERE.has(command.id),
+      );
       if (commands.length === 0) {
         continue;
       }
@@ -288,6 +314,28 @@ export class AppShell {
     main.append(canvas);
     this.#canvas = canvas;
 
+    this.#timeBar = new Scrollbar({
+      orientation: 'horizontal',
+      label: 'Scroll Time',
+      onScroll: (start) => {
+        const view = this.#view;
+        if (view === null) return;
+        const span = view.visibleEnd - view.visibleStart;
+        this.#hooks.setView({ visibleStart: start, visibleEnd: start + span });
+      },
+    });
+    this.#pitchBar = new Scrollbar({
+      orientation: 'vertical',
+      label: 'Scroll Pitch',
+      onScroll: (low) => {
+        const view = this.#view;
+        if (view === null) return;
+        const range = view.highMidi - view.lowMidi;
+        this.#hooks.setView({ lowMidi: low, highMidi: low + range });
+      },
+    });
+    main.append(this.#timeBar.element, this.#pitchBar.element);
+
     const live = document.createElement('div');
     live.className = 'axys-visually-hidden';
     live.setAttribute('role', 'status');
@@ -329,6 +377,18 @@ export class AppShell {
     progress.setAttribute('aria-label', 'Analysis Progress');
     footer.append(progress);
     this.#progress = progress;
+
+    const spacerEnd = document.createElement('span');
+    spacerEnd.className = 'axys-spacer';
+    this.#zoom = new ZoomControl({
+      onSpan: (seconds) => {
+        this.#hooks.setSpan(seconds);
+      },
+      onFit: () => {
+        this.#hooks.runCommand('view.zoomFit');
+      },
+    });
+    footer.append(spacerEnd, this.#zoom.element);
 
     this.#root.append(header, main, this.#inspector.element, footer);
     this.#toasts = new ToastHost(document.body);
@@ -429,12 +489,30 @@ export class AppShell {
       state.source === null ? 'Pitch Editor' : `Pitch Editor: ${state.source.name}`,
     );
 
+    this.#view = state.view;
+    const duration = state.source?.duration ?? 0;
+    this.#timeBar.update({
+      min: Math.min(0, state.view.visibleStart),
+      max: Math.max(duration, state.view.visibleEnd),
+      start: state.view.visibleStart,
+      end: state.view.visibleEnd,
+    });
+    this.#pitchBar.update({
+      min: 0,
+      max: 127,
+      start: state.view.lowMidi,
+      end: state.view.highMidi,
+    });
+    this.#zoom.update(state.view.visibleEnd - state.view.visibleStart);
+
     this.#announceSelection(state);
     this.#inspector.update(state);
   }
 
   /** Removes the chrome and its notification layer. */
   dispose(): void {
+    this.#timeBar.dispose();
+    this.#pitchBar.dispose();
     this.#tooltips.dispose();
     this.#toasts.dispose();
     this.#root.replaceChildren();

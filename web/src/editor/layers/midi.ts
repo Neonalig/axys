@@ -10,6 +10,12 @@ import { blobOutputEnd, blobOutputStart } from './blobs.js';
 /** Half-height in semitones of a guide note body. */
 const NOTE_HALF = 0.42;
 
+/** Spacing in pixels between the diagonal strokes that fill a guide note. */
+const HATCH_SPACING = 6;
+
+/** Corner radius in pixels of a guide note. */
+const NOTE_RADIUS = 3;
+
 function matchesGuide(note: MidiNote, guide: GuideSelection): boolean {
   if (note.track !== guide.track) {
     return false;
@@ -64,22 +70,75 @@ export function drawMidi(
     const x1 = viewport.timeToX(end);
     const top = viewport.midiToY(note.key + NOTE_HALF);
     const bottom = viewport.midiToY(note.key - NOTE_HALF);
-    const active = mapped.has(index);
-    ctx.globalAlpha = (guide.muted ? 0.35 : 1) * (active ? 0.5 : 0.3);
-    ctx.fillStyle = active ? theme.midiNoteActive : theme.midiNote;
-    ctx.fillRect(x0, top, Math.max(2, x1 - x0), Math.max(2, bottom - top));
-    ctx.globalAlpha = guide.muted ? 0.45 : 1;
-    ctx.strokeStyle = active ? theme.midiNoteActive : theme.midiNote;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(
-      Math.round(x0) + 0.5,
-      Math.round(top) + 0.5,
-      Math.max(2, Math.round(x1 - x0)),
-      Math.max(2, Math.round(bottom - top)),
-    );
+    drawGuideNote(ctx, viewport, theme, {
+      x0,
+      x1,
+      top,
+      bottom,
+      active: mapped.has(index),
+      muted: guide.muted,
+    });
   }
 
   drawLinks(ctx, state, viewport, theme);
+  ctx.restore();
+}
+
+/** One guide note's screen rectangle and how it should read. */
+interface GuideNoteBox {
+  x0: number;
+  x1: number;
+  top: number;
+  bottom: number;
+  /** Whether a blob is mapped onto it. */
+  active: boolean;
+  muted: boolean;
+}
+
+/**
+ * Draws one guide note as a hatched, borderless block.
+ *
+ * @remarks Deliberately unlike a blob. A guide is read, never edited, so giving it the outline
+ * and the solid or dashed border that mean "grab this" on a blob invites an edit that cannot
+ * happen. Diagonal strokes and no border read as backing material at a glance.
+ */
+function drawGuideNote(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  box: GuideNoteBox,
+): void {
+  const width = Math.max(2, box.x1 - box.x0);
+  const height = Math.max(3, box.bottom - box.top);
+  const colour = box.active ? theme.midiNoteActive : theme.midiNote;
+  const dim = box.muted ? 0.35 : 1;
+
+  ctx.save();
+  ctx.beginPath();
+  const radius = Math.min(NOTE_RADIUS, height / 2, width / 2);
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(box.x0, box.top, width, height, radius);
+  } else {
+    ctx.rect(box.x0, box.top, width, height);
+  }
+  ctx.globalAlpha = dim * (box.active ? 0.3 : 0.18);
+  ctx.fillStyle = colour;
+  ctx.fill();
+
+  ctx.clip();
+  ctx.globalAlpha = dim * (box.active ? 0.6 : 0.36);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  // Bounded to what is on screen, so a note wider than the canvas costs no more than the canvas.
+  const from = Math.max(box.x0, -height);
+  const to = Math.min(box.x1, viewport.width);
+  const first = Math.ceil((from - box.x0) / HATCH_SPACING) * HATCH_SPACING;
+  for (let offset = first; offset < to - box.x0 + height; offset += HATCH_SPACING) {
+    ctx.moveTo(box.x0 + offset, box.bottom);
+    ctx.lineTo(box.x0 + offset + height, box.top);
+  }
+  ctx.stroke();
   ctx.restore();
 }
 

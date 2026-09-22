@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
-import type { Blob, BlobId, Edge, EditOp } from '../core/types.js';
+import type { Blob, BlobId, Edge, EditOp, ViewState } from '../core/types.js';
 import { MIN_BLOB_SECONDS } from '../core/types.js';
 import {
   blobOutputEnd,
@@ -70,6 +70,7 @@ type Gesture =
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
   | { kind: 'edge'; blob: BlobId; edge: Edge; sourceTime: number; scale: number | null }
   | { kind: 'audition'; start: number; end: number }
+  | { kind: 'pan'; from: ViewState }
   | { kind: 'split'; blob: BlobId; time: number };
 
 const SMOOTH_TRAVEL = 150;
@@ -464,18 +465,31 @@ export class EditorController {
   }
 
   #onPointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0) {
-      return;
-    }
     const state = this.#store.state;
     if (state.phase !== 'ready') {
+      return;
+    }
+    // The middle button pans whatever tool is armed, which is the gesture people arrive with
+    // from every other editor and costs no toolbar room.
+    if (event.button === 1) {
+      capturePointer(this.#canvas, event.pointerId);
+      this.#pointerId = event.pointerId;
+      this.#origin = this.#pointOf(event);
+      this.#current = this.#origin;
+      this.#moved = false;
+      this.#gesture = { kind: 'pan', from: state.view };
+      this.#canvas.style.cursor = 'grabbing';
+      event.preventDefault();
+      return;
+    }
+    if (event.button !== 0) {
       return;
     }
     const point = this.#pointOf(event);
     const hit = this.hitTest(point.x, point.y);
     const modifiers = modifiersOf(event);
     this.#canvas.focus();
-    this.#canvas.setPointerCapture(event.pointerId);
+    capturePointer(this.#canvas, event.pointerId);
     this.#pointerId = event.pointerId;
     this.#origin = point;
     this.#current = point;
@@ -803,6 +817,15 @@ export class EditorController {
       case 'audition':
         gesture.end = time;
         break;
+      case 'pan': {
+        // Measured against the view the drag started from, so a pan never compounds itself.
+        const base = new Viewport(viewport.width, viewport.height, gesture.from);
+        this.#store.update({
+          view: base.pan(this.#origin.x - this.#current.x, this.#origin.y - this.#current.y),
+          follow: false,
+        });
+        break;
+      }
       case 'split': {
         const blob = this.#blob(gesture.blob);
         if (blob === undefined) {
@@ -905,6 +928,8 @@ export class EditorController {
           time: gesture.time,
           label: `Split Blob ${formatClock(gesture.time, 0.001)}`,
         };
+      case 'pan':
+        return null;
       case 'audition':
         return {
           kind: 'span',
@@ -1033,6 +1058,9 @@ export class EditorController {
         this.#options.audition?.(start, span);
         break;
       }
+      case 'pan':
+        this.#applyCursor(this.#hover);
+        break;
       case 'scrub':
       case 'loop':
         break;
@@ -1253,6 +1281,21 @@ export class EditorController {
   #pointOf(event: PointerEvent | WheelEvent): Point {
     const rect = this.#canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+}
+
+/**
+ * Captures a pointer for the duration of a drag, tolerating a host that refuses.
+ *
+ * @remarks Capture is what keeps a drag alive once it leaves the canvas, but it throws for a
+ * pointer the host no longer considers active. Letting that escape would abandon the gesture at
+ * the moment it began, which is worse than a drag that simply stops at the canvas edge.
+ */
+function capturePointer(element: Element, pointerId: number): void {
+  try {
+    element.setPointerCapture(pointerId);
+  } catch {
+    // The drag still tracks pointer events that reach the element.
   }
 }
 

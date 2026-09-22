@@ -36,7 +36,7 @@ import type {
 import { EditorController } from './editor/interaction.js';
 import { buildPeaks, clearPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
-import { fitView, followView } from './editor/view.js';
+import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN } from './editor/view.js';
 import { Autosave } from './persistence/autosave.js';
 import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
@@ -934,6 +934,14 @@ function buildHooks(
     setFollowMode(mode: FollowMode): void {
       savePreferences({ followMode: mode });
       store.update({ followMode: mode });
+    },
+    setSpan(seconds: number): void {
+      const view = store.state.view;
+      const centre = (view.visibleStart + view.visibleEnd) / 2;
+      const span = Math.min(Math.max(seconds, MIN_TIME_SPAN), MAX_TIME_SPAN);
+      store.update({
+        view: { ...view, visibleStart: centre - span / 2, visibleEnd: centre + span / 2 },
+      });
     },
     setTool(tool: ToolId): void {
       store.update({ tool });
