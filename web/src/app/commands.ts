@@ -1,0 +1,630 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * Every user-invocable action in Axys, as one flat list.
+ *
+ * A command is the only way the toolbar, the menu and the keyboard reach the application, so a
+ * button and its shortcut can never drift apart. Commands own no state: they read the store and
+ * drive the workspace, the audio engine and the editor they are handed.
+ */
+
+import type { AppState, AppStore, CompareMode } from './store.js';
+import type { AudioEngine } from '../audio/engine.js';
+import { MIN_BLOB_SECONDS } from '../core/types.js';
+import type { BitDepth, Blob, EditOp, TimelineMap } from '../core/types.js';
+import { probeCapabilities } from '../capabilities.js';
+import type { EditorController } from '../editor/interaction.js';
+import { fitView, Viewport } from '../editor/view.js';
+import { showSourceCode, showDiagnostics } from '../ui/diagnostics.js';
+import type { ToastHost } from '../ui/toast.js';
+
+/** A user-invocable action with a stable id, label and optional shortcut. */
+export interface Command {
+  id: string;
+  label: string;
+  group: 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
+  shortcut?: string;
+  enabled(ctx: CommandContext): boolean;
+  run(ctx: CommandContext): void | Promise<void>;
+}
+
+/**
+ * The session-backed half of the application.
+ *
+ * @remarks Implemented by the entry point, which owns the WebAssembly session, the persistence
+ * stores and the workers. Every method reports its own failures through a toast and never
+ * rejects, so a command may call one without catching.
+ */
+export interface Workspace {
+  /** True once a source has been analysed and the editor holds a session. */
+  readonly ready: boolean;
+
+  /** Name the project saves and exports under. */
+  readonly projectName: string;
+
+  /**
+   * Applies one edit, recompiles the render plan and pushes it to the audio engine.
+   *
+   * @remarks One call is one undo step.
+   */
+  apply(op: EditOp): void;
+
+  /** Undoes the newest edit. False when there was nothing to undo. */
+  undo(): boolean;
+
+  /** Redoes the most recently undone edit. False when there was nothing to redo. */
+  redo(): boolean;
+
+  /** Decodes, analyses and opens an audio file, replacing the open project. */
+  openAudioFile(file: File): Promise<void>;
+
+  /** Imports a Standard MIDI File as the guide, adopting its tempo and meter maps. */
+  openMidiFile(file: File): Promise<void>;
+
+  /** Opens a `.axys.json` project document. */
+  openProjectFile(file: File): Promise<void>;
+
+  /** Saves the project to local storage on this device. */
+  saveProject(): Promise<void>;
+
+  /** Writes the project document out as a `.axys.json` download. */
+  exportProjectFile(): void;
+
+  /** Renders and encodes a WAV file at offline quality. `range` is in source seconds. */
+  exportWav(range: { start: number; end: number } | null, depth: BitDepth): Promise<void>;
+
+  /** Proposes blob-to-note mappings against the guide and reports drift. */
+  alignGuide(): void;
+
+  /** Source time a source time snaps to on the musical grid. */
+  snapTime(seconds: number): number;
+
+  /** Output time the current plan puts a source time at. */
+  outputAt(sourceSeconds: number): number;
+
+  /** Source time the current plan reads at an output time. */
+  sourceAt(outputSeconds: number): number;
+}
+
+/** Everything a command may reach. */
+export interface CommandContext {
+  store: AppStore;
+  editor: EditorController;
+  audio: AudioEngine;
+  toast: ToastHost;
+  workspace: Workspace;
+}
+
+/** Nominal viewport the zoom commands measure against, so zoom needs no canvas. */
+const ZOOM_WIDTH = 1000;
+const ZOOM_HEIGHT = 400;
+const ZOOM_STEP = 1.6;
+
+/** Default span a Smooth Span command applies when the user has not set an amount. */
+const SMOOTH_AMOUNT = 0.5;
+
+/** Pitch margin above and below the content Zoom Fit frames, in semitones. */
+const FIT_MARGIN = 3;
+
+const COMPARE_ORDER: readonly CompareMode[] = ['processed', 'original', 'split'];
+
+const COMPARE_LABELS: Readonly<Record<CompareMode, string>> = {
+  processed: 'Processed',
+  original: 'Original',
+  split: 'Split',
+};
+
+/** Blobs the selection covers, in time order. */
+function selectedBlobs(state: AppState): Blob[] {
+  const wanted = new Set(state.selection.blobs);
+  return state.blobs.filter((blob) => wanted.has(blob.id));
+}
+
+/** The blob under the playhead, or `undefined` when the playhead sits in a gap. */
+function blobAtPlayhead(state: AppState): Blob | undefined {
+  const time = state.view.playhead;
+  return state.blobs.find((blob) => time >= blob.start && time <= blob.end);
+}
+
+/** The blob a single-object command acts on: the selected one, else the one under the playhead. */
+function targetBlob(state: AppState): Blob | undefined {
+  return selectedBlobs(state)[0] ?? blobAtPlayhead(state);
+}
+
+/** The span a span command acts on, clipped to the blob that holds it. */
+function targetSpan(state: AppState): { blob: Blob; start: number; end: number } | null {
+  const range = state.selection.range;
+  if (!range) return null;
+  const low = Math.min(range.start, range.end);
+  const high = Math.max(range.start, range.end);
+  const blob =
+    selectedBlobs(state).find((candidate) => candidate.end > low && candidate.start < high) ??
+    state.blobs.find((candidate) => candidate.end > low && candidate.start < high);
+  if (!blob) return null;
+  const start = Math.max(blob.start, low);
+  const end = Math.min(blob.end, high);
+  if (!(end > start)) return null;
+  return { blob, start, end };
+}
+
+/** The pair a Join Blobs command acts on: two selected neighbours, else a blob and its successor. */
+function joinPair(state: AppState): { first: Blob; second: Blob } | null {
+  const selected = selectedBlobs(state);
+  const firstSelected = selected[0];
+  if (selected.length >= 2) {
+    const second = selected[1];
+    if (firstSelected && second) return { first: firstSelected, second };
+  }
+  const anchor = firstSelected ?? blobAtPlayhead(state);
+  if (!anchor) return null;
+  const index = state.blobs.indexOf(anchor);
+  const next = state.blobs[index + 1];
+  if (!next) return null;
+  return { first: anchor, second: next };
+}
+
+/** True when the playhead sits far enough inside a blob to split it into two usable halves. */
+function splitTarget(state: AppState): { blob: Blob; time: number } | null {
+  const blob = blobAtPlayhead(state);
+  if (!blob) return null;
+  const time = state.view.playhead;
+  if (time - blob.start < MIN_BLOB_SECONDS || blob.end - time < MIN_BLOB_SECONDS) return null;
+  return { blob, time };
+}
+
+function zoomBy(store: AppStore, factor: number): void {
+  const viewport = new Viewport(ZOOM_WIDTH, ZOOM_HEIGHT, store.state.view);
+  store.update({ view: viewport.zoomTime(factor, ZOOM_WIDTH / 2) });
+}
+
+function fitToContent(store: AppStore): void {
+  const state = store.state;
+  const end = state.blobs.at(-1)?.end ?? state.source?.duration ?? 10;
+  const start = state.blobs[0]?.start ?? 0;
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const blob of state.blobs) {
+    const centre = blob.detectedCenter + blob.pitchOffset;
+    if (Number.isFinite(centre)) {
+      low = Math.min(low, centre);
+      high = Math.max(high, centre);
+    }
+  }
+  if (!Number.isFinite(low) || !Number.isFinite(high)) {
+    low = state.view.lowMidi;
+    high = state.view.highMidi;
+  }
+  store.update({
+    view: fitView(state.view, Math.min(start, 0), end, low - FIT_MARGIN, high + FIT_MARGIN),
+  });
+}
+
+function timelineOf(state: AppState): TimelineMap | null {
+  return state.edits?.timeline ?? null;
+}
+
+/** Opens the host file picker and resolves with what the user chose. */
+async function pickFile(accept: string): Promise<File | null> {
+  return new Promise<File | null>((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    input.style.display = 'none';
+    let settled = false;
+    const finish = (file: File | null): void => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      resolve(file);
+    };
+    input.addEventListener('change', () => {
+      finish(input.files?.[0] ?? null);
+    });
+    input.addEventListener('cancel', () => {
+      finish(null);
+    });
+    document.body.append(input);
+    input.click();
+  });
+}
+
+function toolCommand(id: ToolCommandId, label: string, shortcut: string): Command {
+  return {
+    id: `tools.${id}`,
+    label,
+    group: 'Tools',
+    shortcut,
+    enabled: (ctx) => ctx.store.state.phase === 'ready',
+    run: (ctx) => {
+      ctx.store.update({ tool: id });
+    },
+  };
+}
+
+type ToolCommandId = AppState['tool'];
+
+const TOOLS: readonly { id: ToolCommandId; label: string; shortcut: string }[] = [
+  { id: 'select', label: 'Select Tool', shortcut: '1' },
+  { id: 'split', label: 'Split Tool', shortcut: '2' },
+  { id: 'pitch', label: 'Pitch Tool', shortcut: '3' },
+  { id: 'pen', label: 'Pen Tool', shortcut: '4' },
+  { id: 'line', label: 'Line Tool', shortcut: '5' },
+  { id: 'smooth', label: 'Smooth Tool', shortcut: '6' },
+  { id: 'time', label: 'Time Tool', shortcut: '7' },
+  { id: 'audition', label: 'Audition Tool', shortcut: '8' },
+];
+
+/** Builds the full command list. */
+export function buildCommands(): Command[] {
+  const ready = (ctx: CommandContext): boolean => ctx.store.state.phase === 'ready';
+
+  const commands: Command[] = [
+    {
+      id: 'file.openAudio',
+      label: 'Open Audio',
+      group: 'File',
+      shortcut: 'Ctrl+O',
+      enabled: () => true,
+      run: async (ctx) => {
+        const file = await pickFile('audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg,.opus');
+        if (file) await ctx.workspace.openAudioFile(file);
+      },
+    },
+    {
+      id: 'file.openMidi',
+      label: 'Open MIDI',
+      group: 'File',
+      shortcut: 'Ctrl+Shift+M',
+      enabled: ready,
+      run: async (ctx) => {
+        const file = await pickFile('.mid,.midi,audio/midi');
+        if (file) await ctx.workspace.openMidiFile(file);
+      },
+    },
+    {
+      id: 'file.openProject',
+      label: 'Open Project',
+      group: 'File',
+      shortcut: 'Ctrl+Shift+O',
+      enabled: () => true,
+      run: async (ctx) => {
+        const file = await pickFile('.json,.axys.json,application/json');
+        if (file) await ctx.workspace.openProjectFile(file);
+      },
+    },
+    {
+      id: 'file.saveProject',
+      label: 'Save Project',
+      group: 'File',
+      shortcut: 'Ctrl+S',
+      enabled: ready,
+      run: async (ctx) => {
+        await ctx.workspace.saveProject();
+      },
+    },
+    {
+      id: 'file.exportProject',
+      label: 'Export Project',
+      group: 'File',
+      shortcut: 'Ctrl+Shift+S',
+      enabled: ready,
+      run: (ctx) => {
+        ctx.workspace.exportProjectFile();
+      },
+    },
+    {
+      id: 'file.exportWav',
+      label: 'Export WAV',
+      group: 'File',
+      shortcut: 'Ctrl+E',
+      enabled: ready,
+      run: async (ctx) => {
+        const depth: BitDepth = 'pcm24';
+        await ctx.workspace.exportWav(ctx.store.state.selection.range, depth);
+      },
+    },
+
+    {
+      id: 'edit.undo',
+      label: 'Undo',
+      group: 'Edit',
+      shortcut: 'Ctrl+Z',
+      enabled: ready,
+      run: (ctx) => {
+        if (!ctx.workspace.undo()) ctx.toast.info('Nothing left to undo.');
+      },
+    },
+    {
+      id: 'edit.redo',
+      label: 'Redo',
+      group: 'Edit',
+      shortcut: 'Ctrl+Shift+Z',
+      enabled: ready,
+      run: (ctx) => {
+        if (!ctx.workspace.redo()) ctx.toast.info('Nothing left to redo.');
+      },
+    },
+    {
+      id: 'edit.splitBlob',
+      label: 'Split Blob',
+      group: 'Edit',
+      shortcut: 'S',
+      enabled: (ctx) => splitTarget(ctx.store.state) !== null,
+      run: (ctx) => {
+        const target = splitTarget(ctx.store.state);
+        if (!target) {
+          ctx.toast.warn('Put the playhead inside a blob to split it.');
+          return;
+        }
+        ctx.workspace.apply({
+          type: 'splitBlob',
+          blob: target.blob.id,
+          time: ctx.workspace.snapTime(target.time),
+        });
+      },
+    },
+    {
+      id: 'edit.joinBlobs',
+      label: 'Join Blobs',
+      group: 'Edit',
+      shortcut: 'J',
+      enabled: (ctx) => joinPair(ctx.store.state) !== null,
+      run: (ctx) => {
+        const pair = joinPair(ctx.store.state);
+        if (!pair) {
+          ctx.toast.warn('Select a blob that has a neighbour to join.');
+          return;
+        }
+        ctx.workspace.apply({ type: 'joinBlobs', first: pair.first.id, second: pair.second.id });
+      },
+    },
+    {
+      id: 'edit.resetBlob',
+      label: 'Reset Blob',
+      group: 'Edit',
+      shortcut: 'Ctrl+R',
+      enabled: (ctx) => targetBlob(ctx.store.state) !== undefined,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const blobs = selectedBlobs(state);
+        const targets = blobs.length > 0 ? blobs : [blobAtPlayhead(state)];
+        for (const blob of targets) {
+          if (blob) ctx.workspace.apply({ type: 'resetBlob', blob: blob.id });
+        }
+      },
+    },
+    {
+      id: 'edit.resetSpan',
+      label: 'Reset Span',
+      group: 'Edit',
+      shortcut: 'Ctrl+Shift+R',
+      enabled: (ctx) => targetSpan(ctx.store.state) !== null,
+      run: (ctx) => {
+        const span = targetSpan(ctx.store.state);
+        if (!span) {
+          ctx.toast.warn('Select a time range inside a blob first.');
+          return;
+        }
+        ctx.workspace.apply({
+          type: 'resetSpan',
+          blob: span.blob.id,
+          start: span.start,
+          end: span.end,
+        });
+      },
+    },
+    {
+      id: 'edit.smoothSpan',
+      label: 'Smooth Span',
+      group: 'Edit',
+      shortcut: 'Ctrl+H',
+      enabled: (ctx) => targetSpan(ctx.store.state) !== null,
+      run: (ctx) => {
+        const span = targetSpan(ctx.store.state);
+        if (!span) {
+          ctx.toast.warn('Select a time range inside a blob first.');
+          return;
+        }
+        ctx.workspace.apply({
+          type: 'smoothSpan',
+          blob: span.blob.id,
+          start: span.start,
+          end: span.end,
+          amount: SMOOTH_AMOUNT,
+        });
+      },
+    },
+    {
+      id: 'edit.bypassBlob',
+      label: 'Bypass Blob',
+      group: 'Edit',
+      shortcut: 'B',
+      enabled: (ctx) => targetBlob(ctx.store.state) !== undefined,
+      run: (ctx) => {
+        const blob = targetBlob(ctx.store.state);
+        if (!blob) return;
+        ctx.workspace.apply({ type: 'setBypass', blob: blob.id, bypassed: !blob.bypassed });
+      },
+    },
+    {
+      id: 'edit.excludeBlob',
+      label: 'Exclude Blob',
+      group: 'Edit',
+      shortcut: 'X',
+      enabled: (ctx) => targetBlob(ctx.store.state) !== undefined,
+      run: (ctx) => {
+        const blob = targetBlob(ctx.store.state);
+        if (!blob) return;
+        ctx.workspace.apply({ type: 'setExcluded', blob: blob.id, excluded: !blob.excluded });
+      },
+    },
+    {
+      id: 'edit.bypassAll',
+      label: 'Bypass Edits',
+      group: 'Edit',
+      shortcut: 'Ctrl+B',
+      enabled: ready,
+      run: (ctx) => {
+        const bypassed = ctx.store.state.edits?.globalBypass ?? false;
+        ctx.workspace.apply({ type: 'setGlobalBypass', bypassed: !bypassed });
+      },
+    },
+
+    {
+      id: 'transport.play',
+      label: 'Play',
+      group: 'Transport',
+      shortcut: 'Space',
+      enabled: ready,
+      run: async (ctx) => {
+        if (ctx.audio.playing) ctx.audio.pause();
+        else await ctx.audio.play();
+      },
+    },
+    {
+      id: 'transport.stop',
+      label: 'Stop',
+      group: 'Transport',
+      shortcut: 'Shift+Space',
+      enabled: ready,
+      run: (ctx) => {
+        ctx.audio.stop();
+      },
+    },
+    {
+      id: 'transport.loopSelection',
+      label: 'Loop Selection',
+      group: 'Transport',
+      shortcut: 'L',
+      enabled: (ctx) =>
+        ctx.store.state.selection.range !== null || ctx.store.state.transport.loop !== null,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        if (state.transport.loop) {
+          ctx.audio.setLoop(null);
+          return;
+        }
+        const range = state.selection.range;
+        if (!range) {
+          ctx.toast.warn('Select a time range to loop.');
+          return;
+        }
+        ctx.audio.setLoop({
+          start: ctx.workspace.outputAt(Math.min(range.start, range.end)),
+          end: ctx.workspace.outputAt(Math.max(range.start, range.end)),
+        });
+      },
+    },
+    {
+      id: 'transport.toggleCompare',
+      label: 'Toggle Compare',
+      group: 'Transport',
+      shortcut: 'C',
+      enabled: ready,
+      run: (ctx) => {
+        const current = COMPARE_ORDER.indexOf(ctx.store.state.compare);
+        const next = COMPARE_ORDER[(current + 1) % COMPARE_ORDER.length] ?? 'processed';
+        ctx.audio.setCompare(next);
+        ctx.toast.info(`Playing the ${COMPARE_LABELS[next].toLowerCase()} audio.`);
+      },
+    },
+    {
+      id: 'transport.toggleMetronome',
+      label: 'Toggle Metronome',
+      group: 'Transport',
+      shortcut: 'M',
+      enabled: (ctx) => timelineOf(ctx.store.state) !== null,
+      run: (ctx) => {
+        const timeline = timelineOf(ctx.store.state);
+        if (!timeline) return;
+        ctx.audio.setMetronome(!ctx.store.state.transport.metronome, timeline);
+      },
+    },
+
+    {
+      id: 'view.zoomIn',
+      label: 'Zoom In',
+      group: 'View',
+      shortcut: '=',
+      enabled: () => true,
+      run: (ctx) => {
+        zoomBy(ctx.store, ZOOM_STEP);
+      },
+    },
+    {
+      id: 'view.zoomOut',
+      label: 'Zoom Out',
+      group: 'View',
+      shortcut: '-',
+      enabled: () => true,
+      run: (ctx) => {
+        zoomBy(ctx.store, 1 / ZOOM_STEP);
+      },
+    },
+    {
+      id: 'view.zoomFit',
+      label: 'Zoom Fit',
+      group: 'View',
+      shortcut: '0',
+      enabled: () => true,
+      run: (ctx) => {
+        fitToContent(ctx.store);
+      },
+    },
+    {
+      id: 'view.toggleBarsBeats',
+      label: 'Toggle Bars Beats',
+      group: 'View',
+      shortcut: 'Ctrl+Alt+B',
+      enabled: () => true,
+      run: (ctx) => {
+        const view = ctx.store.state.view;
+        ctx.store.update({
+          view: { ...view, timeDisplay: view.timeDisplay === 'seconds' ? 'barsBeats' : 'seconds' },
+        });
+      },
+    },
+
+    {
+      id: 'midi.alignGuide',
+      label: 'Align Guide',
+      group: 'MIDI',
+      shortcut: 'Ctrl+Alt+A',
+      enabled: (ctx) => ctx.store.state.midi !== null,
+      run: (ctx) => {
+        ctx.workspace.alignGuide();
+      },
+    },
+
+    {
+      id: 'help.showDiagnostics',
+      label: 'Show Diagnostics',
+      group: 'Help',
+      shortcut: 'F1',
+      enabled: () => true,
+      run: async (ctx) => {
+        showDiagnostics({ capabilities: await probeCapabilities(), engine: ctx.audio.report });
+      },
+    },
+    {
+      id: 'help.showSourceCode',
+      label: 'Show Source Code',
+      group: 'Help',
+      shortcut: 'F2',
+      enabled: () => true,
+      run: () => {
+        showSourceCode();
+      },
+    },
+  ];
+
+  for (const tool of TOOLS) {
+    commands.push(toolCommand(tool.id, tool.label, tool.shortcut));
+  }
+  return commands;
+}
+
+/** Looks a command up by id. */
+export function findCommand(commands: Command[], id: string): Command | undefined {
+  return commands.find((command) => command.id === id);
+}
