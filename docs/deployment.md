@@ -11,13 +11,13 @@ chooses to.
 
 ## Build facts every host needs
 
-| Setting | Value |
-| --- | --- |
-| Build command | `npm ci && npm run build` |
-| Output directory | `dist` |
-| Node version | `20.19.0` (`.nvmrc`) |
-| Install command | `npm ci` |
-| Server runtime | none |
+| Setting          | Value                     |
+| ---------------- | ------------------------- |
+| Build command    | `npm ci && npm run build` |
+| Output directory | `dist`                    |
+| Node version     | `20.19.0` (`.nvmrc`)      |
+| Install command  | `npm ci`                  |
+| Server runtime   | none                      |
 
 Rust and the `wasm32-unknown-unknown` target must be available to the build. Hosts that do not
 provide Rust need the build to run in CI instead, uploading `dist/` as an artefact; the GitHub
@@ -36,11 +36,11 @@ the HTML, JavaScript, WASM and worker assets from each.
 
 ## Non-secret build variables
 
-| Variable | Purpose |
-| --- | --- |
-| `AXYS_BASE` | Overrides the asset base path. Default `./`. |
-| `AXYS_SOURCE_REPOSITORY` | Repository the in-app Source Code entry links to. |
-| `AXYS_SOURCE_REVISION` | Commit the build was made from. Falls back to `git rev-parse HEAD`. |
+| Variable                 | Purpose                                                             |
+| ------------------------ | ------------------------------------------------------------------- |
+| `AXYS_BASE`              | Overrides the asset base path. Default `./`.                        |
+| `AXYS_SOURCE_REPOSITORY` | Repository the in-app Source Code entry links to.                   |
+| `AXYS_SOURCE_REVISION`   | Commit the build was made from. Falls back to `git rev-parse HEAD`. |
 
 A fork or third-party host must set the last two so the AGPL Source Code entry resolves to their
 own corresponding source rather than to the upstream repository. `GITHUB_SHA` and

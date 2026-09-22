@@ -666,7 +666,7 @@ the nearest source epoch to `source_at(mark)`, window two periods of source arou
 window, and overlap-add. Unvoiced grains overlap-add at their source period. Guard every slice
 index. Never allocate more than a fixed scratch per call.
 
-`FormantMode::Preserve` is achieved by resampling each grain's *content* by the inverse pitch ratio
+`FormantMode::Preserve` is achieved by resampling each grain's _content_ by the inverse pitch ratio
 while keeping the grain's placement at the target period, which holds the envelope; `Shift(s)`
 additionally resamples by `2^(s/12)`.
 
@@ -1061,6 +1061,6 @@ impl Renderer {
 ```
 
 `render.rs` converts the plan into the two closures `Psola::render` wants: `source_at` from
-`TimeMap`, and `pitch_ratio_at` from `pitch_ratio` evaluated at the *source* time the time map
+`TimeMap`, and `pitch_ratio_at` from `pitch_ratio` evaluated at the _source_ time the time map
 gives. With `plan.bypass` set, `render_range` copies the source through the time map with plain
 interpolation and no repitching.

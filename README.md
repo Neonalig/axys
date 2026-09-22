@@ -46,16 +46,16 @@ build. `npm run doctor` tells you if anything is missing and how to fix it.
 
 ## Commands
 
-| Command | What it does |
-| --- | --- |
-| `npm run dev` | Dev server plus WASM watcher. |
-| `npm run build` | WASM release build, type check, then static output in `dist/`. |
-| `npm run preview` | Serves the built `dist/` locally. |
-| `npm run test` | Rust tests, then TypeScript and integration tests. |
-| `npm run lint` | ESLint, Prettier and Clippy. |
-| `npm run check` | Fast Rust, TypeScript and integration validation. |
-| `npm run doctor` | Environment and browser-capability diagnostics. |
-| `npm run format` | Applies Prettier and `cargo fmt`. |
+| Command           | What it does                                                   |
+| ----------------- | -------------------------------------------------------------- |
+| `npm run dev`     | Dev server plus WASM watcher.                                  |
+| `npm run build`   | WASM release build, type check, then static output in `dist/`. |
+| `npm run preview` | Serves the built `dist/` locally.                              |
+| `npm run test`    | Rust tests, then TypeScript and integration tests.             |
+| `npm run lint`    | ESLint, Prettier and Clippy.                                   |
+| `npm run check`   | Fast Rust, TypeScript and integration validation.              |
+| `npm run doctor`  | Environment and browser-capability diagnostics.                |
+| `npm run format`  | Applies Prettier and `cargo fmt`.                              |
 
 Rust-only shortcuts: `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
 `cargo fmt --all`.
