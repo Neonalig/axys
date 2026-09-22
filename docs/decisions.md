@@ -536,3 +536,118 @@ draws what is being heard solid and what is not transient, with the analysed pos
 colour, so the picture and the monitoring choice cannot disagree. Guide notes are hatched and
 borderless: a guide is read, never edited, so it must not carry the border that means "grab this"
 on a blob.
+
+## Editor interaction, after the second testing round
+
+### A selection is several spans
+
+`Selection.ranges` holds one span per region, in time order and never overlapping. Ctrl adds a
+region of its own and Shift stretches the one that is there, which is the pair every editor with a
+multi-selection uses. Coverage is strict at both edges: a span that ends exactly where the next
+blob begins no longer selects that blob, which is what made clicking one blob select its neighbour.
+`selectionSpan` reports the hull for the operations that want one span, such as looping and the
+export range.
+
+Limitation: everything that reads a span still reads the hull, so looping a disjoint selection
+loops across the material between its parts.
+
+### Bypass is gone
+
+Blob bypass and project-wide bypass both answered "hear this without its edits", which is what
+Compare and Reset already answer, one for listening and one for committing. Two more ways to say it
+made four controls to reason about and no new capability. `EditOp::SetBypass` and `SetGlobalBypass`
+stay in the core, because a project document may carry them, and nothing in the UI sets them.
+Exclusion survives and is now drawn as what it is: dim, dotted and without the marks that invite an
+edit.
+
+### Correction and voice character are operations
+
+Both were rows in the inspector, which made a decision about a take look like a preference about
+the editor. Each is now a button that opens a panel, applies its settings as they are moved, and
+ends in Apply or Discard. With a span selected the operation applies to that span by excluding
+every blob outside it.
+
+Previewing without filling the history needed the workspace to own the run: `previewEdits` unwinds
+whatever the previous call applied before applying the next, `pinPreview` fixes the part that does
+not change as the controls move, and the run ends in `commitPreview` or `discardPreview`. Dragging
+a slider therefore leaves one history entry, and discarding leaves none. Undo and redo are disabled
+while a run is open, because the top of the stack is the operation's rather than the user's, and an
+edit made anywhere else commits the run rather than being unwound out from under.
+
+Limitation: correction is compiled project-wide, so "apply to the selection" is expressed as
+excluding everything else. A project that already had blobs excluded by hand has those exclusions
+folded into the operation and restored by Discard, but Apply cannot tell the two apart afterwards.
+
+### The compiled plan reaches the store
+
+`AppState.plan` existed and was never written, so the editor drew the pitch target from the blob
+edits alone and everything the plan carried — scale correction, guidance, modulation — moved
+nothing on screen. The plan is published with every edit, and the target line is drawn from it.
+
+### Readouts are drawn in whole columns
+
+Every chip the canvas floats over itself is drawn in a monospaced face and sized in character
+columns rounded up to a multiple of four. A figure counting up as the transport runs no longer
+resizes its own box on every frame. The playhead readout ends after the clock where the take is
+unvoiced, rather than naming the absence.
+
+### The rulers are not special
+
+The time ruler and the note gutter report the position under the cursor the way the plot does, with
+no readout of their own and no selection gesture of their own; a loop comes from the selection
+through Loop Selection and its edges are dragged once it exists. Each ruler previews only the axis
+it measures: a vertical line over the time ruler, a horizontal one over the note gutter.
+
+### A stroke belongs to the take, not to a blob
+
+The pen and the line start anywhere, including over open canvas, and apply to every blob they
+cross. Each blob is given the part of the stroke that falls inside it, with a point interpolated at
+each edge the stroke crosses so a curve reaches the boundary instead of stopping at the last sample
+inside it.
+
+Limitation: one stroke is one `EditOp` per blob, so undoing a stroke across four blobs is four
+steps, the same as joining four blobs.
+
+### The detected line is cut on a fixed grid
+
+The pitch columns are cut on a grid anchored at time zero rather than at the left edge of the view,
+so panning no longer moves frames between columns and reshuffles the line as the view slides under
+it. A column is given a minimum height, because a steady note spans no pitch at all and its column
+was a hairline that only landed on a pixel at some sub-pixel offsets. The detected line is drawn
+dotted and the target solid, so the two are told apart by shape as well as by colour.
+
+### A toggle says whether it is on
+
+Follow, Loop, the metronome and Compare each carry `aria-pressed` from the state rather than only a
+label saying what pressing would do, and their tooltips are rewritten under the cursor when a
+keyboard shortcut changes them. The metronome pulses its ground while it is clicking, and still
+reads as on while the transport is stopped.
+
+### One panel system
+
+`ui/dialog.ts` is the only panel system, and every panel is draggable and dismissible by pressing
+outside it. Blocking is a property of the panel rather than a separate kind: the export panel
+blocks because its question has to be answered before anything else happens, and an operation panel
+does not, because the editor behind it is where its result appears. Help is what the diagnostics
+panel is called, because that is what someone opens it to get.
+
+### Export measures when it is asked to
+
+Measuring a range renders it, which is the work the export itself does, so opening the panel and
+switching between whole project and selection no longer render anything. The figures and their
+warnings are behind Measure Range, and what will be written is described from what the panel
+already knows. The range defaults to the selection whenever there is one.
+
+### Toolbar names are a setting, and the file buttons carry menus
+
+The toolbar is icons by default and Button Names in the inspector puts each name beside its icon,
+with the names that change with state following the state. Save is one button whose menu carries
+Save and Save As, because where a file goes is a variation on saving rather than a second action.
+Import is its own button with its own menu, because a guide is imported into an open project rather
+than opening one, which is the opposite of what Open does.
+
+### File pickers are a reported capability
+
+A host without the File System Access API downloads every save and cannot offer Save As a picker at
+all. That was invisible and read as a bug, so the capability is probed and reported in Help beside
+the rest.

@@ -133,20 +133,23 @@ export interface AppState {
   compare: CompareMode;
   follow: boolean;
   followMode: FollowMode;
+  /** Whether the toolbar buttons carry their names beside their icons. */
+  toolbarLabels: boolean;
   dirty: boolean;
 }
 
 /**
  * What the user currently has selected.
  *
- * A selection is the span in `range`. `blobs` and `anchors` are what that span covers, derived by
- * `selectionForRange` in `app/selection.ts` and recomputed whenever an edit changes the blob set,
- * never stored independently of the span.
+ * A selection is the spans in `ranges`, in time order and never overlapping. `blobs` and
+ * `anchors` are what those spans cover, derived by `selectionForRanges` in `app/selection.ts` and
+ * recomputed whenever an edit changes the blob set, never stored independently of the spans.
+ * Coverage is strict: a span that ends exactly where the next blob begins does not select it.
  */
 export interface Selection {
   blobs: number[];
   anchors: { blob: number; index: number }[];
-  range: { start: number; end: number } | null;
+  ranges: { start: number; end: number }[];
 }
 
 /** How the view keeps up with a playing playhead. */
@@ -210,15 +213,35 @@ export function buildCommands(): Command[];
 export function findCommand(commands: Command[], id: string): Command | undefined;
 ```
 
-Commands must cover, at minimum: Open, Save Project, Save A Copy, Export Audio, Cancel Import,
-Undo, Redo, Split Blob, Join Blobs, Reset, Smooth Span, Bypass Blob, Exclude Blob, Bypass Edits,
-Play, Stop, Loop Selection, Toggle Metronome, Toggle Compare, Zoom In, Zoom Out, Zoom Fit,
-Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
+Commands must cover, at minimum: Open, Save Project, Save As, Import MIDI, Export Audio, Cancel
+Import, Undo, Redo, Select All, Split Blob, Join Blobs, Reset, Smooth Span, Exclude Blob,
+Correction, Voice Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Compare, Zoom In,
+Zoom Out, Zoom Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
 
-One Open covers every kind Axys reads; the picker lists them. Reset is one command whose extent
-comes from the selected span. Not every command is drawn in the toolbar: zoom lives in the footer,
-the bars-and-beats toggle and the project-wide bypass live in the inspector, and Cancel Import
+One Open covers a project or a vocal; a MIDI guide is imported into an open project and has its own
+command. Reset is one command whose extent comes from the selected span. A command that addresses a
+blob addresses every selected blob, so its key does what its menu entry does whether or not the
+menu is open. Not every command is drawn in the toolbar: zoom lives in the footer, Save As lives in
+the Save button's own menu, the bars-and-beats toggle lives in the inspector, and Cancel Import
 lives under the import progress it cancels. Each keeps its shortcut wherever it is presented.
+
+Shortcuts avoid the chords the browser answers first, so Reset is `R` and Smooth Span is `H` rather
+than `Ctrl+R` and `Ctrl+H`.
+
+An operation previews through the workspace rather than committing as it goes:
+
+```ts
+/** Applies edits as the outstanding preview, replacing whatever the previous call applied. */
+previewEdits(ops: readonly EditOp[]): void;
+/** Fixes what the preview has applied so far, so later previews replace only what follows. */
+pinPreview(): void;
+/** Keeps the outstanding preview and ends the run. */
+commitPreview(): void;
+/** Undoes the outstanding preview and ends the run. */
+discardPreview(): void;
+/** True while an operation is previewing, which is when undo and redo are not the user's. */
+readonly previewing: boolean;
+```
 
 ## Shortcuts: `app/shortcuts.ts`
 
@@ -316,8 +339,11 @@ range, hover readout, drag preview).
   already selected.
 
 - Dragging previews on the dragged object itself before commitment.
-- Modifiers: Shift constrains, Alt is fine adjustment, Ctrl/Cmd toggles snap.
-- Every gesture commits exactly one `EditOp` so undo is one step.
+- Modifiers: Shift constrains, Alt is fine adjustment, Ctrl/Cmd toggles snap. With the Select tool
+  Ctrl adds a span of its own to the selection and Shift stretches the one that is there.
+- A pen or line stroke starts anywhere, including over open canvas, and applies to every blob it
+  crosses; each blob is one `EditOp`.
+- Every other gesture commits exactly one `EditOp` so undo is one step.
 - Numeric entry for the selected object's pitch and time coexists with dragging.
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 
@@ -327,8 +353,9 @@ range, hover readout, drag preview).
 theme choice including `system`, the follow mode and the time display. They live in local storage
 and never in the project document.
 
-`app/selection.ts` exports `selectionForRange(blobs, range)`, the one place a span is turned into
-the blobs and anchors it covers.
+`app/selection.ts` exports `selectionForRanges(blobs, ranges)`, `selectionForRange(blobs, range)`,
+`selectionSpan(ranges)` and `withRange(ranges, range)`: the one place spans are turned into the
+blobs and anchors they cover, and the one place spans are merged.
 
 `persistence/file-access.ts` opens and writes files through the File System Access API where the
 host has one, and through a hidden input and a download where it does not. It exports `openFile`,
@@ -348,14 +375,32 @@ selection and edit results.
 
 `ui/icons.ts` exports concise inline SVG strings, one per command group, 16px on a 16 grid, using
 `currentColor`. `ui/toast.ts` exports `class ToastHost` with `info`, `warn` and `error`, each
-auto-dismissing and stacking. `ui/dialog.ts` exports a focus-trapped modal. `ui/export-dialog.ts` exports
-`showExportDialog(options: ExportDialogOptions): Dialog`, the Export WAV modal: a range choice of
-whole project or selection, a sample rate, a bit depth of 16-bit, 24-bit or 32-bit float, the
-`exportPreview` figures, and a warning whenever the range would clip, is partly silent or holds
-timing conflicts. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through
-`onExport`. `ui/inspector.ts` shows
-the selection's numeric fields and the scale, modulation, formant and guide settings, each bound to
-an `EditOp`. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
+auto-dismissing and stacking.
+
+`ui/dialog.ts` exports `class Dialog`, the one panel system. Every panel is draggable by its title
+bar and closes on Escape, on its close button, or on a press outside it. `blocking` defaults to
+true, which darkens what is behind and keeps the keyboard inside; an operation that shows its
+result in the editor passes `false`, so the transport and the canvas stay reachable.
+
+`ui/operations.ts` exports `showCorrection(ctx)` and `showVoiceCharacter(ctx)`. Each opens a
+non-blocking panel that applies its settings through the workspace preview API as its controls are
+moved, so the blobs move and the transport plays the result while the panel is open, and leaves the
+history with one entry however long it was open. Apply keeps it; Discard, Escape and closing throw
+it away. With a span selected the operation applies to that span by excluding every blob outside
+it, and those exclusions are part of what Discard takes back.
+
+`ui/export-dialog.ts` exports `showExportDialog(options: ExportDialogOptions): Dialog`, the Export
+WAV panel: a range choice of whole project or selection defaulting to the selection when there is
+one, a sample rate, and a bit depth of 16-bit, 24-bit or 32-bit float. Measuring a range renders
+it, so the `exportPreview` figures and their warnings are shown on request rather than on every
+change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `onExport`.
+
+`ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
+settings, each bound to an `EditOp`. Correction and voice character are not here: they are
+operations.
+
+`editor/layers/readout.ts` draws every readout the canvas floats over itself, in a monospaced face
+and sized in whole character columns, so a figure counting up does not resize its own box. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
 build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`.
 `ui/theme.ts` exports the colour tokens as CSS custom properties with a high-contrast variant.
 

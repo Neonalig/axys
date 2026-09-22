@@ -14,7 +14,12 @@ export interface MenuItem {
   label: string;
   /** Icon drawn ahead of the label, the same one the command's button carries. */
   icon?: IconName;
-  /** Single key that runs this item while the menu is open, shown beside the label. */
+  /**
+   * The shortcut this item's command carries, shown beside the label.
+   *
+   * @remarks A plain single key also runs the item while the menu is open. A chord is shown but
+   * not matched here, because the chord already works with the menu closed.
+   */
   key?: string;
   /** Whether the item can run. A disabled item is shown, so the menu does not change shape. */
   enabled?: boolean;
@@ -88,7 +93,7 @@ export function showContextMenu(
     if (entry.key !== undefined) {
       const key = document.createElement('kbd');
       key.className = 'axys-menu-key';
-      key.textContent = entry.key.toUpperCase();
+      key.textContent = entry.key;
       button.append(key);
     }
 
@@ -111,9 +116,12 @@ export function showContextMenu(
       move(event.key === 'ArrowDown' ? 1 : -1);
       return;
     }
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
     const pressed = event.key.toLowerCase();
     for (const entry of entries) {
-      if (!isItem(entry) || entry.key?.toLowerCase() !== pressed) {
+      if (!isItem(entry) || entry.key?.length !== 1 || entry.key.toLowerCase() !== pressed) {
         continue;
       }
       event.preventDefault();
