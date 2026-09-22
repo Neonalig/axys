@@ -305,7 +305,7 @@ class AxysWorkspace implements Workspace {
   undo(): boolean {
     const session = this.#session;
     if (!session) return false;
-    let undone = false;
+    let undone: boolean;
     try {
       undone = session.undo();
     } catch (error) {
@@ -319,7 +319,7 @@ class AxysWorkspace implements Workspace {
   redo(): boolean {
     const session = this.#session;
     if (!session) return false;
-    let redone = false;
+    let redone: boolean;
     try {
       redone = session.redo();
     } catch (error) {
@@ -1087,7 +1087,7 @@ function showFailure(mount: HTMLElement, message: string): void {
 function noteDegradedCapabilities(caps: Capability[], toast: ToastHost): void {
   const missing = caps.filter((cap) => !cap.required && !cap.available);
   if (missing.length === 0) return;
-  let seen = false;
+  let seen: boolean;
   try {
     seen = localStorage.getItem(DEGRADED_NOTICE_KEY) !== null;
   } catch {

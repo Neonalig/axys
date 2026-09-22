@@ -3,7 +3,7 @@
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { defineConfig, transformWithEsbuild } from 'vite';
+import { defineConfig, transformWithOxc } from 'vite';
 import type { Plugin } from 'vite';
 
 /**
@@ -56,10 +56,9 @@ function serviceWorker(version: string, revision: string): Plugin {
     async generateBundle(_options, bundle) {
       const built = Object.keys(bundle).filter((name) => !name.endsWith('.map'));
       const precache = [...built, ...filesUnder(publicDir)].sort();
-      const compiled = await transformWithEsbuild(readFileSync(source, 'utf8'), source, {
-        loader: 'ts',
+      const compiled = await transformWithOxc(readFileSync(source, 'utf8'), source, {
+        lang: 'ts',
         target: 'es2022',
-        format: 'esm',
         define: {
           __AXYS_PRECACHE__: JSON.stringify(precache),
           __AXYS_CACHE__: JSON.stringify(`axys-${version}-${revision}`),

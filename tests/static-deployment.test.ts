@@ -6,13 +6,25 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '..');
 const dist = join(root, 'dist');
+
+/** Every built file, as paths relative to `dist/` with forward slashes. */
+function filesUnderDist(): string[] {
+  return readdirSync(dist, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) =>
+      join(entry.parentPath, entry.name)
+        .slice(dist.length + 1)
+        .split(sep)
+        .join('/'),
+    );
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -173,24 +185,38 @@ describe('static deployment', () => {
     });
   }
 
-  it('precaches the core and its bindings as one unit', () => {
+  it('precaches the whole build as one unit', () => {
     const worker = readFileSync(join(dist, 'sw.js'), 'utf8');
-    const listed = JSON.parse(worker.match(/=\s*(\[[^\]]*\])/)?.[1] ?? '[]') as string[];
-    expect(listed.length).toBeGreaterThan(0);
-    // One list in one cache filled by one addAll. A cache holding new bindings and an old core
-    // is a broken editor, so neither may be precached without the other. The bindings are a static
-    // import of the entry and of each worker, so they ride in those chunks rather than in one of
-    // their own.
-    expect(listed.some((file) => file.endsWith('.wasm'))).toBe(true);
-    expect(listed.some((file) => /assets\/index-.*\.js$/.test(file))).toBe(true);
-    expect(listed.some((file) => /assets\/analysis\.worker-.*\.js$/.test(file))).toBe(true);
-    expect(listed.some((file) => /assets\/render\.worker-.*\.js$/.test(file))).toBe(true);
-    expect(listed).toContain('index.html');
-    expect(listed).toContain('manifest.webmanifest');
-    expect(listed).not.toContain('_headers');
-    for (const file of listed) {
-      expect(existsSync(join(dist, file)), `${file} is precached but was not built`).toBe(true);
-      expect(file.endsWith('.map'), `${file} is a source map and need not be cached`).toBe(false);
+    // Read the strings the worker carries rather than the shape a compiler wrote them in. The
+    // precache list is generated, so what matters is which names reach the worker, not whether
+    // the bundler emitted them as one array literal or many lines.
+    const listed = new Set(
+      [...worker.matchAll(/'([^'\n]+)'|"([^"\n]+)"/g)].map((m) => m[1] ?? m[2] ?? ''),
+    );
+
+    // A cache holding new bindings and an old core is a broken editor, so the build goes in whole
+    // or not at all. The bindings are a static import of the entry and of each worker, so they
+    // ride in those chunks rather than in one of their own.
+    const served = filesUnderDist().filter(
+      (file) => !['_headers', 'sw.js', 'version.json'].includes(file) && !file.endsWith('.map'),
+    );
+    expect(served.length).toBeGreaterThan(8);
+    for (const file of served) {
+      expect(listed.has(file), `${file} was built but is not precached`).toBe(true);
+    }
+
+    expect(served.some((file) => file.endsWith('.wasm'))).toBe(true);
+    expect(served.some((file) => /assets\/index-.*\.js$/.test(file))).toBe(true);
+    expect(served.some((file) => /assets\/analysis\.worker-.*\.js$/.test(file))).toBe(true);
+    expect(served.some((file) => /assets\/render\.worker-.*\.js$/.test(file))).toBe(true);
+    expect(served).toContain('index.html');
+    expect(served).toContain('manifest.webmanifest');
+
+    // Response headers are the host's, and the two the update check reads must never be cached.
+    expect(listed.has('_headers')).toBe(false);
+    expect(listed.has('version.json')).toBe(false);
+    for (const name of listed) {
+      expect(name.endsWith('.map'), `${name} is a source map and need not be cached`).toBe(false);
     }
   });
 

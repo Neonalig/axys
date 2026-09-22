@@ -60,7 +60,7 @@ const POSITIONS_KEY = 'axys.dialog.positions';
 type Positions = Record<string, { x: number; y: number }>;
 
 function storedPositions(): Positions {
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = localStorage.getItem(POSITIONS_KEY);
   } catch {

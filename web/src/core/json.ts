@@ -76,7 +76,7 @@ export function parseJson<T>(text: string, guard: Guard<T>, label = 'value'): T 
     parsed = JSON.parse(text);
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(`Malformed ${label} JSON: ${detail}`);
+    throw new Error(`Malformed ${label} JSON: ${detail}`, { cause });
   }
   if (!guard(parsed)) {
     throw new Error(`Malformed ${label}: payload does not match its contract`);

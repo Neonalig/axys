@@ -76,7 +76,7 @@ export function defaultPreferences(): Preferences {
 /** Reads the stored settings, falling back to the defaults value by value. */
 export function loadPreferences(): Preferences {
   const defaults = defaultPreferences();
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = localStorage.getItem(KEY);
   } catch {

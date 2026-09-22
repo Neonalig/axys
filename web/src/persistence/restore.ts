@@ -48,7 +48,7 @@ export async function restoreNewest(
 
   let discarded = 0;
   for (const copy of stored) {
-    let json: string | null = null;
+    let json: string | null;
     try {
       json = await source.load(copy.id);
     } catch {
