@@ -39,14 +39,32 @@ export function guidedLabel(text: string, guide: string): HTMLLabelElement {
   return label;
 }
 
-/** Wraps a control in a labelled row, with the label carrying the field's explainer. */
+/**
+ * How a scrubbable field says it can be dragged, and with which modifiers.
+ *
+ * @remarks Appended to the field's own explainer rather than replacing it, and said the same way
+ * on every one of them: a gesture that is written differently in each row is a gesture nobody
+ * learns.
+ */
+export const DRAG_HINT = 'Drag to set. Shift coarse, Alt fine.';
+
+/**
+ * Wraps a control in a labelled row, with the label carrying the field's explainer.
+ *
+ * @remarks A number field is also a drag, so its explainer names the gesture and the fine-adjust
+ * modifier. The tooltip is not the only way to find it: the label and the field both take the
+ * `ew-resize` cursor, which is what says the row can be dragged at all.
+ */
 export function field(labelText: string, control: HTMLElement, guide: string): HTMLElement {
   const row = document.createElement('div');
   row.className = 'axys-field';
   if (control.id === '') {
     control.id = nextControlId('control');
   }
-  const label = guidedLabel(labelText, guide);
+  const scrubbable =
+    control instanceof HTMLInputElement && control.type === 'number' && !control.readOnly;
+  const explainer = scrubbable ? `${guide} ${DRAG_HINT}`.trim() : guide;
+  const label = guidedLabel(labelText, explainer);
   label.htmlFor = control.id;
   row.append(label, control);
   bindDragAdjust(control, label);

@@ -4,6 +4,7 @@ import type { AppState } from '../app/store.js';
 import type { Blob, BlobId } from '../core/types.js';
 import type { Theme, ThemeName } from '../ui/theme.js';
 import { currentTheme, resolveTheme } from '../ui/theme.js';
+import { prefersReducedMotion } from '../ui/motion.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -197,6 +198,9 @@ export class EditorRenderer {
     switch (preview.kind) {
       case 'spanSelect':
         drawSpanSelect(ctx, viewport, theme, preview.x0, preview.x1);
+        // The ants keep marching while the pointer is still, which needs a frame the gesture
+        // itself does not ask for. Only while a band is on screen; nothing else here loops.
+        this.invalidate();
         break;
       case 'pitchDrag':
         for (const blob of blobsOf(state, preview.blobs)) {
@@ -357,16 +361,40 @@ function drawSpanSelect(
   ctx.fillStyle = theme.selectionFill;
   ctx.fillRect(left, viewport.plotTop, width, viewport.plotHeight);
   ctx.strokeStyle = theme.selection;
-  ctx.lineWidth = 1;
-  ctx.setLineDash([4, 3]);
+  ctx.lineWidth = viewport.crispWidth();
+  ctx.setLineDash(MARCH_DASH);
+  ctx.lineDashOffset = -marchOffset();
   ctx.beginPath();
-  ctx.moveTo(Math.round(left) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(left) + 0.5, viewport.height);
-  ctx.moveTo(Math.round(left + width) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(left + width) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(left), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(left), viewport.height);
+  ctx.moveTo(viewport.crisp(left + width), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(left + width), viewport.height);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
 }
+
+/** Dash and gap of the marching band, in pixels. */
+const MARCH_DASH: readonly number[] = [4, 3];
+
+/**
+ * How far the marching band's dashes have travelled, in pixels.
+ *
+ * @remarks One period of `--axys-march`, which the indeterminate progress bar already marches at,
+ * so the two read as one idea. Driven from the clock rather than from a frame counter, so the
+ * speed does not depend on how often the editor happens to redraw. Held still under reduced
+ * motion, where the dashes say the same thing without moving.
+ */
+function marchOffset(): number {
+  if (prefersReducedMotion()) {
+    return 0;
+  }
+  const period = MARCH_DASH[0]! + MARCH_DASH[1]!;
+  return ((performance.now() / MARCH_MS) * period) % period;
+}
+
+/** Milliseconds one dash takes to reach where the next one started. */
+const MARCH_MS = 1100 / 8;
 
 function drawBlobGhost(
   ctx: CanvasRenderingContext2D,
@@ -390,8 +418,8 @@ function drawBlobGhost(
   ctx.strokeStyle = theme.handleActive;
   ctx.lineWidth = 1.5;
   ctx.strokeRect(
-    Math.round(x0) + 0.5,
-    Math.round(top) + 0.5,
+    viewport.crisp(x0),
+    viewport.crisp(top),
     Math.round(Math.max(2, x1 - x0)),
     Math.round(Math.max(2, bottom - top)),
   );
@@ -424,11 +452,12 @@ function drawEdgePreview(
   ctx.fillRect(Math.min(x0, x1), top, Math.abs(x1 - x0), Math.max(2, bottom - top));
   ctx.globalAlpha = 1;
   ctx.strokeStyle = theme.handleActive;
-  ctx.lineWidth = 2;
+  const edgeWidth = viewport.crispWidth(2);
+  ctx.lineWidth = edgeWidth;
   const x = edge === 'start' ? x0 : x1;
   ctx.beginPath();
-  ctx.moveTo(Math.round(x) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(x, edgeWidth), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x, edgeWidth), viewport.height);
   ctx.stroke();
   ctx.restore();
 }
@@ -450,11 +479,11 @@ function drawAnchorPreview(
   ctx.arc(x, y, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = theme.pitchTarget;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.setLineDash([3, 3]);
   ctx.beginPath();
-  ctx.moveTo(0, Math.round(y) + 0.5);
-  ctx.lineTo(viewport.width, Math.round(y) + 0.5);
+  ctx.moveTo(0, viewport.crisp(y));
+  ctx.lineTo(viewport.width, viewport.crisp(y));
   ctx.stroke();
   ctx.setLineDash([]);
   ctx.restore();
@@ -512,12 +541,12 @@ function drawSpanPreview(
   ctx.fillStyle = theme.selectionFill;
   ctx.fillRect(x0, viewport.plotTop, Math.max(1, x1 - x0), viewport.plotHeight);
   ctx.strokeStyle = theme.handleActive;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.beginPath();
-  ctx.moveTo(Math.round(x0) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x0) + 0.5, viewport.height);
-  ctx.moveTo(Math.round(x1) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x1) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(x0), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x0), viewport.height);
+  ctx.moveTo(viewport.crisp(x1), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x1), viewport.height);
   ctx.stroke();
   ctx.restore();
 }
@@ -536,8 +565,8 @@ function drawSplitPreview(
   ctx.lineWidth = 2;
   ctx.setLineDash([6, 4]);
   ctx.beginPath();
-  ctx.moveTo(Math.round(x) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(x), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x), viewport.height);
   ctx.stroke();
   ctx.setLineDash([]);
   ctx.restore();

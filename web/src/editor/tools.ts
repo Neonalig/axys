@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState, ToolId } from '../app/store.js';
+import { PEN_CURSOR } from './cursors.js';
 import type {
   Anchor,
   Blob,
@@ -45,7 +46,12 @@ export interface ToolDefinition {
   hint: string;
   /** Single-key shortcut, empty when the tool has none. */
   key: string;
-  /** CSS cursor used while the tool is armed. */
+  /**
+   * CSS cursor used while the tool is armed.
+   *
+   * @remarks A custom cursor is 24px with a declared hotspot and a stock fallback; see
+   * `editor/cursors.ts`.
+   */
   cursor: string;
 }
 
@@ -72,7 +78,13 @@ export const TOOLS: readonly ToolDefinition[] = [
     key: 'P',
     cursor: 'ns-resize',
   },
-  { id: 'pen', label: 'Draw Curve', hint: 'Drag a freehand target', key: 'B', cursor: 'crosshair' },
+  {
+    id: 'pen',
+    label: 'Draw Curve',
+    hint: 'Drag a freehand target',
+    key: 'B',
+    cursor: PEN_CURSOR,
+  },
   {
     id: 'line',
     label: 'Draw Ramp',
@@ -117,8 +129,10 @@ export interface Hit {
 
 /** Cursor shape for a tool over a given target. */
 export function cursorFor(tool: ToolId, hit: Hit): string {
+  // A boundary is dragged, not resized in place, and `col-resize` is the shape every editor uses
+  // for a divider between two things that share a span.
   if (hit.kind === 'loopEdge' || hit.kind === 'blobEdge') {
-    return 'ew-resize';
+    return 'col-resize';
   }
   if (hit.kind === 'conflict') {
     return 'help';

@@ -18,6 +18,7 @@ import {
   outputToSource,
   sourceToOutput,
 } from './layers/blobs.js';
+import { MARQUEE_CURSOR } from './cursors.js';
 import { noteNameWithCents } from './layers/grid.js';
 import { formatClock } from './layers/ruler.js';
 import type { EditorRenderer } from './renderer.js';
@@ -45,7 +46,7 @@ import {
   SNAP_PIXELS,
   snapTime,
 } from './tools.js';
-import { fitView, isVisible, RULER_HEIGHT, snapViewTo, Viewport } from './view.js';
+import { displayRatio, fitView, isVisible, RULER_HEIGHT, snapViewTo, Viewport } from './view.js';
 
 /** Everything the controller needs from the shell around it. */
 export interface EditorControllerOptions {
@@ -143,7 +144,7 @@ export class EditorController {
     const rect = this.#canvas.getBoundingClientRect();
     const width = rect.width > 0 ? rect.width : this.#canvas.clientWidth;
     const height = rect.height > 0 ? rect.height : this.#canvas.clientHeight;
-    return new Viewport(width, height, this.#store.state.view);
+    return new Viewport(width, height, this.#store.state.view, displayRatio());
   }
 
   /** Attaches the renderer that draws gesture previews. */
@@ -531,6 +532,11 @@ export class EditorController {
     this.#current = point;
     this.#moved = false;
     this.#gesture = this.#beginGesture(state, hit, modifiers);
+    // A band being dragged is not the select tool resting over a blob, so it says so for as long
+    // as it lasts rather than leaving the arrow up while a marquee is being drawn.
+    if (this.#gesture?.kind === 'rubberBand') {
+      this.#canvas.style.cursor = MARQUEE_CURSOR;
+    }
     this.#updatePreview();
     event.preventDefault();
   };
@@ -884,7 +890,7 @@ export class EditorController {
         break;
       case 'pan': {
         // Measured against the view the drag started from, so a pan never compounds itself.
-        const base = new Viewport(viewport.width, viewport.height, gesture.from);
+        const base = viewport.withView(gesture.from);
         this.#store.update({
           view: base.pan(this.#origin.x - this.#current.x, this.#origin.y - this.#current.y),
           follow: false,

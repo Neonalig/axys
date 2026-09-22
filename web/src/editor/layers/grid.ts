@@ -106,7 +106,7 @@ export function drawGrid(
     }
   }
 
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.beginPath();
   ctx.strokeStyle = theme.gridLine;
   const semitoneLines = rowHeight >= 5;
@@ -114,7 +114,7 @@ export function drawGrid(
     if (pitchClass(midi) === 0) {
       continue;
     }
-    const y = Math.round(viewport.midiToY(midi - 0.5)) + 0.5;
+    const y = viewport.crisp(viewport.midiToY(midi - 0.5));
     ctx.moveTo(0, y);
     ctx.lineTo(width, y);
   }
@@ -126,7 +126,7 @@ export function drawGrid(
     if (pitchClass(midi) !== 0) {
       continue;
     }
-    const y = Math.round(viewport.midiToY(midi - 0.5)) + 0.5;
+    const y = viewport.crisp(viewport.midiToY(midi - 0.5));
     ctx.moveTo(0, y);
     ctx.lineTo(width, y);
   }
@@ -140,7 +140,7 @@ export function drawGrid(
     ctx.beginPath();
     for (let midi = low; midi <= high; midi += 1) {
       for (const cents of [-0.25, 0.25]) {
-        const y = Math.round(viewport.midiToY(midi + cents)) + 0.5;
+        const y = viewport.crisp(viewport.midiToY(midi + cents));
         ctx.moveTo(PITCH_LABEL_GUTTER, y);
         ctx.lineTo(width, y);
       }
@@ -182,8 +182,8 @@ export function drawPitchLabels(
   ctx.fillRect(0, viewport.plotTop, PITCH_LABEL_GUTTER, viewport.plotHeight);
   ctx.strokeStyle = theme.border;
   ctx.beginPath();
-  ctx.moveTo(PITCH_LABEL_GUTTER + 0.5, viewport.plotTop);
-  ctx.lineTo(PITCH_LABEL_GUTTER + 0.5, viewport.plotTop + viewport.plotHeight);
+  ctx.moveTo(viewport.crisp(PITCH_LABEL_GUTTER), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(PITCH_LABEL_GUTTER), viewport.plotTop + viewport.plotHeight);
   ctx.stroke();
 
   ctx.font = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';

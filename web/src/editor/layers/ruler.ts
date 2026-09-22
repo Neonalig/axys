@@ -80,8 +80,8 @@ function fillBand(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: Them
   ctx.fillRect(0, 0, viewport.width, RULER_HEIGHT);
   ctx.strokeStyle = theme.border;
   ctx.beginPath();
-  ctx.moveTo(0, RULER_HEIGHT + 0.5);
-  ctx.lineTo(viewport.width, RULER_HEIGHT + 0.5);
+  ctx.moveTo(0, viewport.crisp(RULER_HEIGHT));
+  ctx.lineTo(viewport.width, viewport.crisp(RULER_HEIGHT));
   ctx.stroke();
 }
 
@@ -92,14 +92,14 @@ function drawClock(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: The
   const start = Math.floor(viewport.view.visibleStart / minor) * minor;
   const end = viewport.view.visibleEnd;
 
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.beginPath();
   ctx.strokeStyle = theme.gridLine;
   for (let time = start; time <= end; time += minor) {
     if (Math.abs(time / step - Math.round(time / step)) < 1e-6) {
       continue;
     }
-    const x = Math.round(viewport.timeToX(time)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(time));
     ctx.moveTo(x, RULER_HEIGHT - 6);
     ctx.lineTo(x, RULER_HEIGHT);
   }
@@ -108,7 +108,7 @@ function drawClock(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: The
   ctx.beginPath();
   ctx.strokeStyle = theme.borderStrong;
   for (let index = Math.floor(start / step); index * step <= end; index += 1) {
-    const x = Math.round(viewport.timeToX(index * step)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(index * step));
     ctx.moveTo(x, 6);
     ctx.lineTo(x, RULER_HEIGHT);
   }
@@ -119,7 +119,7 @@ function drawClock(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: The
   ctx.beginPath();
   ctx.strokeStyle = theme.gridLine;
   for (let index = Math.floor(start / step); index * step <= end; index += 1) {
-    const x = Math.round(viewport.timeToX(index * step)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(index * step));
     ctx.moveTo(x, viewport.plotTop);
     ctx.lineTo(x, viewport.height);
   }
@@ -160,14 +160,14 @@ function drawMusical(
   const showSubdivisions = beatPixels / requested >= MIN_BEAT_PIXELS;
   const showBeats = beatPixels >= MIN_BEAT_PIXELS;
 
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.beginPath();
   ctx.strokeStyle = theme.gridLine;
   for (const point of points) {
     if (point.isBarLine || (!showSubdivisions && !point.isBeat) || !showBeats) {
       continue;
     }
-    const x = Math.round(viewport.timeToX(point.seconds)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(point.seconds));
     ctx.moveTo(x, point.isBeat ? RULER_HEIGHT - 9 : RULER_HEIGHT - 5);
     ctx.lineTo(x, RULER_HEIGHT);
   }
@@ -181,7 +181,7 @@ function drawMusical(
     if (point.isBarLine || !point.isBeat || !showBeats) {
       continue;
     }
-    const x = Math.round(viewport.timeToX(point.seconds)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(point.seconds));
     ctx.moveTo(x, viewport.plotTop);
     ctx.lineTo(x, viewport.height);
   }
@@ -200,7 +200,7 @@ function drawMusical(
   ctx.beginPath();
   ctx.strokeStyle = theme.borderStrong;
   for (const point of bars) {
-    const x = Math.round(viewport.timeToX(point.seconds)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(point.seconds));
     ctx.moveTo(x, 6);
     ctx.lineTo(x, RULER_HEIGHT);
   }
@@ -211,7 +211,7 @@ function drawMusical(
   ctx.beginPath();
   ctx.strokeStyle = theme.gridLineOctave;
   for (const point of bars) {
-    const x = Math.round(viewport.timeToX(point.seconds)) + 0.5;
+    const x = viewport.crisp(viewport.timeToX(point.seconds));
     ctx.moveTo(x, viewport.plotTop);
     ctx.lineTo(x, viewport.height);
   }

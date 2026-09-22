@@ -60,12 +60,12 @@ function drawSelection(
     ctx.fillStyle = theme.selectionFill;
     ctx.fillRect(x0, viewport.plotTop, Math.max(1, x1 - x0), viewport.plotHeight);
     ctx.strokeStyle = theme.selection;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = viewport.crispWidth();
     ctx.beginPath();
-    ctx.moveTo(Math.round(x0) + 0.5, viewport.plotTop);
-    ctx.lineTo(Math.round(x0) + 0.5, viewport.height);
-    ctx.moveTo(Math.round(x1) + 0.5, viewport.plotTop);
-    ctx.lineTo(Math.round(x1) + 0.5, viewport.height);
+    ctx.moveTo(viewport.crisp(x0), viewport.plotTop);
+    ctx.lineTo(viewport.crisp(x0), viewport.height);
+    ctx.moveTo(viewport.crisp(x1), viewport.plotTop);
+    ctx.lineTo(viewport.crisp(x1), viewport.height);
     ctx.stroke();
   }
   ctx.restore();
@@ -90,12 +90,12 @@ function drawLoop(
   ctx.fillRect(x0 - LOOP_GRIP / 2, 0, LOOP_GRIP, RULER_HEIGHT);
   ctx.fillRect(x1 - LOOP_GRIP / 2, 0, LOOP_GRIP, RULER_HEIGHT);
   ctx.strokeStyle = theme.loopEdge;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.beginPath();
-  ctx.moveTo(Math.round(x0) + 0.5, 0);
-  ctx.lineTo(Math.round(x0) + 0.5, viewport.height);
-  ctx.moveTo(Math.round(x1) + 0.5, 0);
-  ctx.lineTo(Math.round(x1) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(x0), 0);
+  ctx.lineTo(viewport.crisp(x0), viewport.height);
+  ctx.moveTo(viewport.crisp(x1), 0);
+  ctx.lineTo(viewport.crisp(x1), viewport.height);
   ctx.stroke();
   ctx.restore();
 }
@@ -138,16 +138,16 @@ export function drawHoverGuides(
 
   ctx.strokeStyle = theme.textMuted;
   ctx.globalAlpha = HOVER_LINE_ALPHA;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.setLineDash([3, 3]);
   ctx.beginPath();
   if (showVertical) {
-    const x = Math.round(point.x) + 0.5;
+    const x = viewport.crisp(point.x);
     ctx.moveTo(x, viewport.plotTop);
     ctx.lineTo(x, viewport.height);
   }
   if (showHorizontal) {
-    const y = Math.round(point.y) + 0.5;
+    const y = viewport.crisp(point.y);
     ctx.moveTo(PITCH_LABEL_GUTTER, y);
     ctx.lineTo(viewport.width, y);
   }
@@ -214,10 +214,10 @@ function drawPlayhead(
   }
   ctx.save();
   ctx.strokeStyle = theme.playhead;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   ctx.beginPath();
-  ctx.moveTo(Math.round(x) + 0.5, 0);
-  ctx.lineTo(Math.round(x) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(x), 0);
+  ctx.lineTo(viewport.crisp(x), viewport.height);
   ctx.stroke();
 
   ctx.fillStyle = theme.playhead;

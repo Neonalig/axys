@@ -249,13 +249,8 @@ function drawOriginalBlob(
   ctx.fillRect(x0, top, width, height);
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = theme.blobOriginal;
-  ctx.lineWidth = 1;
-  ctx.strokeRect(
-    Math.round(x0) + 0.5,
-    Math.round(top) + 0.5,
-    Math.round(width),
-    Math.round(height),
-  );
+  ctx.lineWidth = viewport.crispWidth();
+  ctx.strokeRect(viewport.crisp(x0), viewport.crisp(top), Math.round(width), Math.round(height));
   ctx.restore();
 }
 
@@ -294,14 +289,15 @@ function drawBlob(
   }
 
   ctx.globalAlpha = alpha;
-  ctx.lineWidth = isSelected ? 2 : 1;
+  const bound = viewport.crispWidth(isSelected ? 2 : 1);
+  ctx.lineWidth = bound;
   ctx.strokeStyle = isSelected ? theme.selection : theme.blobBounds;
   if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
   ctx.strokeRect(
-    Math.round(x0) + 0.5,
-    Math.round(top) + 0.5,
+    viewport.crisp(x0, bound),
+    viewport.crisp(top, bound),
     Math.round(width),
     Math.round(height),
   );
@@ -311,8 +307,8 @@ function drawBlob(
   ctx.beginPath();
   ctx.setLineDash([6, 4]);
   ctx.strokeStyle = theme.blobBounds;
-  ctx.moveTo(x0, Math.round(centreY) + 0.5);
-  ctx.lineTo(x0 + width, Math.round(centreY) + 0.5);
+  ctx.moveTo(x0, viewport.crisp(centreY));
+  ctx.lineTo(x0 + width, viewport.crisp(centreY));
   ctx.stroke();
   ctx.setLineDash([]);
 
@@ -355,15 +351,15 @@ function drawConflict(
   ctx.fillRect(x0, viewport.plotTop, width, viewport.plotHeight);
   ctx.globalAlpha = 1;
   ctx.strokeStyle = theme.conflict;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = viewport.crispWidth();
   if (conflict.kind === 'gap') {
     ctx.setLineDash([4, 4]);
   }
   ctx.beginPath();
-  ctx.moveTo(Math.round(x0) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x0) + 0.5, viewport.height);
-  ctx.moveTo(Math.round(x0 + width) + 0.5, viewport.plotTop);
-  ctx.lineTo(Math.round(x0 + width) + 0.5, viewport.height);
+  ctx.moveTo(viewport.crisp(x0), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x0), viewport.height);
+  ctx.moveTo(viewport.crisp(x0 + width), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x0 + width), viewport.height);
   ctx.stroke();
   ctx.setLineDash([]);
 

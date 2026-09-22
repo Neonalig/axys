@@ -1312,3 +1312,40 @@ is re-measured on resize and whenever the button names are turned on or off.
 Before anything is imported the editor drew an empty grid. It now offers the ways in: a drop
 target, the words saying a file can be dropped, and buttons, because a drop target alone is
 unreachable from the keyboard and a button alone hides that dropping works.
+
+### Lines are snapped in device pixels, not CSS pixels
+
+The canvas is scaled by the device pixel ratio and every layer draws in CSS pixels, so the usual
+`Math.round(x) + 0.5` lands on a CSS-pixel centre, which is a device-pixel centre only at a ratio
+of 1. At 125 and 150 percent scaling, which is what most Windows laptops ship at, every grid line,
+ruler tick and blob bound was drawn as a blurred band.
+
+`Viewport.crisp(value, width)` snaps the centre and `Viewport.crispWidth(width)` rounds the width
+to whole device pixels, at least one. The width has to come into it: a line an odd number of device
+pixels wide is centred on a half pixel, an even one on a whole pixel. At a ratio of 1 or 2 nothing
+changes; at 1.25 a one-pixel rule becomes one device pixel rather than one and a quarter.
+`web/src/editor/view.test.ts` checks both edges of a one- and a two-pixel line land on whole device
+pixels at 1, 1.25, 1.5, 2 and 3.
+
+### The pen carries its own cursor, drawn from its own glyph
+
+A cursor image is composited by the host, so it cannot take a colour from a theme token and has no
+ground behind it. `editor/cursors.ts` draws each glyph twice, a heavy dark pass and the light shape
+over it, which is what keeps it legible over the waveform, a light surface and a selection fill
+alike. Every custom cursor is 24px with a declared hotspot and a stock fallback, so a host that
+refuses the image still shapes the pointer for what the tool does. The pen's hotspot is the nib, at
+the glyph's bottom left, so the ink lands where the pointer is rather than where the barrel is.
+
+A boundary drag is `col-resize` rather than `ew-resize`: it is a divider between two things that
+share a span, which is what `col-resize` means everywhere else.
+
+A band being dragged takes `crosshair` for as long as the drag lasts, because a marquee is not the
+select tool resting over a blob.
+
+### The marquee marches from the clock
+
+The band's dashes travel at one period of `--axys-march`, the same rate the indeterminate progress
+bar marches at, so the two read as one idea. The offset comes from the clock rather than from a
+frame counter, so the speed does not depend on how often the editor happens to redraw, and the only
+continuous frame request in the renderer is the one that keeps the ants moving while the pointer is
+still. Under reduced motion the dashes hold still and say the same thing.

@@ -44,15 +44,61 @@ function clamp(value: number, low: number, high: number): number {
  * adopt rather than mutating this instance. Time occupies the full canvas width; pitch occupies
  * the canvas below the ruler band.
  */
+/** Device pixels per CSS pixel, or 1 where there is no display to ask. */
+export function displayRatio(): number {
+  return Math.max(1, globalThis.devicePixelRatio || 1);
+}
+
 export class Viewport {
   readonly width: number;
   readonly height: number;
   readonly view: ViewState;
+  /**
+   * Device pixels per CSS pixel, for {@link crisp}.
+   *
+   * @remarks Defaults to 1 so a viewport built for a measurement, rather than for a frame, needs
+   * no display to ask.
+   */
+  readonly ratio: number;
 
-  constructor(width: number, height: number, view: ViewState) {
+  constructor(width: number, height: number, view: ViewState, ratio = 1) {
     this.width = Math.max(1, width);
     this.height = Math.max(RULER_HEIGHT + 1, height);
     this.view = view;
+    this.ratio = Math.max(1, ratio);
+  }
+
+  /**
+   * A coordinate moved to where a line drawn there lands on whole device pixels.
+   *
+   * @remarks The canvas is scaled by the device pixel ratio and every layer draws in CSS pixels,
+   * so the usual `Math.round(x) + 0.5` lands on a CSS-pixel centre, which is not a device-pixel
+   * centre at any ratio but 1. At 125 and 150 percent scaling that blurs every grid line, every
+   * ruler tick and every blob bound.
+   *
+   * `width` is the line's CSS width, because where the centre belongs depends on it: a line an
+   * odd number of device pixels wide is centred on a half pixel, an even one on a whole pixel.
+   * Pair it with {@link crispWidth}, which is what rounds that width to whole device pixels.
+   */
+  crisp(value: number, width = 1): number {
+    const device = this.#deviceWidth(width);
+    const offset = device % 2 === 1 ? 0.5 : 0;
+    return (Math.round(value * this.ratio) + offset) / this.ratio;
+  }
+
+  /**
+   * A line width in CSS pixels rounded to a whole number of device pixels, at least one.
+   *
+   * @remarks A fractional device width is drawn as a blurred band whatever its centre is on. At
+   * a ratio of 1 or 2 this returns the width unchanged; at 1.25 a one-pixel rule becomes one
+   * device pixel rather than one and a quarter.
+   */
+  crispWidth(width = 1): number {
+    return this.#deviceWidth(width) / this.ratio;
+  }
+
+  #deviceWidth(width: number): number {
+    return Math.max(1, Math.round(width * this.ratio));
   }
 
   /** Top edge of the pitch area, below the ruler band. */
@@ -102,7 +148,7 @@ export class Viewport {
 
   /** Same viewport geometry against a different view state. */
   withView(view: ViewState): Viewport {
-    return new Viewport(this.width, this.height, view);
+    return new Viewport(this.width, this.height, view, this.ratio);
   }
 
   /**
