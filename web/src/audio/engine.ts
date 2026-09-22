@@ -70,7 +70,15 @@ export class AudioEngine {
   #playing = false;
   #reported = 0;
   #reportedAt = 0;
-  #playStart = 0;
+
+  /**
+   * Transport commands issued so far, and the stamp the renderer echoes back.
+   *
+   * @remarks The renderer reports its position on a timer, so a report posted just before a
+   * pause arrives just after it. Without this the report would restore the transport the pause
+   * had already stopped, and the pause would read as ignored.
+   */
+  #issued = 0;
 
   private constructor(store: AppStore) {
     this.#store = store;
@@ -169,14 +177,15 @@ export class AudioEngine {
     await this.#resume();
     if (this.#status !== 'running') return;
 
-    this.#playStart = from ?? this.position;
     this.#playing = true;
-    this.#reported = this.#playStart;
+    this.#reported = from ?? this.position;
     this.#reportedAt = now();
+    this.#issued += 1;
     this.#send({
       type: 'play',
       from: from ?? null,
       countIn: this.#store.state.transport.countIn,
+      seq: this.#issued,
     });
     this.#syncTransport();
   }
@@ -186,14 +195,25 @@ export class AudioEngine {
     this.#playing = false;
     this.#reported = this.position;
     this.#reportedAt = now();
-    this.#send({ type: 'pause' });
+    this.#issued += 1;
+    this.#send({ type: 'pause', seq: this.#issued });
     this.#syncTransport();
   }
 
-  /** Stops and honours the return-to-start setting. */
+  /**
+   * Stops and returns the playhead to the beginning.
+   *
+   * @remarks A loop range is its own beginning, so stopping inside one returns to where that
+   * loop plays from rather than to zero.
+   */
   stop(): void {
     this.pause();
-    if (this.#store.state.transport.returnToStart) this.seek(this.#playStart);
+    if (this.#store.state.transport.returnToStart) this.seek(this.#beginning);
+  }
+
+  /** Where Stop and the end of the take return the playhead to. */
+  get #beginning(): number {
+    return this.#store.state.transport.loop?.start ?? 0;
   }
 
   /** Moves the playhead, playing or not. */
@@ -201,7 +221,8 @@ export class AudioEngine {
     const position = Math.min(Math.max(seconds, 0), this.#duration);
     this.#reported = position;
     this.#reportedAt = now();
-    this.#send({ type: 'seek', seconds: position });
+    this.#issued += 1;
+    this.#send({ type: 'seek', seconds: position, seq: this.#issued });
     this.#syncTransport();
   }
 
@@ -234,7 +255,8 @@ export class AudioEngine {
   audition(start: number, end: number): void {
     if (!(end > start)) return;
     void this.#resume();
-    this.#send({ type: 'audition', start, end });
+    this.#issued += 1;
+    this.#send({ type: 'audition', start, end, seq: this.#issued });
   }
 
   /** Playhead position in output seconds, interpolated between the worklet's reports. */
@@ -391,21 +413,23 @@ export class AudioEngine {
         this.#notify();
         break;
       case 'status':
-        this.#playing = message.playing;
-        this.#reported = message.position;
-        this.#reportedAt = now();
         this.#underruns = message.underruns;
         if (message.failure !== null && message.failure !== this.#message) {
           this.#publish(this.#status, `Playback fell back to silence: ${message.failure}`);
         }
+        if (message.seq < this.#issued) break;
+        this.#playing = message.playing;
+        this.#reported = message.position;
+        this.#reportedAt = now();
         this.#syncTransport();
         break;
       case 'ended':
+        if (message.seq < this.#issued) break;
         this.#playing = false;
         this.#reported = message.position;
         this.#reportedAt = now();
         if (this.#store.state.transport.returnToStart) {
-          this.seek(this.#playStart);
+          this.seek(this.#beginning);
         } else {
           this.#syncTransport();
         }

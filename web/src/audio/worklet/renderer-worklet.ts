@@ -49,15 +49,21 @@ export type EngineMessage =
     }
   | { type: 'plan'; plan: Uint8Array }
   | { type: 'compare'; mode: CompareMode }
-  | { type: 'play'; from: number | null; countIn: boolean }
-  | { type: 'pause' }
-  | { type: 'seek'; seconds: number }
+  | { type: 'play'; from: number | null; countIn: boolean; seq: number }
+  | { type: 'pause'; seq: number }
+  | { type: 'seek'; seconds: number; seq: number }
   | { type: 'loop'; range: OutputRange | null }
   | { type: 'metronome'; on: boolean; clicks: Float64Array; accents: Uint8Array }
-  | { type: 'audition'; start: number; end: number }
+  | { type: 'audition'; start: number; end: number; seq: number }
   | { type: 'dispose' };
 
-/** What the renderer reports back. */
+/**
+ * What the renderer reports back.
+ *
+ * @remarks `seq` echoes the newest transport command the renderer has applied. A report is in
+ * flight for up to one block, so the main thread uses it to tell a report that predates its
+ * latest command from one that answers it.
+ */
 export type RendererMessage =
   | { type: 'ready'; outputSeconds: number; sourceRate: number }
   | {
@@ -66,8 +72,9 @@ export type RendererMessage =
       playing: boolean;
       underruns: number;
       failure: string | null;
+      seq: number;
     }
-  | { type: 'ended'; position: number };
+  | { type: 'ended'; position: number; seq: number };
 
 const COUNT_IN_BEATS = 4;
 const DEFAULT_BEAT_SECONDS = 0.5;
@@ -394,6 +401,9 @@ class RendererProcessor extends AudioWorkletProcessor {
   #sinceReport = 0;
   #disposed = false;
 
+  /** Newest transport command applied, echoed on every report. */
+  #seq = 0;
+
   constructor() {
     super();
     this.port.onmessage = (event: MessageEvent): void => {
@@ -444,15 +454,18 @@ class RendererProcessor extends AudioWorkletProcessor {
         this.#compare = message.mode;
         break;
       case 'play':
+        this.#seq = message.seq;
         this.#play(message.from, message.countIn);
         break;
       case 'pause':
+        this.#seq = message.seq;
         this.#playing = false;
         this.#preroll = 0;
         this.#audition = null;
         this.#report();
         break;
       case 'seek':
+        this.#seq = message.seq;
         this.#seek(message.seconds);
         break;
       case 'loop':
@@ -465,6 +478,7 @@ class RendererProcessor extends AudioWorkletProcessor {
         this.#syncClicks(this.#position / this.#sourceRate);
         break;
       case 'audition':
+        this.#seq = message.seq;
         this.#startAudition(message.start, message.end);
         break;
       case 'dispose':
@@ -574,6 +588,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     this.#preroll = 0;
     this.#playing = true;
     this.#syncClicks(start);
+    this.#report();
   }
 
   #startPreroll(): void {
@@ -645,13 +660,13 @@ class RendererProcessor extends AudioWorkletProcessor {
       this.#playing = false;
       this.#position = audition.restore;
       this.#audition = null;
-      this.#post({ type: 'ended', position: this.#position / this.#sourceRate });
+      this.#post({ type: 'ended', position: this.#position / this.#sourceRate, seq: this.#seq });
       return;
     }
     if (this.#position >= this.#outputFrames - 1e-6) {
       this.#playing = false;
       this.#position = this.#outputFrames;
-      this.#post({ type: 'ended', position: this.#position / this.#sourceRate });
+      this.#post({ type: 'ended', position: this.#position / this.#sourceRate, seq: this.#seq });
     }
   }
 
@@ -787,6 +802,7 @@ class RendererProcessor extends AudioWorkletProcessor {
       playing: this.#playing || this.#preroll > 0,
       underruns: this.#underruns,
       failure: this.#failure,
+      seq: this.#seq,
     });
   }
 
