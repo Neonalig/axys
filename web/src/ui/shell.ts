@@ -145,12 +145,10 @@ const GROUP_ICON: Readonly<Record<CommandGroup, IconName>> = {
 };
 
 const LABEL_ICON: Readonly<Record<string, IconName>> = {
-  'Open Audio': 'openAudio',
-  'Open MIDI': 'openMidi',
-  'Open Project': 'openProject',
+  Open: 'openProject',
   'Save Project': 'save',
-  'Export Project': 'save',
-  'Export WAV': 'export',
+  'Save A Copy': 'save',
+  'Export Audio': 'export',
   Undo: 'undo',
   Redo: 'redo',
   'Split Blob': 'split',
@@ -266,6 +264,10 @@ export class AppShell {
   readonly #timeBar: Scrollbar;
   readonly #pitchBar: Scrollbar;
   readonly #zoom: ZoomControl;
+  readonly #busy: HTMLElement;
+  readonly #busyStage: HTMLElement;
+  readonly #busyProgress: HTMLProgressElement;
+  readonly #drop: HTMLElement;
 
   #announced = '';
   #lastSelection = '';
@@ -383,6 +385,38 @@ export class AppShell {
     });
     main.append(this.#timeBar.element, this.#pitchBar.element);
 
+    // Import covers the editor rather than sitting beside it: the timeline underneath is not
+    // the project being opened, and letting it be clicked invites edits that are about to be
+    // thrown away. Cancel lives here, under the progress it cancels.
+    const busy = document.createElement('div');
+    busy.className = 'axys-busy';
+    busy.hidden = true;
+    busy.setAttribute('role', 'status');
+    busy.setAttribute('aria-live', 'polite');
+
+    const busyStage = document.createElement('p');
+    busyStage.className = 'axys-busy-stage';
+    const busyProgress = document.createElement('progress');
+    busyProgress.className = 'axys-busy-progress';
+    busyProgress.max = 1;
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel Import';
+    cancel.addEventListener('click', () => {
+      this.#hooks.runCommand('file.cancelImport');
+    });
+    busy.append(busyStage, busyProgress, cancel);
+    main.append(busy);
+    this.#busy = busy;
+    this.#busyStage = busyStage;
+    this.#busyProgress = busyProgress;
+
+    const drop = document.createElement('div');
+    drop.className = 'axys-drop';
+    drop.hidden = true;
+    main.append(drop);
+    this.#drop = drop;
+
     const live = document.createElement('div');
     live.className = 'axys-visually-hidden';
     live.setAttribute('role', 'status');
@@ -481,6 +515,17 @@ export class AppShell {
     this.#statusPlayback.value.classList.toggle('axys-error', failed);
   }
 
+  /**
+   * Shows or clears the marker for a file being dragged over the editor.
+   *
+   * @remarks `null` while nothing is being dragged. Opening a file replaces the whole project,
+   * so the marker names what would open rather than implying a position it would land at.
+   */
+  setDropTarget(name: string | null): void {
+    this.#drop.hidden = name === null;
+    this.#drop.textContent = name === null ? '' : `Drop To Open ${name}`;
+  }
+
   /** Announces a selection change or an edit result through the off-screen live region. */
   announce(message: string): void {
     if (message === this.#announced) {
@@ -534,6 +579,16 @@ export class AppShell {
     this.#statusConflicts.wrapper.hidden = state.conflicts.length === 0;
     this.#statusConflicts.value.textContent = String(state.conflicts.length);
     this.#statusConflicts.value.classList.add('axys-warning');
+
+    this.#busy.hidden = !state.analysis.running;
+    this.#busyStage.textContent = state.analysis.stage === '' ? 'Working' : state.analysis.stage;
+    // A stage that reports no progress leaves the bar indeterminate rather than pinned at zero,
+    // which reads as stalled.
+    if (state.analysis.progress > 0) {
+      this.#busyProgress.value = state.analysis.progress;
+    } else {
+      this.#busyProgress.removeAttribute('value');
+    }
 
     this.#progress.hidden = !state.analysis.running;
     this.#progress.value = state.analysis.progress;

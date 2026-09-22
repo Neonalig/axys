@@ -41,7 +41,16 @@ import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN } from './editor/view
 import { Autosave } from './persistence/autosave.js';
 import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
-import { exportProject, importProject, relink } from './persistence/project-io.js';
+import {
+  EXPORT_KIND,
+  openFile,
+  OPENABLE,
+  PROJECT_KIND,
+  saveFileAs,
+  writeFile,
+} from './persistence/file-access.js';
+import type { FileHandle } from './persistence/file-access.js';
+import { importProject, relink } from './persistence/project-io.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { showContextMenu } from './ui/menu.js';
 import type { MenuEntry } from './ui/menu.js';
@@ -105,6 +114,8 @@ class AxysWorkspace implements Workspace {
   #autosave: Autosave | null = null;
   #pending: PendingProject | null = null;
   #importing = false;
+  /** Where Save Project last wrote, so a later save needs no picker. */
+  #projectFile: FileHandle | null = null;
 
   constructor(deps: WorkspaceDeps) {
     this.#core = deps.core;
@@ -121,6 +132,42 @@ class AxysWorkspace implements Workspace {
 
   get projectName(): string {
     return this.#name;
+  }
+
+  get importing(): boolean {
+    return this.#importing;
+  }
+
+  /**
+   * Opens whatever the user picked, routed by what the file turned out to be.
+   *
+   * @remarks One picker rather than three commands. A project opened from disk also remembers
+   * where it came from, so the first Save on it needs no dialog either.
+   */
+  async openAny(): Promise<void> {
+    if (this.#importing) {
+      this.#toast.warn('An import is already running.');
+      return;
+    }
+    let picked;
+    try {
+      picked = await openFile(OPENABLE);
+    } catch (error) {
+      this.#fail('Open', error);
+      return;
+    }
+    if (picked === null) return;
+    switch (kindOf(picked.file)) {
+      case 'project':
+        this.#projectFile = picked.handle;
+        await this.openProjectFile(picked.file);
+        return;
+      case 'midi':
+        await this.openMidiFile(picked.file);
+        return;
+      default:
+        await this.openAudioFile(picked.file);
+    }
   }
 
   apply(op: EditOp): void {
@@ -172,6 +219,12 @@ class AxysWorkspace implements Workspace {
   async openAudioFile(file: File): Promise<void> {
     if (this.#pending) {
       await this.#relinkPending(file);
+      return;
+    }
+    // One import at a time. A second would race the first onto the same session and leave
+    // whichever finished last in charge, which is not a choice anybody made.
+    if (this.#importing) {
+      this.#toast.warn('An import is already running.');
       return;
     }
     this.#progress('Decode Audio', 0.05);
@@ -251,34 +304,53 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  async saveProject(): Promise<void> {
-    const projects = this.#projects;
-    const json = this.#projectJson();
-    if (!projects || json === null) {
-      this.#toast.error('This browser cannot store projects. Export instead.');
-      return;
-    }
-    const id = this.#projectId ?? 'project';
-    try {
-      await projects.save(id, json);
-      this.#store.update({ dirty: false });
-      this.#toast.info(`Saved ${this.#name}`);
-    } catch (error) {
-      this.#fail('Save Project', error);
-    }
-  }
-
-  exportProjectFile(): void {
+  /**
+   * Writes the project document, and keeps a copy on the device as a safety net.
+   *
+   * @remarks The file it last wrote to is reused without a dialog, which is the whole point of a
+   * Save worth pressing often. `askWhere` forces the picker so a copy can go elsewhere, and
+   * leaves the remembered file alone so the original stays the one Save writes to.
+   */
+  async saveProject(askWhere = false): Promise<void> {
     const json = this.#projectJson();
     if (json === null) {
-      this.#toast.error('Nothing To Export');
+      this.#toast.error('Nothing To Save');
       return;
     }
     try {
-      const name = exportProject(json, this.#name);
-      this.#toast.info(`Saved ${name}`);
+      const existing = this.#projectFile;
+      if (!askWhere && existing !== null) {
+        await writeFile(existing, json);
+        this.#store.update({ dirty: false });
+        this.#toast.info(`Saved ${existing.name}`);
+      } else {
+        const name = `${this.#name}.axys.json`;
+        const handle = await saveFileAs(json, name, PROJECT_KIND, 'application/json');
+        if (handle === null && !hasHandleSupport()) {
+          this.#toast.info(`Saved ${name}`);
+        } else if (handle !== null) {
+          if (!askWhere) this.#projectFile = handle;
+          this.#toast.info(`Saved ${handle.name}`);
+        } else {
+          return;
+        }
+        if (!askWhere) this.#store.update({ dirty: false });
+      }
     } catch (error) {
-      this.#fail('Export Project', error);
+      this.#fail('Save Project', error);
+      return;
+    }
+    await this.#keepLocalCopy(json);
+  }
+
+  /** Mirrors the document into device storage, so a lost file is not a lost session. */
+  async #keepLocalCopy(json: string): Promise<void> {
+    const projects = this.#projects;
+    if (!projects) return;
+    try {
+      await projects.save(this.#projectId ?? 'project', json);
+    } catch {
+      // The file on disk is the copy that matters; this one is only a safety net.
     }
   }
 
@@ -313,7 +385,7 @@ class AxysWorkspace implements Workspace {
           this.#progress(stage, progress);
         },
       );
-      download(new Blob([toBytes(encoded.bytes)], { type: 'audio/wav' }), `${this.#name}.wav`);
+      await saveFileAs(toBytes(encoded.bytes), `${this.#name}.wav`, EXPORT_KIND, 'audio/wav');
       if (encoded.report.clippedSamples > 0) {
         this.#toast.warn(
           `Clipped ${String(encoded.report.clippedSamples)} samples. Lower the level and export again.`,
@@ -435,6 +507,8 @@ class AxysWorkspace implements Workspace {
     this.#autosave?.dispose();
     this.#session = session;
     this.#name = name;
+    // A fresh import has no file of its own yet, so the next Save asks where it goes.
+    if (view === null) this.#projectFile = null;
 
     const source = session.sourceInfo();
     const blobs = session.blobs();
@@ -645,22 +719,9 @@ function toBytes(bytes: Uint8Array): ArrayBuffer {
   return copy;
 }
 
-function download(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.rel = 'noopener';
-  anchor.style.display = 'none';
-  document.body.append(anchor);
-  try {
-    anchor.click();
-  } finally {
-    anchor.remove();
-    setTimeout(() => {
-      URL.revokeObjectURL(url);
-    }, 0);
-  }
+/** Whether a save can hand back a file to write to again without asking. */
+function hasHandleSupport(): boolean {
+  return typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker === 'function';
 }
 
 function describe(error: unknown): string {
@@ -695,7 +756,7 @@ function blobMenu(onBlob: boolean, hooks: ShellHooks): MenuEntry[] {
     item('edit.excludeBlob', 'Exclude Blob', 'x'),
     { separator: true },
     item('transport.loopSelection', 'Loop Selection', 'l', false),
-    item('file.exportWav', 'Export WAV', 'e', false),
+    item('file.exportWav', 'Export Audio', 'e', false),
   ];
 }
 
@@ -708,22 +769,49 @@ function kindOf(file: File): 'project' | 'midi' | 'audio' {
 }
 
 /** Accepts audio, MIDI and project files dropped anywhere on the window. */
-function bindDragAndDrop(target: Window, workspace: AxysWorkspace, toast: ToastHost): () => void {
+function bindDragAndDrop(
+  target: Window,
+  workspace: AxysWorkspace,
+  toast: ToastHost,
+  shell: AppShell,
+): () => void {
+  // Counted rather than toggled: dragging across a child element fires a leave before the
+  // matching enter, so a boolean flickers the marker off under the cursor.
+  let depth = 0;
+  const show = (event: DragEvent): void => {
+    const item = event.dataTransfer?.items[0];
+    shell.setDropTarget(item?.kind === 'file' ? 'Audio, MIDI Or Project' : 'File');
+  };
+  const onDragEnter = (event: DragEvent): void => {
+    if (!event.dataTransfer) return;
+    depth += 1;
+    show(event);
+  };
   const onDragOver = (event: DragEvent): void => {
     if (!event.dataTransfer) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   };
+  const onDragLeave = (): void => {
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) shell.setDropTarget(null);
+  };
   const onDrop = (event: DragEvent): void => {
+    depth = 0;
+    shell.setDropTarget(null);
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
     event.preventDefault();
     void openDropped([...files], workspace, toast);
   };
+  target.addEventListener('dragenter', onDragEnter);
   target.addEventListener('dragover', onDragOver);
+  target.addEventListener('dragleave', onDragLeave);
   target.addEventListener('drop', onDrop);
   return () => {
+    target.removeEventListener('dragenter', onDragEnter);
     target.removeEventListener('dragover', onDragOver);
+    target.removeEventListener('dragleave', onDragLeave);
     target.removeEventListener('drop', onDrop);
   };
 }
@@ -1104,7 +1192,7 @@ async function start(): Promise<void> {
   shell.update(store.state);
 
   const releaseShortcuts = bindShortcuts(window, commands, context);
-  const releaseDrop = bindDragAndDrop(window, workspace, toast);
+  const releaseDrop = bindDragAndDrop(window, workspace, toast, shell);
   const stopPlayhead = startPlayheadLoop(store, audio, workspace);
 
   const onUnload = (event: BeforeUnloadEvent): void => {

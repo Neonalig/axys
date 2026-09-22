@@ -47,7 +47,9 @@ async function run(request: AnalyseRequest): Promise<void> {
     await loadCore();
     if (abandon(id)) return;
 
-    report(id, 'Analyse Audio', 0.08);
+    // Zero, not a small number: detection is one opaque call into the core, so a bar pinned at
+    // 8 per cent for its whole duration reads as stalled. Indeterminate says "working" honestly.
+    report(id, 'Analyse Audio', 0);
     const analysis = analyse(request.samples, request.sampleRate, paramsJson(request));
     try {
       if (abandon(id)) return;

@@ -58,6 +58,9 @@ export interface Workspace {
   /** Redoes the most recently undone edit. False when there was nothing to redo. */
   redo(): boolean;
 
+  /** True while an import is being decoded or analysed, so a second one is refused. */
+  readonly importing: boolean;
+
   /** Decodes, analyses and opens an audio file, replacing the open project. */
   openAudioFile(file: File): Promise<void>;
 
@@ -67,11 +70,16 @@ export interface Workspace {
   /** Opens a `.axys.json` project document. */
   openProjectFile(file: File): Promise<void>;
 
-  /** Saves the project to local storage on this device. */
-  saveProject(): Promise<void>;
+  /**
+   * Writes the project document.
+   *
+   * @remarks Goes back to the file it was last written to without asking. `askWhere` forces the
+   * picker, which is how a copy is saved somewhere else.
+   */
+  saveProject(askWhere?: boolean): Promise<void>;
 
-  /** Writes the project document out as a `.axys.json` download. */
-  exportProjectFile(): void;
+  /** Opens whatever the user picked, routing it by what kind of file it turned out to be. */
+  openAny(): Promise<void>;
 
   /**
    * Measures what exporting an output range would produce, before any file is written.
@@ -246,31 +254,6 @@ function timelineOf(state: AppState): TimelineMap | null {
   return state.edits?.timeline ?? null;
 }
 
-/** Opens the host file picker and resolves with what the user chose. */
-async function pickFile(accept: string): Promise<File | null> {
-  return new Promise<File | null>((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = accept;
-    input.style.display = 'none';
-    let settled = false;
-    const finish = (file: File | null): void => {
-      if (settled) return;
-      settled = true;
-      input.remove();
-      resolve(file);
-    };
-    input.addEventListener('change', () => {
-      finish(input.files?.[0] ?? null);
-    });
-    input.addEventListener('cancel', () => {
-      finish(null);
-    });
-    document.body.append(input);
-    input.click();
-  });
-}
-
 function toolCommand(id: ToolCommandId, label: string, shortcut: string): Command {
   return {
     id: `tools.${id}`,
@@ -312,36 +295,15 @@ export function buildCommands(): Command[] {
 
   const commands: Command[] = [
     {
-      id: 'file.openAudio',
-      label: 'Open Audio',
+      // One Open. The picker lists the kinds, so choosing a project, a vocal or a guide is a
+      // choice made in the host's own dialog rather than before reaching it.
+      id: 'file.open',
+      label: 'Open',
       group: 'File',
       shortcut: 'Ctrl+O',
-      enabled: () => true,
+      enabled: (ctx) => !ctx.workspace.importing,
       run: async (ctx) => {
-        const file = await pickFile('audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg,.opus');
-        if (file) await ctx.workspace.openAudioFile(file);
-      },
-    },
-    {
-      id: 'file.openMidi',
-      label: 'Open MIDI',
-      group: 'File',
-      shortcut: 'Ctrl+Shift+M',
-      enabled: ready,
-      run: async (ctx) => {
-        const file = await pickFile('.mid,.midi,audio/midi');
-        if (file) await ctx.workspace.openMidiFile(file);
-      },
-    },
-    {
-      id: 'file.openProject',
-      label: 'Open Project',
-      group: 'File',
-      shortcut: 'Ctrl+Shift+O',
-      enabled: () => true,
-      run: async (ctx) => {
-        const file = await pickFile('.json,.axys.json,application/json');
-        if (file) await ctx.workspace.openProjectFile(file);
+        await ctx.workspace.openAny();
       },
     },
     {
@@ -355,18 +317,18 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      id: 'file.exportProject',
-      label: 'Export Project',
+      id: 'file.saveProjectAs',
+      label: 'Save A Copy',
       group: 'File',
       shortcut: 'Ctrl+Shift+S',
       enabled: ready,
-      run: (ctx) => {
-        ctx.workspace.exportProjectFile();
+      run: async (ctx) => {
+        await ctx.workspace.saveProject(true);
       },
     },
     {
       id: 'file.exportWav',
-      label: 'Export WAV',
+      label: 'Export Audio',
       group: 'File',
       shortcut: 'Ctrl+E',
       enabled: ready,

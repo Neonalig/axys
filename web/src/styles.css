@@ -520,6 +520,54 @@ input[type='checkbox'] {
   color: var(--axys-danger);
 }
 
+/* Import: covers the editor while a project is being opened */
+
+.axys-busy {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-gap);
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--axys-bg) 82%, transparent);
+}
+
+.axys-busy[hidden] {
+  display: none;
+}
+
+.axys-busy-stage {
+  margin: 0;
+  font-size: var(--axys-size-lg);
+}
+
+.axys-busy-progress {
+  width: min(320px, 60%);
+  height: 4px;
+  accent-color: var(--axys-accent);
+}
+
+.axys-drop {
+  position: absolute;
+  inset: var(--axys-pad);
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--axys-accent);
+  border-radius: var(--axys-radius-lg);
+  background: color-mix(in srgb, var(--axys-accent) 10%, transparent);
+  color: var(--axys-text);
+  font-size: var(--axys-size-lg);
+  pointer-events: none;
+}
+
+.axys-drop[hidden] {
+  display: none;
+}
+
 /* Context menus */
 
 .axys-menu {
