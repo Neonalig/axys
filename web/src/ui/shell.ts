@@ -232,7 +232,10 @@ export class AppShell {
 
     for (const name of GROUP_ORDER) {
       if (name === 'Tools') {
+        // The tool palette already presents these, so the commands stay in the
+        // registry for shortcuts without being drawn a second time.
         header.append(this.#buildToolGroup());
+        continue;
       }
       const commands = byGroup.get(name) ?? [];
       if (commands.length === 0) {
