@@ -1249,6 +1249,7 @@ async function start(): Promise<void> {
     followMode: preferences.followMode,
     toolbarLabels: preferences.toolbarLabels,
     inspectorCollapsed: preferences.inspectorCollapsed,
+    mixerCollapsed: preferences.mixerCollapsed,
     inspectorWidth: preferences.inspectorWidth,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });

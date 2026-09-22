@@ -232,6 +232,10 @@ Import, Undo, Redo, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Co
 Character, Play, Stop, Loop Selection, Toggle Metronome, Swap Vocal, Toggle Mixer, Zoom In, Zoom
 Out, Zoom Fit, Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics.
 
+Not every command is drawn: the mixer is opened from the footer and Swap Vocal has no button at all,
+because which vocal is playing is a pair of mutes in the mixer rather than a button with three
+faces. Both keep their keys.
+
 One Open covers a project or a vocal; a MIDI guide is imported into an open project and has its own
 command. Reset is one command whose extent comes from the selected span. A command that addresses a
 blob addresses every selected blob, so its key does what its menu entry does whether or not the
@@ -357,6 +361,8 @@ range, hover readout, drag preview).
 
 - A click anywhere that is not a hot control places the playhead; the middle button pans; Alt over
   open canvas or the ruler plays a snippet without moving the playhead.
+- A drag across the ruler draws a loop and a double-click on it clears one, so a loop is undrawn
+  where it was drawn.
 - A right-click opens the context menu for what is under it, selecting it first when it was not
   already selected.
 
@@ -402,7 +408,9 @@ auto-dismissing and stacking.
 `ui/dialog.ts` exports `class Dialog`, the one panel system every panel goes through, export
 included. Each is draggable by its title bar, where the gap between the title and the close button
 carries a dotted grip saying so, and closes on Escape, on its close button, or on a press outside
-it. `blocking` defaults to true,
+it. A panel that has been dragged reopens where it was left, by title and on the device; a
+remembered position that would put it off the edge of a window this size is dropped and the panel
+opens centred, without forgetting the position. `blocking` defaults to true,
 which darkens what is behind and keeps the keyboard inside; an operation that shows its result in
 the editor passes `false`, so the transport and the canvas stay reachable.
 
@@ -429,17 +437,21 @@ one, a sample rate, and a bit depth of 16-bit, 24-bit or 32-bit float. Measuring
 it, so the `exportPreview` figures and their warnings are shown on request rather than on every
 change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `onExport`.
 
-`ui/mixer.ts` exports `class MixerPanel`, the desk at the bottom of the editor: one strip per audio
-source, each with a level, a pan, a mute and a solo. Pressing a mute or a solo settles the desk on
-that strip alone and Ctrl or Cmd adds to what is already on, so more than one strip can be muted or
-soloed at a time. A fader is heard as it moves, through `previewMixer`, and committed as one
-`setMixer` edit when it is let go, so one drag is one undo step. The panel folds away to its bar,
-which is a device preference like the inspector's.
+`ui/mixer.ts` exports `class MixerPanel`, the desk across the bottom of the editor: one strip per
+audio source, laid out the way a desk lays one out, with the name, the pan above the fader, a
+vertical fader and mute and solo under it. Pressing a mute or a solo settles the desk on that strip
+alone and Ctrl or Cmd adds to what is already on, so more than one strip can be muted or soloed at a
+time. A fader is heard as it moves, through `previewMixer`, and committed as one `setMixer` edit
+when it is let go, so one drag is one undo step, and a control under the hand is never rewritten
+from the state behind it. Pan lands on centre when it is dragged within a detent of it, which the
+arrow keys step past. The panel is opened from the footer, beside the zoom, and whether it is open
+is a device preference like the inspector's fold.
 
 The mixer is monitoring and never reaches the render plan, so an export is unchanged by it. It
-supersedes Compare: the processed and original takes are two strips, and Swap Vocal exchanges which
-of them is heard. `audio/mixer.ts` is the one place the desk is turned into amplitudes, read by the
-worklet, by the blob layer and by the toolbar face that says which vocal is playing.
+supersedes Compare, which has no button: the processed and original takes are two strips with their
+own mutes, and Swap Vocal on `C` exchanges which of them is heard. `audio/mixer.ts` is the one place
+the desk is turned into amplitudes, read by the worklet and by the blob layer that draws what is
+audible.
 
 `ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
 settings, each bound to an `EditOp`. Correction and voice character are not here: they are

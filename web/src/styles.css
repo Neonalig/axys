@@ -20,6 +20,7 @@
   --axys-inspector-rail: 34px;
   --axys-toolbar-height: 44px;
   --axys-status-height: 26px;
+  --axys-mixer-height: 224px;
   --axys-scrollbar: 12px;
   --axys-motion: 120ms;
 }
@@ -271,55 +272,104 @@ body {
   transform: scaleX(-1);
 }
 
-/* The mixer: one strip per audio source, folding away to the bar that opens it again */
+/* The mixer: a bottom panel of desk strips, opened from the footer */
 
 .axys-mixer {
   grid-area: mixer;
   display: flex;
   gap: var(--axys-gap);
-  align-items: flex-start;
-  padding: 6px var(--axys-pad);
+  align-items: stretch;
+  height: var(--axys-mixer-height);
+  padding: var(--axys-gap) var(--axys-pad);
+  overflow-x: auto;
   border-top: 1px solid var(--axys-border);
   background: var(--axys-surface);
 }
 
-.axys-mixer-strips {
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  gap: var(--axys-gap);
-  min-width: 0;
-}
-
-.axys-mixer.is-collapsed .axys-mixer-strips {
+.axys-mixer[hidden] {
   display: none;
 }
 
 .axys-mixer-strip {
-  display: grid;
-  /* Name, the two switches, the fader and its readout, then the pan and its own */
-  grid-template-columns: auto auto auto minmax(48px, 1fr) 4rem minmax(40px, 0.6fr) 2.2rem;
-  flex: 1 1 320px;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   gap: 6px;
   align-items: center;
-  min-width: 0;
-  padding: 4px 8px;
+  width: 92px;
+  padding: 6px;
   border: 1px solid var(--axys-border);
   border-radius: var(--axys-radius);
   background: var(--axys-surface-sunken);
 }
 
-.axys-mixer-strip > * {
-  min-width: 0;
+/* Only the fader grows; everything else keeps the height it asks for */
+
+.axys-mixer-name,
+.axys-mixer-row,
+.axys-mixer-level,
+.axys-mixer-switches {
+  flex: 0 0 auto;
 }
 
 .axys-mixer-name {
-  min-width: 4.5rem;
+  overflow: hidden;
+  max-width: 100%;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-mixer-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+}
+
+.axys-mixer-pan {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.axys-mixer-pan-readout {
+  flex: 0 0 auto;
+  width: 2.2rem;
+  text-align: right;
+}
+
+/* The fader is vertical, which is what a desk looks like and how a level is read at a glance */
+
+.axys-mixer-fader-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: stretch;
+  justify-content: center;
+  min-height: 0;
+}
+
+.axys-mixer-fader {
+  width: 24px;
+  height: 100%;
+  /* The modern spelling, and the one older WebKit and Blink answer to */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  appearance: slider-vertical;
+}
+
+.axys-mixer-level {
+  font-variant-numeric: tabular-nums;
+}
+
+.axys-mixer-switches {
+  display: flex;
+  gap: 4px;
 }
 
 .axys-mixer-switch {
-  width: 22px;
-  min-width: 22px;
+  width: 26px;
+  min-width: 26px;
   height: 22px;
   font-size: var(--axys-size-sm);
   font-weight: 600;
@@ -333,10 +383,6 @@ body {
 .axys-mixer-switch[aria-pressed='true'].is-solo {
   color: var(--axys-bg);
   background: var(--axys-accent);
-}
-
-.axys-mixer .axys-readout {
-  text-align: right;
 }
 
 #app > footer,
@@ -487,12 +533,12 @@ button.axys-icon {
   white-space: nowrap;
 }
 
-.axys-toolbar.is-labelled button.axys-icon {
+.is-labelled button.axys-icon {
   width: auto;
   padding: 0 10px;
 }
 
-.axys-toolbar.is-labelled .axys-button-label {
+.is-labelled .axys-button-label {
   display: inline;
 }
 

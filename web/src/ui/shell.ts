@@ -22,7 +22,6 @@ import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
-import { vocalMonitor, DEFAULT_MIXER } from '../audio/mixer.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { ICONS, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
@@ -118,21 +117,6 @@ const RESIZE_STEP_COARSE = 32;
 const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
 
 /**
- * What the swap button shows, by which vocal is being heard.
- *
- * @remarks The button says which take is audible rather than what pressing it would do, because
- * that is the thing being checked while A/B-ing. The mixer is where the two are set.
- */
-const MONITOR_FACES: Readonly<
-  Record<ReturnType<typeof vocalMonitor>, { icon: IconName; label: string; tip: string }>
-> = {
-  processed: { icon: 'monitorProcessed', label: 'Processed', tip: 'Playing Processed' },
-  original: { icon: 'monitorOriginal', label: 'Original', tip: 'Playing Original' },
-  both: { icon: 'monitorBoth', label: 'Both', tip: 'Playing Both Vocals' },
-  neither: { icon: 'monitorBoth', label: 'Muted', tip: 'Both Vocals Muted' },
-};
-
-/**
  * Names the toolbar shows instead of a command's full label.
  *
  * @remarks A toolbar name is read beside an icon that already says which group it belongs to, so
@@ -148,7 +132,6 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'edit.smoothSpan': 'Smooth',
   'transport.loopSelection': 'Loop',
   'transport.toggleMetronome': 'Metronome',
-  'transport.swapVocal': 'Swap',
   'view.followPlayhead': 'Follow',
   'midi.alignGuide': 'Align',
   'help.showDiagnostics': 'Help',
@@ -236,8 +219,12 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'file.cancelImport',
   // Selecting everything is a keyboard action; a button for it would say nothing a drag does not.
   'edit.selectAll',
-  // The mixer carries the control that folds it away, where the hand already is.
+  // The mixer is opened from the footer, beside the other controls that say how the editor
+  // is laid out rather than what is in it.
   'view.toggleMixer',
+  // Which vocal is playing is the mixer's question now: two strips with their own mute, rather
+  // than a button with three faces. The shortcut is still there for a quick A/B.
+  'transport.swapVocal',
   // Where a save goes is a variation on Save, so it lives in that button's own menu.
   'file.saveProjectAs',
 ]);
@@ -283,7 +270,6 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Pause: 'pause',
   Stop: 'stop',
   'Loop Selection': 'loop',
-  'Swap Vocal': 'monitorProcessed',
   'Zoom In': 'zoomIn',
   'Zoom Out': 'zoomOut',
   'Zoom Fit': 'zoomFit',
@@ -400,6 +386,8 @@ export class AppShell {
   readonly #commandButtons = new Map<string, ToolbarButton>();
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
   readonly #header: HTMLElement;
+  readonly #footer: HTMLElement;
+  readonly #mixerToggle: HTMLButtonElement;
   readonly #themeButton: HTMLButtonElement;
   readonly #resizer: HTMLElement;
   /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
@@ -605,9 +593,6 @@ export class AppShell {
       previewMixer: (mixer) => {
         this.#hooks.previewMixer(mixer);
       },
-      runCommand: (id) => {
-        this.#hooks.runCommand(id);
-      },
     });
 
     const footer = document.createElement('footer');
@@ -626,6 +611,7 @@ export class AppShell {
 
     const spacerEnd = document.createElement('span');
     spacerEnd.className = 'axys-spacer';
+    this.#mixerToggle = this.#buildMixerToggle();
     this.#zoom = new ZoomControl({
       onSpan: (seconds) => {
         this.#hooks.setSpan(seconds);
@@ -634,7 +620,8 @@ export class AppShell {
         this.#hooks.runCommand('view.zoomFit');
       },
     });
-    footer.append(spacerEnd, this.#zoom.element);
+    footer.append(spacerEnd, this.#mixerToggle, this.#zoom.element);
+    this.#footer = footer;
 
     this.#resizer = this.#buildResizer();
     this.#root.append(
@@ -727,15 +714,6 @@ export class AppShell {
       button.disabled = state.phase !== 'ready';
     }
 
-    const monitor = vocalMonitor(state.edits?.mixer ?? DEFAULT_MIXER);
-    const face = MONITOR_FACES[monitor];
-    this.#setFace('transport.swapVocal', {
-      icon: face.icon,
-      label: face.label,
-      tooltip: `${face.tip} (C)`,
-      pressed: monitor !== 'processed',
-    });
-
     // Following, looping and the metronome are switches, so each says whether it is on rather
     // than only what pressing it would do.
     this.#setFace('view.followPlayhead', {
@@ -792,6 +770,12 @@ export class AppShell {
       'aria-label',
       state.source === null ? 'Pitch Editor' : `Pitch Editor: ${state.source.name}`,
     );
+
+    const mixerOpen = !state.mixerCollapsed;
+    const mixerLabel = mixerOpen ? 'Hide Mixer' : 'Show Mixer';
+    this.#mixerToggle.setAttribute('aria-label', mixerLabel);
+    this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
+    setTooltip(this.#mixerToggle, `${mixerLabel} (K)`);
 
     this.setToolbarLabels(state.toolbarLabels);
     // The column width is the grid's, so the shell carries the folded state and the width rather
@@ -857,9 +841,33 @@ export class AppShell {
     entry.button.style.setProperty('--axys-pulse', level.toFixed(2));
   }
 
-  /** Shows or hides the names beside the toolbar icons. */
+  /** Shows or hides the names beside the icons, wherever the chrome draws one. */
   setToolbarLabels(on: boolean): void {
     this.#header.classList.toggle('is-labelled', on);
+    this.#footer.classList.toggle('is-labelled', on);
+  }
+
+  /**
+   * The control that opens the mixer, in the footer beside the zoom.
+   *
+   * @remarks A bar of its own to open a panel is two bars where one would do, and the footer is
+   * already where the controls that say how the editor is laid out live.
+   */
+  #buildMixerToggle(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'axys-icon';
+    const icon = document.createElement('span');
+    icon.className = 'axys-button-icon';
+    icon.innerHTML = ICONS.mixer;
+    const text = document.createElement('span');
+    text.className = 'axys-button-label';
+    text.textContent = 'Mixer';
+    button.append(icon, text);
+    button.addEventListener('click', () => {
+      this.#hooks.runCommand('view.toggleMixer');
+    });
+    return button;
   }
 
   /** Shows a theme as the chosen one, without applying it. */

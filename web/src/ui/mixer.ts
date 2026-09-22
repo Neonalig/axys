@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The mixer: one strip per audio source, at the bottom of the editor.
+ * The mixer: one strip per audio source, in a panel across the bottom of the editor.
  *
- * Levels, pan, mute and solo are the controls a desk has, and they are what answers which take is
- * being listened to. The desk is monitoring rather than an edit to the take, so nothing here
- * changes what an export writes.
+ * A strip is laid out the way a desk lays one out, so it is read at a glance: the name, the pan
+ * above the fader, the fader itself, and mute and solo under it. The desk is monitoring rather
+ * than an edit to the take, so nothing here changes what an export writes.
  */
 
 import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
 import type { EditOp, MixerSettings, MixerStrip } from '../core/types.js';
-import { DEFAULT_MIXER, STRIP_IDS, STRIP_LABELS } from '../audio/mixer.js';
+import { DEFAULT_MIXER, STRIP_IDS, STRIP_NAMES } from '../audio/mixer.js';
 import type { StripId } from '../audio/mixer.js';
-import { ICONS } from './icons.js';
-import { guidedLabel, rangeInput } from './inspector.js';
+import { rangeInput } from './inspector.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState } from '../app/store.js';
 
@@ -23,8 +22,6 @@ export interface MixerHooks {
   applyEdit(op: EditOp): void;
   /** Hands the engine a desk that has not been committed yet, so a dragged fader is audible. */
   previewMixer(mixer: MixerSettings): void;
-  /** Runs the command with this id. */
-  runCommand(id: string): void;
 }
 
 /** The controls one strip owns. */
@@ -36,6 +33,15 @@ interface StripControls {
   mute: HTMLButtonElement;
   solo: HTMLButtonElement;
 }
+
+/**
+ * How near the middle a pan has to be dragged before it lands there.
+ *
+ * @remarks A continuous slider cannot be put back on centre by hand, and a strip a few percent
+ * off centre is a fault nobody can see. The detent applies to a drag only, so the arrow keys
+ * still reach every value inside it.
+ */
+const PAN_DETENT = 0.06;
 
 /** How a level reads, with the floor named rather than printed as a number. */
 function levelText(decibels: number): string {
@@ -51,19 +57,18 @@ function panText(pan: number): string {
 }
 
 /**
- * The desk at the bottom of the editor.
+ * The desk across the bottom of the editor.
  *
  * @remarks Holds no state of its own beyond what a control is showing. A fader is heard as it
- * moves and committed when it is let go, so dragging one leaves the history with one entry.
+ * moves and committed when it is let go, so dragging one leaves the history with one entry, and
+ * a control under the hand is never rewritten from the state behind it.
  */
 export class MixerPanel {
   readonly #hooks: MixerHooks;
   readonly #element: HTMLElement;
-  readonly #fold: HTMLButtonElement;
   readonly #strips = new Map<StripId, StripControls>();
 
   #mixer: MixerSettings = DEFAULT_MIXER;
-  #collapsed = false;
 
   constructor(hooks: MixerHooks) {
     this.#hooks = hooks;
@@ -71,28 +76,7 @@ export class MixerPanel {
     const element = document.createElement('section');
     element.className = 'axys-mixer';
     element.setAttribute('aria-label', 'Mixer');
-
-    const head = document.createElement('div');
-    head.className = 'axys-mixer-head';
-    const fold = document.createElement('button');
-    fold.type = 'button';
-    fold.className = 'axys-icon axys-mixer-fold';
-    fold.innerHTML = ICONS.mixer;
-    const name = document.createElement('span');
-    name.className = 'axys-button-label';
-    name.textContent = 'Mixer';
-    fold.append(name);
-    fold.addEventListener('click', () => {
-      this.#hooks.runCommand('view.toggleMixer');
-    });
-    head.append(fold);
-    this.#fold = fold;
-
-    const strips = document.createElement('div');
-    strips.className = 'axys-mixer-strips';
-    for (const id of STRIP_IDS) strips.append(this.#buildStrip(id));
-
-    element.append(head, strips);
+    for (const id of STRIP_IDS) element.append(this.#buildStrip(id));
     this.#element = element;
   }
 
@@ -103,7 +87,8 @@ export class MixerPanel {
 
   /** Refreshes every control from application state. */
   update(state: AppState): void {
-    this.#setCollapsed(state.mixerCollapsed);
+    this.#element.hidden = state.mixerCollapsed;
+    if (state.mixerCollapsed) return;
     this.#mixer = state.edits?.mixer ?? DEFAULT_MIXER;
     const ready = state.edits !== null;
     for (const id of STRIP_IDS) {
@@ -113,52 +98,61 @@ export class MixerPanel {
       for (const control of [controls.gain, controls.pan, controls.mute, controls.solo]) {
         control.disabled = !ready;
       }
-      setValue(controls.gain, String(strip.gainDb));
-      setValue(controls.pan, String(strip.pan));
-      controls.gainReadout.textContent = levelText(strip.gainDb);
-      controls.panReadout.textContent = panText(strip.pan);
+      // The whole strip, readouts included, is left alone while it is being dragged: the store
+      // updates on every animation frame the transport runs, and rewriting the control under
+      // the hand from the committed value is what makes a fader fight the hand holding it.
+      if (document.activeElement !== controls.gain) {
+        setValue(controls.gain, String(strip.gainDb));
+        controls.gainReadout.textContent = levelText(strip.gainDb);
+      }
+      if (document.activeElement !== controls.pan) {
+        setValue(controls.pan, String(strip.pan));
+        controls.panReadout.textContent = panText(strip.pan);
+      }
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
       controls.solo.setAttribute('aria-pressed', String(strip.solo));
     }
   }
 
-  #setCollapsed(on: boolean): void {
-    if (this.#collapsed === on) return;
-    this.#collapsed = on;
-    this.#element.classList.toggle('is-collapsed', on);
-    const label = on ? 'Show Mixer' : 'Hide Mixer';
-    this.#fold.setAttribute('aria-label', label);
-    this.#fold.setAttribute('aria-expanded', String(!on));
-    setTooltip(this.#fold, `${label} (K)`);
-  }
-
   #buildStrip(id: StripId): HTMLElement {
-    const { label, tip } = STRIP_LABELS[id];
+    const label = STRIP_NAMES[id];
     const strip = document.createElement('div');
     strip.className = 'axys-mixer-strip';
     strip.setAttribute('role', 'group');
     strip.setAttribute('aria-label', `${label} Strip`);
 
-    const name = guidedLabel(label, tip);
-    name.className = 'axys-label axys-mixer-name';
-
-    const mute = this.#buildSwitch(id, 'mute', 'M', `Mute ${label}`);
-    const solo = this.#buildSwitch(id, 'solo', 'S', `Solo ${label}`);
-
-    const gain = rangeInput(MIN_GAIN_DB, MAX_GAIN_DB, 0.5);
-    gain.className = 'axys-mixer-gain';
-    gain.setAttribute('aria-label', `${label} Level`);
-    const gainReadout = readout();
+    const name = document.createElement('label');
+    name.className = 'axys-mixer-name';
+    name.textContent = label;
 
     const pan = rangeInput(-1, 1, 0.01);
     pan.className = 'axys-mixer-pan';
     pan.setAttribute('aria-label', `${label} Pan`);
-    const panReadout = readout();
+    const panReadout = readout('axys-mixer-pan-readout');
+
+    const gain = rangeInput(MIN_GAIN_DB, MAX_GAIN_DB, 0.5);
+    gain.className = 'axys-mixer-fader';
+    gain.setAttribute('aria-label', `${label} Level`);
+    gain.setAttribute('aria-orientation', 'vertical');
+    const gainReadout = readout('axys-mixer-level');
+
+    const mute = this.#buildSwitch(id, 'mute', 'M', `Mute ${label}`);
+    const solo = this.#buildSwitch(id, 'solo', 'S', `Solo ${label}`);
+    const switches = document.createElement('div');
+    switches.className = 'axys-mixer-switches';
+    switches.append(mute, solo);
+
+    const panRow = document.createElement('div');
+    panRow.className = 'axys-mixer-row';
+    panRow.append(pan, panReadout);
+
+    const faderRow = document.createElement('div');
+    faderRow.className = 'axys-mixer-fader-row';
+    faderRow.append(gain);
 
     name.htmlFor = gain.id;
-    strip.append(name, mute, solo, gain, gainReadout, pan, panReadout);
-    const controls: StripControls = { gain, gainReadout, pan, panReadout, mute, solo };
-    this.#strips.set(id, controls);
+    strip.append(name, panRow, faderRow, gainReadout, switches);
+    this.#strips.set(id, { gain, gainReadout, pan, panReadout, mute, solo });
 
     // Heard as it moves, kept when it is let go: one drag is one undo step rather than one per
     // frame, and the sound follows the hand either way.
@@ -170,15 +164,31 @@ export class MixerPanel {
     gain.addEventListener('change', () => {
       this.#commit(id, { gainDb: readNumber(gain, this.#mixer[id].gainDb) });
     });
-    pan.addEventListener('input', () => {
+    // The detent belongs to the hand on the slider, not to the value: the arrow keys step
+    // through the middle of the field one hundredth at a time and must not be dragged to zero.
+    let dragging = false;
+    const panValue = (): number => {
       const value = readNumber(pan, this.#mixer[id].pan);
+      return dragging && Math.abs(value) < PAN_DETENT ? 0 : value;
+    };
+    pan.addEventListener('pointerdown', () => {
+      dragging = true;
+    });
+    for (const ended of ['pointerup', 'pointercancel', 'keydown'] as const) {
+      pan.addEventListener(ended, () => {
+        dragging = false;
+      });
+    }
+    pan.addEventListener('input', () => {
+      const value = panValue();
+      pan.value = String(value);
       panReadout.textContent = panText(value);
       this.#hooks.previewMixer(this.#with(id, { pan: value }));
     });
     pan.addEventListener('change', () => {
-      this.#commit(id, { pan: readNumber(pan, this.#mixer[id].pan) });
+      this.#commit(id, { pan: panValue() });
     });
-    // A double-click puts a fader back where it started, which is what every other one does.
+    // A double-click puts a control back where it started, which is what every other one does.
     gain.addEventListener('dblclick', () => {
       this.#commit(id, { gainDb: DEFAULT_MIXER[id].gainDb });
     });
@@ -234,9 +244,9 @@ export class MixerPanel {
   }
 }
 
-function readout(): HTMLElement {
+function readout(className: string): HTMLElement {
   const element = document.createElement('span');
-  element.className = 'axys-readout';
+  element.className = `axys-readout ${className}`;
   return element;
 }
 
@@ -246,5 +256,5 @@ function readNumber(input: HTMLInputElement, fallback: number): number {
 }
 
 function setValue(input: HTMLInputElement, value: string): void {
-  if (document.activeElement !== input && input.value !== value) input.value = value;
+  if (input.value !== value) input.value = value;
 }

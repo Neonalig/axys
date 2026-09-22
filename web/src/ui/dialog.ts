@@ -51,6 +51,55 @@ const FOCUSABLE =
 /** Distance in pixels a panel is kept from the viewport edge while it is dragged. */
 const MARGIN = 8;
 
+/** Local storage key holding where each panel was last left. */
+const POSITIONS_KEY = 'axys.dialog.positions';
+
+/** Where each panel was last dragged to, by title. */
+type Positions = Record<string, { x: number; y: number }>;
+
+function storedPositions(): Positions {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(POSITIONS_KEY);
+  } catch {
+    return {};
+  }
+  if (raw === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Positions) : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberPosition(title: string, x: number, y: number): void {
+  const positions = storedPositions();
+  positions[title] = { x: Math.round(x), y: Math.round(y) };
+  try {
+    localStorage.setItem(POSITIONS_KEY, JSON.stringify(positions));
+  } catch {
+    // The position still holds for this session, which is the most a refusing browser allows.
+  }
+}
+
+/**
+ * Whether a remembered position still lands the panel on screen.
+ *
+ * @remarks A panel opens where it was left, but the window it was left in may have been a
+ * different size, so a position that would put it off the edge is dropped rather than followed.
+ * The stored value is kept: the window may be that size again.
+ */
+function onScreen(x: number, y: number, width: number, height: number): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || width <= 0 || height <= 0) return false;
+  return (
+    x >= MARGIN &&
+    y >= MARGIN &&
+    x + width <= window.innerWidth - MARGIN &&
+    y + height <= window.innerHeight - MARGIN
+  );
+}
+
 function focusableIn(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
     (element) => element.offsetParent !== null || element === document.activeElement,
@@ -70,6 +119,7 @@ export class Dialog {
   readonly #opener: Element | null;
   readonly #onClose: (() => void) | undefined;
   readonly #blocking: boolean;
+  readonly #title: string;
   #closed = false;
   #dragFrom: { x: number; y: number } | null = null;
   #position: { x: number; y: number } | null = null;
@@ -78,6 +128,7 @@ export class Dialog {
     this.#opener = document.activeElement;
     this.#onClose = options.onClose;
     this.#blocking = options.blocking !== false;
+    this.#title = options.title;
 
     const parent = options.parent ?? document.body;
 
@@ -208,6 +259,7 @@ export class Dialog {
   }
 
   #show(): void {
+    this.#restorePosition();
     const first = focusableIn(this.#element)[0];
     (first ?? this.#element).focus();
     if (!this.#blocking) {
@@ -215,6 +267,17 @@ export class Dialog {
       // outside the editor's own controls, which is what pressing "somewhere else" means.
       document.addEventListener('pointerdown', this.#onOutside, true);
     }
+  }
+
+  /** Opens the panel where it was last left, or centred when that would be off screen. */
+  #restorePosition(): void {
+    const stored = storedPositions()[this.#title];
+    if (stored === undefined) return;
+    const bounds = this.#element.getBoundingClientRect();
+    if (!onScreen(stored.x, stored.y, bounds.width, bounds.height)) return;
+    this.#element.style.left = `${String(stored.x)}px`;
+    this.#element.style.top = `${String(stored.y)}px`;
+    this.#element.style.transform = 'none';
   }
 
   #onOutside = (event: Event): void => {
@@ -290,6 +353,10 @@ export class Dialog {
   };
 
   #onDragEnd = (): void => {
+    if (this.#dragFrom !== null) {
+      const bounds = this.#element.getBoundingClientRect();
+      rememberPosition(this.#title, bounds.left, bounds.top);
+    }
     this.#dragFrom = null;
     this.#element.classList.remove('is-dragging');
     window.removeEventListener('pointermove', this.#onDragMove);

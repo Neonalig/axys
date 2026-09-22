@@ -123,6 +123,7 @@ export class EditorController {
     this.#canvas.addEventListener('wheel', this.#onWheel, { passive: false });
     this.#canvas.addEventListener('keydown', this.#onKeyDown);
     this.#canvas.addEventListener('contextmenu', this.#onContextMenu);
+    this.#canvas.addEventListener('dblclick', this.#onDoubleClick);
 
     this.#unsubscribe = this.#store.subscribe(() => {
       this.render();
@@ -494,6 +495,7 @@ export class EditorController {
     this.#canvas.removeEventListener('wheel', this.#onWheel);
     this.#canvas.removeEventListener('keydown', this.#onKeyDown);
     this.#canvas.removeEventListener('contextmenu', this.#onContextMenu);
+    this.#canvas.removeEventListener('dblclick', this.#onDoubleClick);
     this.#observer?.disconnect();
     this.#unsubscribe();
   }
@@ -589,6 +591,26 @@ export class EditorController {
    * @remarks A right-click on a blob outside the selection selects it first, so the menu always
    * acts on what was clicked rather than on an earlier selection the user has moved past.
    */
+  /**
+   * Clears the loop when the ruler is double-clicked.
+   *
+   * @remarks A loop is drawn by dragging across the ruler, so it is undrawn where it was drawn.
+   * Double-clicking elsewhere is left alone, because a loop is not what is under the cursor
+   * there.
+   */
+  #onDoubleClick = (event: MouseEvent): void => {
+    if (this.#store.state.transport.loop === null) {
+      return;
+    }
+    const point = this.#pointOf(event);
+    const hit = this.hitTest(point.x, point.y);
+    if (hit.kind !== 'ruler' && hit.kind !== 'loopEdge') {
+      return;
+    }
+    event.preventDefault();
+    this.#clearLoop();
+  };
+
   #onContextMenu = (event: MouseEvent): void => {
     const state = this.#store.state;
     if (state.phase !== 'ready') {
@@ -1315,6 +1337,17 @@ export class EditorController {
       view: { ...state.view, loopStart: start, loopEnd: end },
     });
     this.#options.setLoop?.({ start, end });
+  }
+
+  /** Removes the loop, in the store and in the transport that is playing it. */
+  #clearLoop(): void {
+    const state = this.#store.state;
+    this.#store.update({
+      transport: { ...state.transport, loop: null },
+      view: { ...state.view, loopStart: null, loopEnd: null },
+    });
+    this.#options.setLoop?.(null);
+    this.#announce('Loop cleared.');
   }
 
   #setSelection(selection: Selection): void {

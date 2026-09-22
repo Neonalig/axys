@@ -962,3 +962,63 @@ because a fader has nothing to discard.
 Pressing a mute or a solo settles the desk on that strip alone, which is what someone wants nine
 times in ten. Ctrl or Cmd adds instead, which is how more than one strip is muted or soloed at a
 time. The same modifier that adds a span to a selection.
+
+## Editor interaction, after the fifth testing round
+
+### The mixer is a panel, opened from the footer
+
+The first mixer was a bar of its own across the bottom, carrying the control that folded it away.
+That is two bars where one would do, and the footer already holds the controls that say how the
+editor is laid out rather than what is in it. The fold moved there, beside the zoom, and it takes
+its name from Button Names like every other control that has one. The panel itself is now only the
+desk.
+
+The strips are laid out the way a desk lays one out: the name, the pan above the fader, a vertical
+fader, its level, and mute and solo under it. A horizontal row of sliders is quicker to write and
+slower to read, and a level is a height everywhere else it is drawn. The fader carries both
+spellings of a vertical range input, the modern `writing-mode` and the older `slider-vertical`, so
+it stands up in every browser in the supported envelope.
+
+### Compare has no button at all
+
+Which vocal is playing is two strips with their own mutes, so a toolbar button that says the same
+thing is a second control to keep in step with the first. Swap Vocal keeps `C`, because a one-key
+A/B is worth having without opening the panel, and it is drawn nowhere.
+
+The click strip is called Metronome, which is what the transport control that starts it is called.
+Two names for one sound is a thing to work out rather than a thing to read.
+
+### A control under the hand is not rewritten from behind it
+
+The store updates on every animation frame while the transport runs, and the panel refreshed every
+control from it, so a fader being dragged was fighting the value it had not committed yet. Each
+control is now left alone while it has focus, readouts included.
+
+### Pan has a detent and no explainer
+
+A continuous pan cannot be put back on centre by hand, so a drag that ends within six percent of the
+middle lands there. The detent belongs to the drag rather than to the value: the arrow keys step
+through that span one hundredth at a time and must still reach every value in it.
+
+The strips carry no tooltips. A strip named Processed, Original or Metronome is not a thing that
+needs explaining, and a tip on every control is a tip on nothing.
+
+### A loop is undrawn where it was drawn
+
+A loop comes from dragging across the ruler, so a double-click there clears it. Anywhere else is
+left alone, because a loop is not what is under the cursor there.
+
+### A panel reopens where it was left
+
+Where a panel sits is a working arrangement, and dragging Export or Voice Character out of the way
+of the material only for it to come back over that material is the editor forgetting something the
+user said. Positions are kept by title on the device.
+
+A remembered position is checked against the window before it is used: a panel left near the right
+edge of a wide screen would open off a narrow one, so a position that no longer fits is ignored and
+the panel opens centred. It is not forgotten, because the window may be that size again.
+
+### The guide panel says what is left over, or nothing
+
+"Guide notes are shown over the vocal" described what was already on screen. The line now carries
+what the mapping left unmapped and how many notes overlap, and is hidden when there is neither.

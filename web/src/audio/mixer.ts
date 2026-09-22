@@ -16,11 +16,16 @@ export type StripId = 'processed' | 'original' | 'click';
 /** The strips in the order the desk draws them. */
 export const STRIP_IDS: readonly StripId[] = ['processed', 'original', 'click'];
 
-/** How each strip names itself and what it plays. */
-export const STRIP_LABELS: Readonly<Record<StripId, { label: string; tip: string }>> = {
-  processed: { label: 'Processed', tip: 'The take as the edits make it sound.' },
-  original: { label: 'Original', tip: 'The take as it was sung, on the same transport clock.' },
-  click: { label: 'Click', tip: 'The metronome.' },
+/**
+ * What each strip is called.
+ *
+ * @remarks The metronome strip carries the name the transport control already uses, because two
+ * names for one sound is a thing to work out rather than a thing to read.
+ */
+export const STRIP_NAMES: Readonly<Record<StripId, string>> = {
+  processed: 'Processed',
+  original: 'Original',
+  click: 'Metronome',
 };
 
 /** What one strip contributes to each output channel. */

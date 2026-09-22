@@ -787,13 +787,16 @@ export class Inspector {
     setValue(this.#guideStrength, String(strength));
     this.#guideStrengthReadout.textContent = `${String(Math.round(strength * 100))}%`;
     setChecked(this.#guideMuted, guide?.muted ?? false);
+    // The line carries what the mapping left over and what overlaps, or nothing. Saying that
+    // guide notes are drawn over the vocal describes what is already on screen.
     const report = state.mappingReport;
     const overlaps = state.guideOverlaps.length;
-    const mapping = report
-      ? describeLeftovers(report.unmappedBlobs.length, report.unmappedNotes.length)
-      : 'Guide notes are shown over the vocal.';
-    this.#guideHint.textContent =
-      overlaps > 0 ? `${mapping} ${plural(overlaps, 'overlapping note')}.` : mapping;
+    const parts: string[] = [];
+    if (report)
+      parts.push(describeLeftovers(report.unmappedBlobs.length, report.unmappedNotes.length));
+    if (overlaps > 0) parts.push(`${plural(overlaps, 'overlapping note')}.`);
+    this.#guideHint.textContent = parts.join(' ');
+    this.#guideHint.hidden = parts.length === 0;
   }
 
   #readoutField(
