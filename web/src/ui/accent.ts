@@ -200,6 +200,36 @@ export function contrastRatio(first: string, second: string): number {
   return (Math.max(one, other) + 0.05) / (Math.min(one, other) + 0.05);
 }
 
+/**
+ * How far apart two `#rrggbb` colours look, as an OKLab distance.
+ *
+ * @remarks Contrast ratio answers whether text on a colour is readable; it does not answer
+ * whether two colours beside each other are telling apart. OKLab is near enough perceptually
+ * uniform for that, so a plain distance in it is the measure. Roughly, 0.02 is where a large
+ * area starts to read as a different colour at all.
+ */
+export function perceptualDistance(first: string, second: string): number {
+  const [l1, a1, b1] = oklabOf(first);
+  const [l2, a2, b2] = oklabOf(second);
+  return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
+}
+
+/** Oklab coordinates of a `#rrggbb` colour. */
+function oklabOf(color: string): [number, number, number] {
+  const digits = color.replace('#', '');
+  const [red, green, blue] = [0, 2, 4].map((offset) =>
+    gammaDecode(parseInt(digits.slice(offset, offset + 2), 16) / 255),
+  ) as [number, number, number];
+  const long = Math.cbrt(0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue);
+  const medium = Math.cbrt(0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue);
+  const short = Math.cbrt(0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue);
+  return [
+    0.2104542553 * long + 0.793617785 * medium - 0.0040720468 * short,
+    1.9779984951 * long - 2.428592205 * medium + 0.4505937099 * short,
+    0.0259040371 * long + 0.7827717662 * medium - 0.808675766 * short,
+  ];
+}
+
 /** Whether an OKLCH colour lands inside sRGB, within a rounding step. */
 function inGamut(lightness: number, chroma: number, hue: number): boolean {
   const radians = (hue * Math.PI) / 180;

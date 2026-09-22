@@ -1381,3 +1381,13 @@ someone editing a table. High Contrast stays a full theme, because it takes no a
 The icon set is one mark at every size: rounded for a tab and a shortcut, maskable with the mark
 held inside the safe circle for a host that crops to its own shape, and monochrome in
 `currentColor` with no ground for a host that recolours the icon itself.
+
+### Selection separation is a floor, not an observation
+
+The contrast floors say whether text on an accent is readable. They say nothing about whether a
+selection on the canvas can be told apart from the detected pitch, the target pitch, a MIDI note
+and the playhead, which keep their own hues at every accent setting. That is a perceptual
+judgement, so it is measured as an OKLab distance, where roughly 0.02 is where a large area starts
+to read as a different colour at all. The tightest pair in the shipped set is Abyssal against a
+MIDI note at 0.088, and Sea Glass against the detected pitch at 0.147. The test asserts a floor of
+0.06 over every accent, so a ninth cannot be added that collides.

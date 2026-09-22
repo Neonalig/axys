@@ -1,8 +1,8 @@
 # Axys Design Maturity
 
 **Purpose:** Agreed changes that take the interface from working to mature  
-**Status:** Todo list, nothing implemented  
-**Authority:** Subordinate to `docs/design_bible.md`. Every choice below is settled. Record each in `docs/decisions.md` as it lands.
+**Status:** Implemented. Kept as the record of what was agreed and why  
+**Authority:** Subordinate to `docs/design_bible.md`. Every choice below is settled and every box is ticked; the design system itself now lives in design bible section 16, and each decision is recorded in `docs/decisions.md`.
 
 ## 1. Settled choices
 
@@ -46,9 +46,9 @@ Each scale below replaces one or two values plus a scatter of inline literals.
 
 `--axys-size-sm: 12px`, `--axys-size-md: 13px`, `--axys-size-lg: 16px`
 
-- [ ] Add the four scales and retire `--axys-gap`, `--axys-pad` and every inline radius.
-- [ ] Replace the `:focus-visible` outline with a two-layer `box-shadow` ring: 1px of `bg` inside, 2px of `focus` outside. `box-shadow` follows the element's own radius, so the current global `border-radius` override on `:focus-visible` goes away with it.
-- [ ] Document every token and its permitted use in the design bible.
+- [x] Add the four scales and retire `--axys-gap`, `--axys-pad` and every inline radius.
+- [x] Replace the `:focus-visible` outline with a two-layer `box-shadow` ring: 1px of `bg` inside, 2px of `focus` outside. `box-shadow` follows the element's own radius, so the current global `border-radius` override on `:focus-visible` goes away with it.
+- [x] Document every token and its permitted use in the design bible.
 
 ## 3. Motion
 
@@ -71,9 +71,9 @@ Animations are wanted. `prefers-reduced-motion` is already handled, so all of th
 | Theme and accent change   | slow     | standard |
 | State icon swap           | fast     | standard |
 
-- [ ] Add the duration and easing tokens, retire `--axys-motion`.
-- [ ] Apply the table above.
-- [ ] Never animate the playhead, canvas drags, value scrubs, zoom or anything driven per frame by the editor. Latency reads as lag in an editor.
+- [x] Add the duration and easing tokens, retire `--axys-motion`.
+- [x] Apply the table above.
+- [x] Never animate the playhead, canvas drags, value scrubs, zoom or anything driven per frame by the editor. Latency reads as lag in an editor.
 
 ## 4. Typography
 
@@ -86,22 +86,22 @@ Variable wins on size as well as range. Latin upright, measured from Fontsource 
 | Sans static, the three weights we need | 37.5 KB |
 | Mono variable, whole weight axis       | 17.8 KB |
 
-- [ ] Ship the two variable Latin woff2 files, 51.8 KB total. No italics, no `latin-ext` until localisation lands.
-- [ ] `--axys-font` becomes Atkinson Hyperlegible Next, `--axys-font-mono` becomes Atkinson Hyperlegible Mono, `system-ui` and `ui-monospace` stay as fallbacks.
-- [ ] Adopt the revised size scale in section 2. The 11px floor goes; Hyperlegible is drawn for legibility at reading sizes and looks loose below 12px.
-- [ ] Set `font-variant-numeric: tabular-nums` on the status bar, the inspector numeric fields, the readout layer and the mixer. The sans defaults to proportional lining figures, so readouts jitter in width while a value is dragged.
-- [ ] Widen the inspector for the wider face: `--axys-inspector-width` 328 to 344, `INSPECTOR_MIN_WIDTH` 240 to 256. The 640 maximum is unchanged.
-- [ ] Re-measure the toolbar at its narrowest after the swap; it feeds the overflow menu in section 11.
-- [ ] Bravura needs no typographic pairing. It is set in its own runs at its own size, with baseline and size offsets from the SMuFL metadata, never inherited from body text.
+- [x] Ship the two variable Latin woff2 files, 51.8 KB total. No italics, no `latin-ext` until localisation lands.
+- [x] `--axys-font` becomes Atkinson Hyperlegible Next, `--axys-font-mono` becomes Atkinson Hyperlegible Mono, `system-ui` and `ui-monospace` stay as fallbacks.
+- [x] Adopt the revised size scale in section 2. The 11px floor goes; Hyperlegible is drawn for legibility at reading sizes and looks loose below 12px.
+- [x] Set `font-variant-numeric: tabular-nums` on the status bar, the inspector numeric fields, the readout layer and the mixer. The sans defaults to proportional lining figures, so readouts jitter in width while a value is dragged.
+- [x] Widen the inspector for the wider face: `--axys-inspector-width` 328 to 344, `INSPECTOR_MIN_WIDTH` 240 to 256. The 640 maximum is unchanged.
+- [x] Re-measure the toolbar at its narrowest after the swap; it feeds the overflow menu in section 11.
+- [x] Bravura needs no typographic pairing. It is set in its own runs at its own size, with baseline and size offsets from the SMuFL metadata, never inherited from body text.
 
 ## 5. Iconography
 
 Lucide's own rule is stroke width equal to size over twelve, and it sanctions 16, 20, 24 and 32 as the rendered sizes. Keeping the shipped `viewBox="0 0 24 24"` and `stroke-width="2"` gives that for free: 1.67 at 20px, 1.33 at 16px, against the 1.4 in use today.
 
-- [ ] Take Lucide markup unmodified. No stroke overrides, no `non-scaling-stroke`, no regridding to 16.
-- [ ] Two rendered sizes only. 20px in the toolbar and tool palette, 16px in menus, inspector rows and the status bar.
-- [ ] `scripts/build-icons.mjs` generates `ui/icons.ts` in its current shape from a checked-in name map, so there is no runtime icon dependency and `currentColor` keeps working. Do not ship `lucide-static`; it unpacks to roughly 50MB.
-- [ ] Settle the five ambiguous names now, map the rest one to one at migration:
+- [x] Take Lucide markup unmodified. No stroke overrides, no `non-scaling-stroke`, no regridding to 16.
+- [x] Two rendered sizes only. 20px in the toolbar and tool palette, 16px in menus, inspector rows and the status bar.
+- [x] `scripts/build-icons.mjs` generates `ui/icons.ts` in its current shape from a checked-in name map, so there is no runtime icon dependency and `currentColor` keeps working. Do not ship `lucide-static`; it unpacks to roughly 50MB.
+- [x] Settle the five ambiguous names now, map the rest one to one at migration:
 
 | Current          | Lucide                                     |
 | ---------------- | ------------------------------------------ |
@@ -130,9 +130,9 @@ Lucide ships open and closed, on and off pairs, and a toggle should swap the gly
 | Blob excluded   | `eye`               | `eye-off`            |
 | Diagnostics     | `bug`               | `bug-off`            |
 
-- [ ] Widen `ICONS` to carry state pairs and have the toggles swap on state.
-- [ ] Where Lucide ships no off variant, and `metronome` and `magnet` are the two that matter here, keep the single glyph and carry the state on the control's pressed styling. Never hand-draw a slashed variant; a bespoke off glyph beside real Lucide pairs is immediately visible.
-- [ ] `aria-pressed` carries the state regardless of which glyph is showing. The swap is decoration.
+- [x] Widen `ICONS` to carry state pairs and have the toggles swap on state.
+- [x] Where Lucide ships no off variant, and `metronome` and `magnet` are the two that matter here, keep the single glyph and carry the state on the control's pressed styling. Never hand-draw a slashed variant; a bespoke off glyph beside real Lucide pairs is immediately visible.
+- [x] `aria-pressed` carries the state regardless of which glyph is showing. The swap is decoration.
 
 ## 6. Music glyphs
 
@@ -149,22 +149,22 @@ Locked codepoints:
 
 `E260-E264` accidentals, `E1D2-E1DB` noteheads and stemmed notes, `E1E7` augmentation dot, `E4E3-E4E7` rests, `E080-E09F` time signature digits, `ECA0-ECA9` metronome marks
 
-- [ ] Add a `pyftsubset --flavor=woff2 --layout-features='*' --no-hinting --desubroutinize` step beside the icon generator, budgeted at 16.4 KB.
-- [ ] Use Bravura for accidentals, note durations, rests, dotted values and metronome marks. No general icon pack carries these.
-- [ ] Use U+266F, U+266D and U+266E for sharp, flat and natural in running text, so an ordinary label does not pull the font in.
-- [ ] Note letters and octave numbers stay in the UI face. Bravura sets the accidental glyph only.
-- [ ] Give the accidental and snap dropdowns their glyphs once section 7 lands.
+- [x] Add a `pyftsubset --flavor=woff2 --layout-features='*' --no-hinting --desubroutinize` step beside the icon generator, budgeted at 16.4 KB.
+- [x] Use Bravura for accidentals, note durations, rests, dotted values and metronome marks. No general icon pack carries these.
+- [x] Use U+266F, U+266D and U+266E for sharp, flat and natural in running text, so an ordinary label does not pull the font in.
+- [x] Note letters and octave numbers stay in the UI face. Bravura sets the accidental glyph only.
+- [x] Give the accidental and snap dropdowns their glyphs once section 7 lands.
 
 ## 7. Components
 
 Controls that disagree about their own states are the single biggest tell of an immature interface.
 
-- [ ] Component inventory section in the design bible. Every control named once with rest, hover, active, disabled, focus and checked defined.
-- [ ] Add `ui/controls/` holding button, toggle, field, select and slider primitives, so the toolbar, inspector, mixer and dialogs stop styling the same control three ways.
-- [ ] Build the select out of `ui/menu.ts`, which already does per-item icons, check marks, disabled state and shortcut hints.
-- [ ] Replace the three native selects with it: `ui/export-dialog.ts:75`, `ui/export-dialog.ts:86`, `ui/inspector.ts:307`. Native options cannot hold markup, which is what blocks icons in dropdowns today.
-- [ ] Keep combobox semantics on the replacement: `role="combobox"`, type to select, Home and End, Escape to dismiss, focus returned to the trigger.
-- [ ] Bring the custom scrollbar and zoom control onto the primitives.
+- [x] Component inventory section in the design bible. Every control named once with rest, hover, active, disabled, focus and checked defined.
+- [x] Add `ui/controls/` holding button, toggle, field, select and slider primitives, so the toolbar, inspector, mixer and dialogs stop styling the same control three ways.
+- [x] Build the select out of `ui/menu.ts`, which already does per-item icons, check marks, disabled state and shortcut hints.
+- [x] Replace the three native selects with it: `ui/export-dialog.ts:75`, `ui/export-dialog.ts:86`, `ui/inspector.ts:307`. Native options cannot hold markup, which is what blocks icons in dropdowns today.
+- [x] Keep combobox semantics on the replacement: `role="combobox"`, type to select, Home and End, Escape to dismiss, focus returned to the trigger.
+- [x] Bring the custom scrollbar and zoom control onto the primitives.
 
 ## 8. Accent colour
 
@@ -205,12 +205,12 @@ Slate is Cerulean at a third of its chroma, so the neutral option costs no hue b
 
 All eight clear 4.5:1 for `accentText` on `accent` and 3:1 for `accent` against the surface behind it, in both themes. The tightest are Coral at 6.66 in dark and Sea Glass at 5.27 in light, both comfortably clear.
 
-- [ ] Derive the ramp in TypeScript, OKLCH in and hex out. `resolveTheme()` hands token text straight to Canvas 2D, so a `color-mix()` token would reach `fillStyle` as unresolved text.
-- [ ] Accent drives chrome only. `pitchDetected`, `pitchTarget`, `midiNote` and `playhead` keep their own hues at every setting.
-- [ ] High Contrast ignores the accent entirely and keeps `#00e5ff`, or the theme stops meeting its own promise.
-- [ ] Add `accent` to `Preferences` beside `theme`, defaulting to Cerulean.
-- [ ] Theme menu presents the accents as a radio group, each swatch carrying its colour name as its accessible name, and the name in the tooltip.
-- [ ] Assert the two contrast floors in a unit test over the generated ramp, so a future accent cannot be added without clearing them.
+- [x] Derive the ramp in TypeScript, OKLCH in and hex out. `resolveTheme()` hands token text straight to Canvas 2D, so a `color-mix()` token would reach `fillStyle` as unresolved text.
+- [x] Accent drives chrome only. `pitchDetected`, `pitchTarget`, `midiNote` and `playhead` keep their own hues at every setting.
+- [x] High Contrast ignores the accent entirely and keeps `#00e5ff`, or the theme stops meeting its own promise.
+- [x] Add `accent` to `Preferences` beside `theme`, defaulting to Cerulean.
+- [x] Theme menu presents the accents as a radio group, each swatch carrying its colour name as its accessible name, and the name in the tooltip.
+- [x] Assert the two contrast floors in a unit test over the generated ramp, so a future accent cannot be added without clearing them.
 
 ## 9. Translucency and window
 
@@ -218,28 +218,28 @@ Real Mica is a DWM system backdrop for native windows. It is not exposed to web 
 
 Settled treatment: `backdrop-filter: blur(20px) saturate(1.4)` over the surface token at 72% alpha in dark and 78% in light.
 
-- [ ] Apply it to menus, dropdowns, tooltips, dialogs, toasts, the inspector and the mixer. Panels floating over the waveform is most of what Mica Alt gives.
-- [ ] Add a ground layer behind the canvas so translucent chrome has something to sample past the end of a project.
-- [ ] High Contrast opts out and stays opaque.
-- [ ] `@supports not (backdrop-filter: blur(1px))` falls back to opaque surfaces.
-- [ ] Custom titlebar for the installed app: `window-controls-overlay` in `display_override`, the `titlebar-area-*` environment variables, `app-region` drag regions. It carries the project name from section 10 and falls back to the normal toolbar in every browser tab.
-- [ ] Record in `docs/decisions.md` that system Mica needs a native shell, so it stops being reopened.
+- [x] Apply it to menus, dropdowns, tooltips, dialogs, toasts, the inspector and the mixer. Panels floating over the waveform is most of what Mica Alt gives.
+- [x] Add a ground layer behind the canvas so translucent chrome has something to sample past the end of a project.
+- [x] High Contrast opts out and stays opaque.
+- [x] `@supports not (backdrop-filter: blur(1px))` falls back to opaque surfaces.
+- [x] Custom titlebar for the installed app: `window-controls-overlay` in `display_override`, the `titlebar-area-*` environment variables, `app-region` drag regions. It carries the project name from section 10 and falls back to the normal toolbar in every browser tab.
+- [x] Record in `docs/decisions.md` that system Mica needs a native shell, so it stops being reopened.
 
 ## 10. Project name and title
 
-- [ ] Add a project name to the document model, derived from the first audio import with its extension stripped.
-- [ ] Edit it in a project settings section of the inspector. That is sufficient on two conditions: it is the single source of truth, and renaming is undoable like any other edit.
-- [ ] Tab title, the `window-controls-overlay` titlebar, the save filename `persistence/project-io.ts` sanitises, and the export default name all read that field.
-- [ ] Title format: `Axys` with nothing open, `Take 3 - Axys` open and saved, `*Take 3 - Axys` when `store.dirty`.
-- [ ] Renaming does not move an already-saved file. The next save uses the new name.
+- [x] Add a project name to the document model, derived from the first audio import with its extension stripped.
+- [x] Edit it in a project settings section of the inspector. That is sufficient on two conditions: it is the single source of truth, and renaming is undoable like any other edit.
+- [x] Tab title, the `window-controls-overlay` titlebar, the save filename `persistence/project-io.ts` sanitises, and the export default name all read that field.
+- [x] Title format: `Axys` with nothing open, `Take 3 - Axys` open and saved, `*Take 3 - Axys` when `store.dirty`.
+- [x] Renaming does not move an already-saved file. The next save uses the new name.
 
 ## 11. Chrome and shell
 
-- [ ] Command palette on `Ctrl+Shift+P`, `Cmd+Shift+P` on macOS, over the 39 commands in `app/commands.ts` and reusing the shortcut registry. Largest single gain in perceived maturity, and the data already exists.
-- [ ] Toolbar overflow menu below the width measured in section 4, rather than letting the bar wrap.
-- [ ] Keyboard cheatsheet on `?`, from the same command and shortcut data the menus already show.
-- [ ] Canvas empty state before any import: a drop target, a keyboard alternative, and the three ways in.
-- [ ] First-paint skeleton while the wasm loads, so the shell does not flash unstyled and then populate.
+- [x] Command palette on `Ctrl+Shift+P`, `Cmd+Shift+P` on macOS, over the 39 commands in `app/commands.ts` and reusing the shortcut registry. Largest single gain in perceived maturity, and the data already exists.
+- [x] Toolbar overflow menu below the width measured in section 4, rather than letting the bar wrap.
+- [x] Keyboard cheatsheet on `?`, from the same command and shortcut data the menus already show.
+- [x] Canvas empty state before any import: a drop target, a keyboard alternative, and the three ways in.
+- [x] First-paint skeleton while the wasm loads, so the shell does not flash unstyled and then populate.
 
 ## 12. Editor feel
 
@@ -256,10 +256,10 @@ Cursor per tool, all custom cursors 24px with a declared hotspot and a stock fal
 | Number field scrub | `ew-resize`                                 |
 | Boundary drag      | `col-resize`                                |
 
-- [ ] Add the cursor set.
-- [ ] Name the fine-adjust modifier in the tooltip of every scrubbable number field.
-- [ ] Confirm grid, ruler and bounds lines land on pixel centres at each device pixel ratio, or they blur at 125 and 150 percent scaling.
-- [ ] Bring the marquee onto the existing `axys-march` animation.
+- [x] Add the cursor set.
+- [x] Name the fine-adjust modifier in the tooltip of every scrubbable number field.
+- [x] Confirm grid, ruler and bounds lines land on pixel centres at each device pixel ratio, or they blur at 125 and 150 percent scaling.
+- [x] Bring the marquee onto the existing `axys-march` animation.
 
 ## 13. String sweep
 
@@ -282,22 +282,22 @@ Every user-facing string gets read once against the GNOME HIG. It is specific, i
 
 Work:
 
-- [ ] Sweep every string in `web/src`, including toasts, dialogs, diagnostics, status items and error messages.
-- [ ] Rich tooltips on tools only: header-capitalised title, at most one supplementary line, shortcut. No examples, no explanation of why.
-- [ ] Add the rules to the design bible so the next string is written right the first time.
+- [x] Sweep every string in `web/src`, including toasts, dialogs, diagnostics, status items and error messages.
+- [x] Rich tooltips on tools only: header-capitalised title, at most one supplementary line, shortcut. No examples, no explanation of why.
+- [x] Add the rules to the design bible so the next string is written right the first time.
 
 ## 14. Identity
 
-- [ ] Cerulean is the identity: OKLCH hue 248, `#34a4ff` in dark and `#006cb5` in light. It is the default accent in every theme and the seed for Slate. The old `#4cc2ff` is retired.
-- [ ] Full app icon set. One `favicon.svg` and one maskable is the floor; add the install and taskbar sizes and a monochrome variant.
+- [x] Cerulean is the identity: OKLCH hue 248, `#34a4ff` in dark and `#006cb5` in light. It is the default accent in every theme and the seed for Slate. The old `#4cc2ff` is retired.
+- [x] Full app icon set. One `favicon.svg` and one maskable is the floor; add the install and taskbar sizes and a monochrome variant.
 
 ## 15. Verify against the running editor
 
 Decided and computed, but each needs one look before it is called done.
 
-- [ ] The palette clears its contrast floors arithmetically. Confirm on the canvas that a selection in Sea Glass or Abyssal still separates from the detected and target pitch traces, which is a perceptual judgement the ratios do not make.
-- [ ] Atkinson is wider than `system-ui`. Check the toolbar, status bar and inspector rows at the new sizes before fixing the overflow threshold.
-- [ ] Check the state icon pairs read at 16px as well as 20px. `panel-right-open` against `panel-right-close` is the narrowest difference in the set.
+- [x] The palette clears its contrast floors arithmetically. Confirm on the canvas that a selection in Sea Glass or Abyssal still separates from the detected and target pitch traces, which is a perceptual judgement the ratios do not make.
+- [x] Atkinson is wider than `system-ui`. Check the toolbar, status bar and inspector rows at the new sizes before fixing the overflow threshold.
+- [x] Check the state icon pairs read at 16px as well as 20px. `panel-right-open` against `panel-right-close` is the narrowest difference in the set.
 
 ## 16. Sources
 
