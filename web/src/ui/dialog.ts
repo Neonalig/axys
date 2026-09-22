@@ -1,40 +1,55 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Modal panels for diagnostics, licence information and confirmations.
+ * The one panel system: help, export, and the operations that preview while they are open.
  *
- * Focus stays inside an open dialog, Escape closes it, and the element that opened it is focused
- * again afterwards.
+ * Every panel is draggable by its own title bar and can be closed with Escape, with the close
+ * button, or by pressing outside it. A panel is blocking only when what it asks for has to be
+ * answered before anything else can happen; an operation that shows its result in the editor is
+ * not blocking, because the editor is where its result appears.
  */
 
 import { ICONS } from './icons.js';
+import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
 
-/** A button in a dialog's footer. */
+/** A button in a panel's footer. */
 export interface DialogAction {
   /** Short Title Case label, two or three words. */
   label: string;
-  /** Marks the action the dialog leads with, or the destructive one. */
+  /** Marks the action the panel leads with, or the destructive one. */
   kind?: 'primary' | 'danger';
-  /** Runs when the action is chosen. The dialog stays open unless the handler closes it. */
+  /** Runs when the action is chosen. The panel stays open unless the handler closes it. */
   onSelect(dialog: Dialog): void;
 }
 
-/** Everything a dialog needs to open. */
+/** Everything a panel needs to open. */
 export interface DialogOptions {
   /** Short Title Case heading. */
   title: string;
-  /** Body content, adopted by the dialog. */
+  /** Icon shown beside the heading. */
+  icon?: IconName;
+  /** Body content, adopted by the panel. */
   content: Node;
   actions?: readonly DialogAction[];
-  /** Element the dialog is appended to. Defaults to the document body. */
+  /**
+   * Whether the panel blocks the rest of the editor.
+   *
+   * @remarks Default. A panel that previews its result in the editor passes `false`, so the
+   * transport and the canvas stay reachable while it is open.
+   */
+  blocking?: boolean;
+  /** Element the panel is appended to. Defaults to the document body. */
   parent?: HTMLElement;
-  /** Runs once, after the dialog has closed. */
+  /** Runs once, after the panel has closed. */
   onClose?: () => void;
 }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Distance in pixels a panel is kept from the viewport edge while it is dragged. */
+const MARGIN = 8;
 
 function focusableIn(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
@@ -43,27 +58,55 @@ function focusableIn(root: HTMLElement): HTMLElement[] {
 }
 
 /**
- * One modal dialog.
+ * One panel.
  *
- * @remarks Only one dialog is expected at a time; opening a second stacks it in the browser's
- * top layer above the first.
+ * @remarks Opening a second panel stacks it above the first. A blocking panel darkens what is
+ * behind it and keeps the keyboard inside itself; a non-blocking one does neither.
  */
 export class Dialog {
-  readonly #element: HTMLDialogElement;
+  readonly #element: HTMLElement;
+  readonly #backdrop: HTMLElement | null;
   readonly #body: HTMLElement;
   readonly #opener: Element | null;
   readonly #onClose: (() => void) | undefined;
+  readonly #blocking: boolean;
   #closed = false;
+  #dragFrom: { x: number; y: number } | null = null;
+  #position: { x: number; y: number } | null = null;
 
   private constructor(options: DialogOptions) {
     this.#opener = document.activeElement;
     this.#onClose = options.onClose;
+    this.#blocking = options.blocking !== false;
 
-    const element = document.createElement('dialog');
+    const parent = options.parent ?? document.body;
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'axys-backdrop';
+    backdrop.addEventListener('pointerdown', () => {
+      this.close();
+    });
+    this.#backdrop = this.#blocking ? backdrop : null;
+    if (this.#backdrop !== null) {
+      parent.append(this.#backdrop);
+    }
+
+    const element = document.createElement('div');
     element.className = 'axys-dialog';
+    element.setAttribute('role', 'dialog');
+    element.setAttribute('aria-modal', String(this.#blocking));
+    element.setAttribute('aria-label', options.title);
+    element.tabIndex = -1;
 
     const head = document.createElement('div');
     head.className = 'axys-dialog-head';
+
+    if (options.icon !== undefined) {
+      const mark = document.createElement('span');
+      mark.className = 'axys-dialog-icon';
+      mark.innerHTML = ICONS[options.icon];
+      head.append(mark);
+    }
 
     const heading = document.createElement('h2');
     heading.textContent = options.title;
@@ -83,6 +126,7 @@ export class Dialog {
       this.close();
     });
     head.append(close);
+    head.addEventListener('pointerdown', this.#onDragStart);
     element.append(head);
 
     const body = document.createElement('div');
@@ -116,56 +160,78 @@ export class Dialog {
     element.addEventListener('keydown', (event: KeyboardEvent) => {
       this.#onKeyDown(event);
     });
-    element.addEventListener('close', () => {
-      this.#afterClose();
-    });
 
-    (options.parent ?? document.body).append(element);
+    parent.append(element);
     this.#element = element;
   }
 
-  /** Opens a modal dialog and focuses its first control. */
+  /** Opens a panel and focuses its first control. */
   static open(options: DialogOptions): Dialog {
     const dialog = new Dialog(options);
     dialog.#show();
     return dialog;
   }
 
-  /** The dialog element, for tests and for styling hooks. */
-  get element(): HTMLDialogElement {
+  /** The panel element, for tests and for styling hooks. */
+  get element(): HTMLElement {
     return this.#element;
   }
 
-  /** The content area, so a caller can replace what it shows while the dialog is open. */
+  /** The content area, so a caller can replace what it shows while the panel is open. */
   get body(): HTMLElement {
     return this.#body;
   }
 
-  /** True until the dialog has closed. */
+  /** True until the panel has closed. */
   get open(): boolean {
     return !this.#closed;
   }
 
-  /** Closes the dialog and restores focus. */
+  /** Closes the panel and restores focus. */
   close(): void {
     if (this.#closed) {
       return;
     }
-    if (this.#element.open) {
-      this.#element.close();
-    } else {
-      this.#afterClose();
+    this.#closed = true;
+    window.removeEventListener('pointermove', this.#onDragMove);
+    window.removeEventListener('pointerup', this.#onDragEnd);
+    document.removeEventListener('pointerdown', this.#onOutside, true);
+    this.#backdrop?.remove();
+    this.#element.remove();
+    if (this.#opener instanceof HTMLElement) {
+      this.#opener.focus();
     }
+    this.#onClose?.();
   }
 
   #show(): void {
-    this.#element.showModal();
     const first = focusableIn(this.#element)[0];
-    first?.focus();
+    (first ?? this.#element).focus();
+    if (!this.#blocking) {
+      // A panel that does not block still closes when the next thing pressed is outside it and
+      // outside the editor's own controls, which is what pressing "somewhere else" means.
+      document.addEventListener('pointerdown', this.#onOutside, true);
+    }
   }
 
+  #onOutside = (event: Event): void => {
+    if (event.target instanceof Node && !this.#element.contains(event.target)) {
+      // Only a press on another panel or on the page chrome dismisses it; the editor canvas is
+      // where this panel's result is shown, so pressing there is part of using it.
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.axys-canvas-area') === null) {
+        this.close();
+      }
+    }
+  };
+
   #onKeyDown(event: KeyboardEvent): void {
-    if (event.key !== 'Tab') {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.close();
+      return;
+    }
+    if (event.key !== 'Tab' || !this.#blocking) {
       return;
     }
     const focusable = focusableIn(this.#element);
@@ -185,15 +251,49 @@ export class Dialog {
     }
   }
 
-  #afterClose(): void {
-    if (this.#closed) {
+  #onDragStart = (event: PointerEvent): void => {
+    if (event.button !== 0 || event.target instanceof HTMLButtonElement) {
       return;
     }
-    this.#closed = true;
-    this.#element.remove();
-    if (this.#opener instanceof HTMLElement) {
-      this.#opener.focus();
+    const bounds = this.#element.getBoundingClientRect();
+    this.#position = { x: bounds.left, y: bounds.top };
+    this.#dragFrom = { x: event.clientX, y: event.clientY };
+    this.#element.classList.add('is-dragging');
+    window.addEventListener('pointermove', this.#onDragMove);
+    window.addEventListener('pointerup', this.#onDragEnd);
+    event.preventDefault();
+  };
+
+  #onDragMove = (event: PointerEvent): void => {
+    const from = this.#dragFrom;
+    const at = this.#position;
+    if (from === null || at === null) {
+      return;
     }
-    this.#onClose?.();
-  }
+    const bounds = this.#element.getBoundingClientRect();
+    const left = clamp(
+      at.x + (event.clientX - from.x),
+      MARGIN,
+      Math.max(MARGIN, window.innerWidth - bounds.width - MARGIN),
+    );
+    const top = clamp(
+      at.y + (event.clientY - from.y),
+      MARGIN,
+      Math.max(MARGIN, window.innerHeight - bounds.height - MARGIN),
+    );
+    this.#element.style.left = `${String(Math.round(left))}px`;
+    this.#element.style.top = `${String(Math.round(top))}px`;
+    this.#element.style.transform = 'none';
+  };
+
+  #onDragEnd = (): void => {
+    this.#dragFrom = null;
+    this.#element.classList.remove('is-dragging');
+    window.removeEventListener('pointermove', this.#onDragMove);
+    window.removeEventListener('pointerup', this.#onDragEnd);
+  };
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return value < low ? low : value > high ? high : value;
 }

@@ -116,6 +116,9 @@ class AxysWorkspace implements Workspace {
   #autosave: Autosave | null = null;
   #pending: PendingProject | null = null;
   #importing = false;
+  /** Edits the open operation has applied for good, and the ones it replaces as it is used. */
+  #previewFixed = 0;
+  #previewTail = 0;
   /** Where Save Project last wrote, so a later save needs no picker. */
   #projectFile: FileHandle | null = null;
 
@@ -172,9 +175,72 @@ class AxysWorkspace implements Workspace {
     }
   }
 
+  get previewing(): boolean {
+    return this.#previewFixed + this.#previewTail > 0;
+  }
+
+  /**
+   * Applies an operation's edits in place of the ones it applied last.
+   *
+   * @remarks Each call unwinds the previous one before applying, so dragging a slider leaves the
+   * history with one entry rather than one per frame, and discarding leaves it as it was.
+   */
+  previewEdits(ops: readonly EditOp[]): void {
+    const session = this.#session;
+    if (!session) return;
+    this.#unwind(this.#previewTail);
+    this.#previewTail = 0;
+    for (const op of ops) {
+      try {
+        session.applyEdit(op);
+      } catch (error) {
+        this.#fail('Apply Edit', error);
+        break;
+      }
+      this.#previewTail += 1;
+    }
+    this.#publish();
+  }
+
+  pinPreview(): void {
+    this.#previewFixed += this.#previewTail;
+    this.#previewTail = 0;
+  }
+
+  commitPreview(): void {
+    this.#previewFixed = 0;
+    this.#previewTail = 0;
+  }
+
+  discardPreview(): void {
+    const applied = this.#previewFixed + this.#previewTail;
+    this.#previewFixed = 0;
+    this.#previewTail = 0;
+    if (applied === 0) return;
+    this.#unwind(applied);
+    this.#publish();
+  }
+
+  /** Steps the session back over the newest edits, without reporting a failure as an edit. */
+  #unwind(count: number): void {
+    const session = this.#session;
+    if (!session) return;
+    for (let step = 0; step < count; step += 1) {
+      try {
+        if (!session.undo()) break;
+      } catch (error) {
+        this.#fail('Undo', error);
+        return;
+      }
+    }
+  }
+
   apply(op: EditOp): void {
     const session = this.#session;
     if (!session) return;
+    // An edit made elsewhere lands on top of an open operation, so what the operation was
+    // previewing is kept rather than unwound out from under the edit that followed it.
+    this.commitPreview();
     const guide = this.#store.state.edits?.guide ?? null;
     try {
       session.applyEdit(op);
@@ -559,6 +625,7 @@ class AxysWorkspace implements Workspace {
       source,
       track,
       blobs,
+      plan,
       conflicts: session.conflicts(),
       edits: session.state(),
       midi: session.midi(),
@@ -646,6 +713,10 @@ class AxysWorkspace implements Workspace {
       const blobs = session.blobs();
       this.#store.update({
         blobs,
+        // The plan is what correction, guidance and modulation actually amount to, and the
+        // editor draws the pitch target from it. Leaving it out drew the blob edits alone, so
+        // an operation the plan carried moved nothing on screen.
+        plan,
         conflicts: session.conflicts(),
         edits: session.state(),
         // An edit can split, join or replace blobs, so what the selected span amounts to is

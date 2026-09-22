@@ -18,6 +18,7 @@ import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
 import { showDiagnostics } from '../ui/diagnostics.js';
+import { showCorrection, showVoiceCharacter } from '../ui/operations.js';
 import { showExportDialog } from '../ui/export-dialog.js';
 import type { ExportChoice, ExportRange } from '../ui/export-dialog.js';
 import type { ToastHost } from '../ui/toast.js';
@@ -52,6 +53,32 @@ export interface Workspace {
    * @remarks One call is one undo step.
    */
   apply(op: EditOp): void;
+
+  /**
+   * Applies edits as the outstanding preview of an operation.
+   *
+   * @remarks Replaces whatever the previous call applied, so an operation whose sliders are
+   * being dragged leaves one entry in the history rather than one per frame. Ends with
+   * {@link Workspace.commitPreview} or {@link Workspace.discardPreview}.
+   */
+  previewEdits(ops: readonly EditOp[]): void;
+
+  /**
+   * Fixes what the preview has applied so far, so later previews replace only what follows.
+   *
+   * @remarks For the part of an operation that does not change as its controls are moved, such
+   * as which blobs it applies to.
+   */
+  pinPreview(): void;
+
+  /** Keeps the outstanding preview and ends the run. */
+  commitPreview(): void;
+
+  /** Undoes the outstanding preview and ends the run. */
+  discardPreview(): void;
+
+  /** True while an operation is previewing, which is when undo and redo are not the user's. */
+  readonly previewing: boolean;
 
   /** Undoes the newest edit. False when there was nothing to undo. */
   undo(): boolean;
@@ -311,7 +338,7 @@ export function buildCommands(): Command[] {
    * toolbar flickers; an edit mid-playback also swaps the plan under the renderer.
    */
   const editable = (ctx: CommandContext): boolean =>
-    ready(ctx) && !ctx.store.state.transport.playing;
+    ready(ctx) && !ctx.store.state.transport.playing && !ctx.workspace.previewing;
 
   const commands: Command[] = [
     {
@@ -392,6 +419,26 @@ export function buildCommands(): Command[] {
       },
     },
 
+    {
+      // Correction is an operation, not a project setting: it is chosen, watched against the
+      // material, and then kept or thrown away. With a span selected it applies to that span.
+      id: 'edit.correction',
+      label: 'Correction',
+      group: 'Edit',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.edits !== null,
+      run: (ctx) => {
+        showCorrection(ctx);
+      },
+    },
+    {
+      id: 'edit.voiceCharacter',
+      label: 'Voice Character',
+      group: 'Edit',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.edits !== null,
+      run: (ctx) => {
+        showVoiceCharacter(ctx);
+      },
+    },
     {
       id: 'edit.selectAll',
       label: 'Select All',

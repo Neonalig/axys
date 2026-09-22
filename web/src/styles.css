@@ -775,12 +775,27 @@ input[type='checkbox'] {
   }
 }
 
-/* Dialog */
+/* Panels: draggable, and blocking only when what they ask has to be answered first */
 
-dialog.axys-dialog {
-  min-width: min(520px, calc(100vw - 32px));
+.axys-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: rgb(0 0 0 / 50%);
+}
+
+.axys-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: min(480px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   max-height: 80dvh;
   padding: 16px;
+  transform: translate(-50%, -50%);
   color: var(--axys-text);
   background: var(--axys-surface-raised);
   border: 1px solid var(--axys-border-strong);
@@ -788,8 +803,9 @@ dialog.axys-dialog {
   box-shadow: 0 12px 40px var(--axys-shadow);
 }
 
-dialog.axys-dialog::backdrop {
-  background: rgb(0 0 0 / 50%);
+.axys-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .axys-dialog-head {
@@ -797,11 +813,29 @@ dialog.axys-dialog::backdrop {
   align-items: center;
   gap: var(--axys-gap);
   margin-bottom: var(--axys-pad);
+  cursor: grab;
+  user-select: none;
+}
+
+.axys-dialog.is-dragging .axys-dialog-head {
+  cursor: grabbing;
+}
+
+.axys-dialog-icon {
+  display: flex;
+  color: var(--axys-text-muted);
 }
 
 .axys-dialog-head > h2 {
   margin: 0;
   font-size: var(--axys-size-lg);
+}
+
+.axys-dialog-actions {
+  justify-content: flex-end;
+  margin-top: var(--axys-pad);
+  padding-top: var(--axys-pad);
+  border-top: 1px solid var(--axys-border);
 }
 
 /* Diagnostics and capability lists */

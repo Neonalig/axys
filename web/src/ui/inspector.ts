@@ -15,10 +15,8 @@ import type {
   AccidentalStyle,
   Blob,
   EditOp,
-  FormantMode,
   GuideMode,
   GuideSelection,
-  ScaleSettings,
   TimeDisplay,
   ViewState,
 } from '../core/types.js';
@@ -44,28 +42,6 @@ const NOTE_NAMES: Readonly<Record<AccidentalStyle, readonly string[]>> = {
   sharps: ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'],
   flats: ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'],
 };
-
-interface ScalePreset {
-  id: string;
-  label: string;
-  degrees: readonly number[];
-}
-
-const SCALE_PRESETS: readonly ScalePreset[] = [
-  { id: 'major', label: 'Major', degrees: [0, 2, 4, 5, 7, 9, 11] },
-  { id: 'minor', label: 'Natural Minor', degrees: [0, 2, 3, 5, 7, 8, 10] },
-  { id: 'harmonic', label: 'Harmonic Minor', degrees: [0, 2, 3, 5, 7, 8, 11] },
-  { id: 'melodic', label: 'Melodic Minor', degrees: [0, 2, 3, 5, 7, 9, 11] },
-  { id: 'dorian', label: 'Dorian', degrees: [0, 2, 3, 5, 7, 9, 10] },
-  { id: 'phrygian', label: 'Phrygian', degrees: [0, 1, 3, 5, 7, 8, 10] },
-  { id: 'lydian', label: 'Lydian', degrees: [0, 2, 4, 6, 7, 9, 11] },
-  { id: 'mixolydian', label: 'Mixolydian', degrees: [0, 2, 4, 5, 7, 9, 10] },
-  { id: 'locrian', label: 'Locrian', degrees: [0, 1, 3, 5, 6, 8, 10] },
-  { id: 'pentaMajor', label: 'Major Pentatonic', degrees: [0, 2, 4, 7, 9] },
-  { id: 'pentaMinor', label: 'Minor Pentatonic', degrees: [0, 3, 5, 7, 10] },
-  { id: 'blues', label: 'Blues', degrees: [0, 3, 5, 6, 7, 10] },
-  { id: 'chromatic', label: 'Chromatic', degrees: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
-];
 
 const SNAP_DIVISIONS: readonly { value: number; label: string }[] = [
   { value: 1, label: 'Bar' },
@@ -178,14 +154,6 @@ export function noteName(midi: number, style: AccidentalStyle): string {
   return `${name}${String(octave)}`;
 }
 
-function sameDegrees(a: readonly number[], b: readonly number[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function presetFor(degrees: readonly number[]): string {
-  return SCALE_PRESETS.find((preset) => sameDegrees(preset.degrees, degrees))?.id ?? 'custom';
-}
-
 function readNumber(input: HTMLInputElement, fallback: number): number {
   const value = Number.parseFloat(input.value);
   return Number.isFinite(value) ? value : fallback;
@@ -245,20 +213,6 @@ export class Inspector {
   readonly #splitButton: HTMLButtonElement;
   readonly #resetButton: HTMLButtonElement;
   readonly #joinButton: HTMLButtonElement;
-
-  readonly #key: HTMLSelectElement;
-  readonly #scale: HTMLSelectElement;
-  readonly #strength: HTMLInputElement;
-  readonly #strengthReadout: HTMLElement;
-  readonly #excludedNotes: HTMLInputElement[] = [];
-  readonly #excludedLabels: HTMLElement[] = [];
-  readonly #drift: HTMLInputElement;
-  readonly #driftReadout: HTMLElement;
-  readonly #vibrato: HTMLInputElement;
-  readonly #vibratoReadout: HTMLElement;
-  readonly #vibratoSplit: HTMLInputElement;
-  readonly #formantMode: HTMLSelectElement;
-  readonly #formantShift: HTMLInputElement;
 
   readonly #tuning: HTMLInputElement;
   readonly #accidentals: HTMLSelectElement;
@@ -359,88 +313,8 @@ export class Inspector {
     blobPanel.append(blobActions);
     properties.append(blobPanel);
 
-    // Scale panel.
-    const scalePanel = panel('Key And Scale');
-    this.#key = selectInput(
-      NOTE_NAMES.sharps.map((name, index) => ({ value: String(index), label: name })),
-    );
-    this.#scale = selectInput([
-      ...SCALE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
-      { value: 'custom', label: 'Custom' },
-    ]);
-    this.#strength = rangeInput(0, 1, 0.01);
-    this.#strengthReadout = document.createElement('span');
-    this.#strengthReadout.className = 'axys-readout';
-
-    scalePanel.append(
-      field('Key', this.#key, 'Tonic the scale is built on.'),
-      field('Scale', this.#scale, 'Allowed scale degrees used by pitch correction.'),
-      this.#readoutField(
-        'Correction Strength',
-        this.#strength,
-        this.#strengthReadout,
-        'How strongly detected pitch is pulled to the nearest allowed note.',
-      ),
-    );
-
-    const excludedSet = document.createElement('fieldset');
-    excludedSet.className = 'axys-note-grid';
-    const legend = document.createElement('legend');
-    legend.textContent = 'Excluded Notes';
-    excludedSet.append(legend);
-    for (let pitchClass = 0; pitchClass < 12; pitchClass += 1) {
-      const wrapper = document.createElement('label');
-      wrapper.className = 'axys-note-toggle';
-      const box = checkboxInput();
-      setTooltip(box, 'Leaves this note out of automatic correction.');
-      const caption = document.createElement('span');
-      caption.textContent = NOTE_NAMES.sharps[pitchClass] ?? '?';
-      wrapper.htmlFor = box.id;
-      wrapper.append(box, caption);
-      box.addEventListener('change', () => {
-        this.#commitScale();
-      });
-      this.#excludedNotes.push(box);
-      this.#excludedLabels.push(caption);
-      excludedSet.append(wrapper);
-    }
-    scalePanel.append(excludedSet);
-    project.append(scalePanel);
-
-    // Modulation and formant panel.
-    const voicePanel = panel('Voice Character');
-    this.#drift = rangeInput(0, 1, 0.01);
-    this.#driftReadout = document.createElement('span');
-    this.#driftReadout.className = 'axys-readout';
-    this.#vibrato = rangeInput(0, 2, 0.01);
-    this.#vibratoReadout = document.createElement('span');
-    this.#vibratoReadout.className = 'axys-readout';
-    this.#vibratoSplit = numberInput({ step: 0.1, min: 0.5, max: 12 });
-    this.#formantMode = selectInput([
-      { value: 'follow', label: 'Follow Pitch' },
-      { value: 'preserve', label: 'Preserve Formants' },
-      { value: 'shift', label: 'Shift Formants' },
-    ]);
-    this.#formantShift = rangeInput(-12, 12, 0.1);
-
-    voicePanel.append(
-      this.#readoutField(
-        'Pitch Drift',
-        this.#drift,
-        this.#driftReadout,
-        'How much slow pitch drift survives correction.',
-      ),
-      this.#readoutField(
-        'Vibrato Depth',
-        this.#vibrato,
-        this.#vibratoReadout,
-        'Scales detected vibrato; 1 keeps it as sung.',
-      ),
-      field('Vibrato Split', this.#vibratoSplit, 'Boundary in Hz between drift and vibrato.'),
-      field('Formant Mode', this.#formantMode, 'How the vocal tract is treated while pitch moves.'),
-      field('Formant Shift', this.#formantShift, 'Independent formant movement in semitones.'),
-    );
-    project.append(voicePanel);
+    // Correction and voice character are operations rather than settings, so neither is
+    // drawn here; each opens its own panel and previews in the editor while it is open.
 
     // Display panel.
     const displayPanel = panel('Display');
@@ -580,8 +454,6 @@ export class Inspector {
     this.#blob = blob;
 
     this.#updateBlob(blob, selected.length, style);
-    this.#updateScale(edits?.scale ?? null, style);
-    this.#updateVoice(state);
     this.#updateDisplay(state);
     this.#updateGuide(state);
   }
@@ -636,61 +508,6 @@ export class Inspector {
     setValue(this.#semitones, blob.pitchOffset.toFixed(2));
     setValue(this.#cents, Math.round(blob.pitchOffset * 100).toFixed(0));
     setChecked(this.#excluded, blob.excluded);
-  }
-
-  #updateScale(scale: ScaleSettings | null, style: AccidentalStyle): void {
-    const disabled = scale === null;
-    this.#key.disabled = disabled;
-    this.#scale.disabled = disabled;
-    this.#strength.disabled = disabled;
-    for (const box of this.#excludedNotes) {
-      box.disabled = disabled;
-    }
-    for (const [index, label] of this.#excludedLabels.entries()) {
-      label.textContent = NOTE_NAMES[style][index] ?? '?';
-    }
-    if (!scale) {
-      this.#strengthReadout.textContent = '--';
-      return;
-    }
-    setValue(this.#key, String(scale.root));
-    setValue(this.#scale, presetFor(scale.degrees));
-    setValue(this.#strength, String(scale.strength));
-    this.#strengthReadout.textContent = `${String(Math.round(scale.strength * 100))}%`;
-    for (const [index, box] of this.#excludedNotes.entries()) {
-      setChecked(box, scale.excluded.includes(index));
-    }
-  }
-
-  #updateVoice(state: AppState): void {
-    const edits = state.edits;
-    const disabled = edits === null;
-    for (const control of [
-      this.#drift,
-      this.#vibrato,
-      this.#vibratoSplit,
-      this.#formantMode,
-      this.#formantShift,
-    ]) {
-      control.disabled = disabled;
-    }
-    if (!edits) {
-      this.#driftReadout.textContent = '--';
-      this.#vibratoReadout.textContent = '--';
-      return;
-    }
-    const modulation = edits.modulation;
-    setValue(this.#drift, String(modulation.drift));
-    this.#driftReadout.textContent = `${String(Math.round(modulation.drift * 100))}%`;
-    setValue(this.#vibrato, String(modulation.vibratoDepth));
-    this.#vibratoReadout.textContent = `${String(Math.round(modulation.vibratoDepth * 100))}%`;
-    setValue(this.#vibratoSplit, modulation.vibratoSplitHz.toFixed(1));
-
-    const formant = edits.formant;
-    const mode = typeof formant === 'string' ? formant : 'shift';
-    setValue(this.#formantMode, mode);
-    setValue(this.#formantShift, typeof formant === 'string' ? '0' : String(formant.shift));
-    this.#formantShift.disabled = disabled || mode !== 'shift';
   }
 
   #updateDisplay(state: AppState): void {
@@ -868,38 +685,6 @@ export class Inspector {
       this.#hooks.applyEdit({ type: 'resetBlob', blob: blob.id });
     });
 
-    this.#key.addEventListener('change', () => {
-      this.#commitScale();
-    });
-    this.#scale.addEventListener('change', () => {
-      this.#commitScale();
-    });
-    this.#strength.addEventListener('input', () => {
-      this.#strengthReadout.textContent = `${String(Math.round(readNumber(this.#strength, 0) * 100))}%`;
-    });
-    this.#strength.addEventListener('change', () => {
-      this.#commitScale();
-    });
-
-    this.#drift.addEventListener('input', () => {
-      this.#driftReadout.textContent = `${String(Math.round(readNumber(this.#drift, 0) * 100))}%`;
-    });
-    this.#vibrato.addEventListener('input', () => {
-      this.#vibratoReadout.textContent = `${String(Math.round(readNumber(this.#vibrato, 0) * 100))}%`;
-    });
-    for (const control of [this.#drift, this.#vibrato, this.#vibratoSplit]) {
-      control.addEventListener('change', () => {
-        this.#commitModulation();
-      });
-    }
-
-    this.#formantMode.addEventListener('change', () => {
-      this.#commitFormant();
-    });
-    this.#formantShift.addEventListener('change', () => {
-      this.#commitFormant();
-    });
-
     this.#tuning.addEventListener('change', () => {
       const current = this.#state?.edits?.tuning.a4Hz ?? 440;
       this.#hooks.setTuning(readNumber(this.#tuning, current));
@@ -935,52 +720,6 @@ export class Inspector {
     this.#guideMuted.addEventListener('change', () => {
       this.#commitGuide();
     });
-  }
-
-  #commitScale(): void {
-    const current = this.#state?.edits?.scale;
-    if (!current) return;
-    const root = Number.parseInt(this.#key.value, 10);
-    const preset = SCALE_PRESETS.find((entry) => entry.id === this.#scale.value);
-    const excluded: number[] = [];
-    for (const [index, box] of this.#excludedNotes.entries()) {
-      if (box.checked) {
-        excluded.push(index);
-      }
-    }
-    const scale: ScaleSettings = {
-      root: Number.isFinite(root) ? root : current.root,
-      degrees: preset ? [...preset.degrees] : [...current.degrees],
-      strength: readNumber(this.#strength, current.strength),
-      excluded,
-    };
-    this.#hooks.applyEdit({ type: 'setScale', scale });
-  }
-
-  #commitModulation(): void {
-    const current = this.#state?.edits?.modulation;
-    if (!current) return;
-    this.#hooks.applyEdit({
-      type: 'setModulation',
-      modulation: {
-        drift: readNumber(this.#drift, current.drift),
-        vibratoDepth: readNumber(this.#vibrato, current.vibratoDepth),
-        vibratoSplitHz: readNumber(this.#vibratoSplit, current.vibratoSplitHz),
-      },
-    });
-  }
-
-  #commitFormant(): void {
-    if (!this.#state?.edits) return;
-    const mode = this.#formantMode.value;
-    const formant: FormantMode =
-      mode === 'preserve'
-        ? 'preserve'
-        : mode === 'shift'
-          ? { shift: readNumber(this.#formantShift, 0) }
-          : 'follow';
-    this.#formantShift.disabled = mode !== 'shift';
-    this.#hooks.applyEdit({ type: 'setFormant', formant });
   }
 
   #commitGuide(): void {

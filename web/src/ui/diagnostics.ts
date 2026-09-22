@@ -192,9 +192,14 @@ export function renderDiagnostics(input: DiagnosticsInput): HTMLElement {
   return container;
 }
 
-/** Opens a diagnostics report that was gathered by the caller. */
+/**
+ * Opens the help panel.
+ *
+ * @remarks Titled for what someone opens it to get rather than for what it contains: it answers
+ * what this browser can do, what playback is doing, and where the source is.
+ */
 export function showDiagnostics(input: DiagnosticsInput): Dialog {
-  return Dialog.open({ title: 'Diagnostics', content: renderDiagnostics(input) });
+  return Dialog.open({ title: 'Help', icon: 'help', content: renderDiagnostics(input) });
 }
 
 /**
@@ -218,7 +223,7 @@ export function noteCapabilities(capabilities: readonly Capability[]): void {
   latestCapabilities = capabilities;
 }
 
-/** Opens the Source Code entry in a modal dialog. */
+/** Opens the Source Code entry in its own panel. */
 export function showSourceCode(): Dialog {
-  return Dialog.open({ title: 'Source Code', content: renderSourceCode() });
+  return Dialog.open({ title: 'Source Code', icon: 'sourceCode', content: renderSourceCode() });
 }
