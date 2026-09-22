@@ -10,6 +10,11 @@
 import '../styles.css';
 
 import type { ThemeChoice } from '../app/preferences.js';
+import {
+  INSPECTOR_DEFAULT_WIDTH,
+  INSPECTOR_MAX_WIDTH,
+  INSPECTOR_MIN_WIDTH,
+} from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../editor/view.js';
@@ -68,6 +73,8 @@ export interface ShellHooks {
   setToolbarLabels(on: boolean): void;
   /** Folds the inspector away to its rail, or opens it again, and remembers the choice. */
   setInspectorCollapsed(on: boolean): void;
+  /** Sets how wide the inspector column is, and remembers it. */
+  setInspectorWidth(pixels: number): void;
 }
 
 /** What the chrome is built from. */
@@ -100,6 +107,10 @@ const TOOLS: readonly ToolEntry[] = [
 
 /** How long the metronome flash takes to fade, in seconds. */
 const PULSE_SECONDS = 0.12;
+
+/** Pixels one arrow press moves the inspector divider, by modifier. */
+const RESIZE_STEP = 8;
+const RESIZE_STEP_COARSE = 32;
 
 /** Theme entries the chrome offers, with following the operating system first and default. */
 const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
@@ -387,6 +398,9 @@ export class AppShell {
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
   readonly #header: HTMLElement;
   readonly #themeButton: HTMLButtonElement;
+  readonly #resizer: HTMLElement;
+  /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
+  #resizeGrab = 0;
 
   #themeChoice: ThemeChoice;
 
@@ -607,7 +621,8 @@ export class AppShell {
     });
     footer.append(spacerEnd, this.#zoom.element);
 
-    this.#root.append(header, main, this.#inspector.element, footer);
+    this.#resizer = this.#buildResizer();
+    this.#root.append(header, main, this.#resizer, this.#inspector.element, footer);
     this.#toasts = new ToastHost(document.body);
     this.#tooltips = TooltipHost.install(this.#root);
   }
@@ -756,9 +771,12 @@ export class AppShell {
     );
 
     this.setToolbarLabels(state.toolbarLabels);
-    // The column width is the grid's, so the shell carries the folded state rather than the
-    // panel that asked for it.
+    // The column width is the grid's, so the shell carries the folded state and the width rather
+    // than the panel that asked for either.
     this.#root.classList.toggle('is-inspector-collapsed', state.inspectorCollapsed);
+    this.#root.style.setProperty('--axys-inspector-width', `${String(state.inspectorWidth)}px`);
+    this.#resizer.setAttribute('aria-valuenow', String(state.inspectorWidth));
+    this.#resizer.hidden = state.inspectorCollapsed;
     this.#view = state.view;
     const duration = state.source?.duration ?? 0;
     this.#timeBar.update({
@@ -949,6 +967,71 @@ export class AppShell {
     this.#hooks.setTheme(choice);
     this.setTheme(choice);
     this.announce(themeLabel(choice));
+  }
+
+  /**
+   * The bar between the canvas and the inspector, dragged to set the column width.
+   *
+   * @remarks A grid column of its own rather than something laid over either neighbour: the
+   * inspector scrolls, and a handle inside it would scroll away with the settings. Arrow keys
+   * move it too, so the width is reachable without a pointer.
+   */
+  #buildResizer(): HTMLElement {
+    const bar = document.createElement('div');
+    bar.className = 'axys-resizer';
+    bar.tabIndex = 0;
+    bar.setAttribute('role', 'separator');
+    bar.setAttribute('aria-orientation', 'vertical');
+    bar.setAttribute('aria-label', 'Resize Inspector');
+    bar.setAttribute('aria-valuemin', String(INSPECTOR_MIN_WIDTH));
+    bar.setAttribute('aria-valuemax', String(INSPECTOR_MAX_WIDTH));
+    setTooltip(bar, 'Resize Inspector');
+
+    bar.addEventListener('pointerdown', (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      this.#resizeGrab =
+        this.#root.getBoundingClientRect().right - event.clientX - this.#inspectorWidth();
+      bar.setPointerCapture(event.pointerId);
+      bar.classList.add('is-dragging');
+      event.preventDefault();
+    });
+    bar.addEventListener('pointermove', (event: PointerEvent) => {
+      if (!bar.hasPointerCapture(event.pointerId)) return;
+      const edge = this.#root.getBoundingClientRect().right;
+      this.#hooks.setInspectorWidth(edge - event.clientX - this.#resizeGrab);
+    });
+    const end = (event: PointerEvent): void => {
+      if (!bar.hasPointerCapture(event.pointerId)) return;
+      bar.releasePointerCapture(event.pointerId);
+      bar.classList.remove('is-dragging');
+    };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+
+    bar.addEventListener('keydown', (event: KeyboardEvent) => {
+      const step = event.shiftKey ? RESIZE_STEP_COARSE : RESIZE_STEP;
+      if (event.key === 'ArrowLeft') {
+        this.#hooks.setInspectorWidth(this.#inspectorWidth() + step);
+      } else if (event.key === 'ArrowRight') {
+        this.#hooks.setInspectorWidth(this.#inspectorWidth() - step);
+      } else {
+        return;
+      }
+      // Stopped here as well as defaulted: the shortcuts listen on the window, and an arrow that
+      // reached them would nudge the selection while the divider was being moved.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    // Double-clicking a divider puts it back where it started, which is what every other one does.
+    bar.addEventListener('dblclick', () => {
+      this.#hooks.setInspectorWidth(INSPECTOR_DEFAULT_WIDTH);
+    });
+    return bar;
+  }
+
+  /** The width the inspector column is drawn at now. */
+  #inspectorWidth(): number {
+    return this.#inspector.element.getBoundingClientRect().width;
   }
 
   #buildToolGroup(): HTMLElement {

@@ -44,6 +44,8 @@ export interface AppState {
   toolbarLabels: boolean;
   /** Whether the inspector is folded away to its rail. */
   inspectorCollapsed: boolean;
+  /** How wide the inspector column is, in pixels. */
+  inspectorWidth: number;
   dirty: boolean;
 }
 
@@ -193,6 +195,7 @@ export function initialState(): AppState {
     followMode: 'page',
     toolbarLabels: false,
     inspectorCollapsed: false,
+    inspectorWidth: 328,
     dirty: false,
   };
 }

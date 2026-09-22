@@ -409,6 +409,7 @@ export function buildCommands(): Command[] {
       id: 'file.importMidi',
       label: 'Import MIDI',
       group: 'File',
+      shortcut: 'Ctrl+I',
       enabled: (ctx) => ready(ctx) && !ctx.workspace.importing,
       run: async (ctx) => {
         await ctx.workspace.importMidi();
@@ -467,7 +468,6 @@ export function buildCommands(): Command[] {
       label: 'Correction',
       group: 'Edit',
       shortcut: 'O',
-      altShortcut: '1',
       enabled: (ctx) => editable(ctx) && ctx.store.state.edits !== null,
       run: (ctx) => {
         showCorrection(ctx);
@@ -572,10 +572,11 @@ export function buildCommands(): Command[] {
       // by one, because half a selection changing state is not a result anybody asked for.
       // Exclusion is about automatic correction only: the blob still sounds, and the edits made
       // on it by hand still apply.
+      // `E` rather than a digit: the digits address the take by proportion, all ten of them.
       id: 'edit.excludeBlob',
       label: 'Exclude Blob',
       group: 'Edit',
-      shortcut: '0',
+      shortcut: 'E',
       enabled: (ctx) => editable(ctx) && targetBlobs(ctx.store.state).length > 0,
       run: (ctx) => {
         const blobs = targetBlobs(ctx.store.state);

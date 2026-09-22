@@ -239,7 +239,7 @@ The tools carry the letters Melodyne and Ableton have already trained: `V` selec
 slice, `P` pitch, `B` draw, `N` ramp, `T` time. The operations sit beside them on `I` and `O`, and
 the two buttons sit in that order. Everything else avoids the chords the browser answers first, so
 Reset is `R` and Smooth Span is `H` rather than `Ctrl+R` and `Ctrl+H`. Zoom Fit is `.` and Exclude
-Blob is `0`.
+Blob is `E`; no command takes a bare digit, because the digits belong to the transport.
 
 An operation previews through the workspace rather than committing as it goes:
 
@@ -267,9 +267,10 @@ export function bindShortcuts(
 
 Space toggles play, Escape clears selection, arrow keys nudge, Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z
 or Ctrl+Y redoes. Home and End take the playhead to the start and the end, and the page keys page
-the view along the timeline, with Shift keeping them on the pitch axis. Numpad 0 to 9 jump the
-playhead to 0% to 90% of the take; they are read by `code`, so they stay distinct from the digits
-above the letters, which are commands. Shortcuts must not fire while a text input has focus.
+the view along the timeline, with Shift keeping them on the pitch axis. The ten digits jump the
+playhead across the take, `1` at the start through `0` at the end, evenly spaced; either row
+answers, and they are read by `code` so a layout that puts a symbol on an unshifted digit still
+works. Shortcuts must not fire while a text input has focus.
 
 ## Audio: `audio/engine.ts`
 
@@ -425,9 +426,12 @@ change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `
 settings, each bound to an `EditOp`. Correction and voice character are not here: they are
 operations.
 
-The panel folds away to a rail carrying the one control that opens it again, and that choice is a
-device preference rather than project state. The shell owns the column width, because the grid is
-the shell's; the panel owns nothing but its own class.
+The panel folds away to a rail carrying the one control that opens it again, and the divider
+between it and the canvas is dragged to set its width. Both are device preferences rather than
+project state. The shell owns the column width and the divider, because the grid is the shell's;
+the panel owns nothing but its own class. The divider is a grid column of its own rather than
+something laid over either neighbour, because the inspector scrolls and a handle inside it would
+scroll away with the settings.
 
 A field's explainer hangs off its label, marked with an info icon, rather than off the control: a
 tooltip over the control covers the slider or the drop-down being reached for. The blob panel is

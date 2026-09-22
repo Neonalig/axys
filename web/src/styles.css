@@ -72,14 +72,36 @@ body {
 
 #app {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--axys-inspector-width);
+  grid-template-columns: minmax(0, 1fr) auto var(--axys-inspector-width);
   grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    'toolbar toolbar'
-    'canvas inspector'
-    'status status';
+    'toolbar toolbar toolbar'
+    'canvas resizer inspector'
+    'status status status';
   height: 100dvh;
   width: 100%;
+}
+
+/* The divider between the canvas and the inspector, dragged to set the column width */
+
+.axys-resizer {
+  grid-area: resizer;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--axys-surface);
+  border-left: 1px solid var(--axys-border);
+  touch-action: none;
+}
+
+.axys-resizer[hidden] {
+  display: none;
+}
+
+.axys-resizer:hover,
+.axys-resizer:focus-visible,
+.axys-resizer.is-dragging {
+  background: var(--axys-accent);
+  outline: none;
 }
 
 #app > header,
@@ -204,7 +226,6 @@ body {
   overscroll-behavior: contain;
   padding: var(--axys-pad);
   background: var(--axys-surface);
-  border-left: 1px solid var(--axys-border);
 }
 
 /* Folding the inspector away: the column narrows to a rail carrying the control that opens it */

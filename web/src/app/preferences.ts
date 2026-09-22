@@ -27,6 +27,23 @@ export interface Preferences {
   toolbarLabels: boolean;
   /** Whether the inspector starts folded away to its rail. */
   inspectorCollapsed: boolean;
+  /** How wide the inspector column is, in pixels. */
+  inspectorWidth: number;
+}
+
+/** Narrowest the inspector column may be dragged, in pixels. */
+export const INSPECTOR_MIN_WIDTH = 240;
+
+/** Widest the inspector column may be dragged, in pixels. */
+export const INSPECTOR_MAX_WIDTH = 640;
+
+/** The width the inspector column opens at. */
+export const INSPECTOR_DEFAULT_WIDTH = 328;
+
+/** A stored or dragged width, held inside the bounds the column may take. */
+export function clampInspectorWidth(value: number): number {
+  if (!Number.isFinite(value)) return INSPECTOR_DEFAULT_WIDTH;
+  return Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, Math.round(value)));
 }
 
 /** Local storage key holding the settings document. */
@@ -44,6 +61,7 @@ export function defaultPreferences(): Preferences {
     timeDisplay: 'seconds',
     toolbarLabels: false,
     inspectorCollapsed: false,
+    inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
   };
 }
 
@@ -81,6 +99,10 @@ export function loadPreferences(): Preferences {
       typeof record['inspectorCollapsed'] === 'boolean'
         ? record['inspectorCollapsed']
         : defaults.inspectorCollapsed,
+    inspectorWidth:
+      typeof record['inspectorWidth'] === 'number'
+        ? clampInspectorWidth(record['inspectorWidth'])
+        : defaults.inspectorWidth,
   };
 }
 

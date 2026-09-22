@@ -27,9 +27,26 @@ const TIME_STEP_FINE = 0.001;
 const SEEK_STEP = 1;
 const SEEK_STEP_COARSE = 5;
 
-/** Digits the numpad carries, which address the take by proportion rather than by command. */
-const NUMPAD_DIGITS: readonly string[] = [
-  'Numpad0',
+/**
+ * The digit keys in the order they sit on a keyboard, either row.
+ *
+ * @remarks `1` through `0` left to right, which is the order the take is laid out in, so the row
+ * reads as a line across it. The numpad's own digits answer the same way.
+ */
+const DIGIT_ROW: readonly string[] = [
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'Digit4',
+  'Digit5',
+  'Digit6',
+  'Digit7',
+  'Digit8',
+  'Digit9',
+  'Digit0',
+];
+
+const NUMPAD_ROW: readonly string[] = [
   'Numpad1',
   'Numpad2',
   'Numpad3',
@@ -39,6 +56,7 @@ const NUMPAD_DIGITS: readonly string[] = [
   'Numpad7',
   'Numpad8',
   'Numpad9',
+  'Numpad0',
 ];
 
 interface Chord {
@@ -143,16 +161,17 @@ function seekBy(ctx: CommandContext, event: KeyboardEvent): boolean {
 /**
  * Jumps the playhead to a proportion of the take.
  *
- * @remarks Numpad 0 to 9 are 0% to 90%, the way a media player's number row scrubs. They are read
- * by `code` rather than by `key`, so the numpad digit and the digit above the letters stay two
- * different keys: `0` on the number row excludes a blob.
+ * @remarks The ten digits span the whole take: `1` is the start and `0` is the end, with the eight
+ * between them evenly spaced, so the row reads as a line across the material rather than as ten
+ * separate marks that stop short of it. Read by `code` rather than by `key`, so a keyboard layout
+ * that puts a symbol on an unshifted digit still answers.
  */
 function jumpToPercent(ctx: CommandContext, code: string): boolean {
-  const digit = NUMPAD_DIGITS.indexOf(code);
-  if (digit < 0) return false;
+  const index = DIGIT_ROW.indexOf(code) < 0 ? NUMPAD_ROW.indexOf(code) : DIGIT_ROW.indexOf(code);
+  if (index < 0) return false;
   const duration = ctx.store.state.source?.duration ?? 0;
   if (!(duration > 0)) return false;
-  ctx.editor.goTo((duration * digit) / 10);
+  ctx.editor.goTo((duration * index) / (DIGIT_ROW.length - 1));
   return true;
 }
 

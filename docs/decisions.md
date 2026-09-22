@@ -819,12 +819,16 @@ than the frame spacing is the zoom rather than an unvoiced stretch, so the frame
 are joined; anything wider is material with no pitch in it and stays open. The collection window
 also reaches one frame past each edge of the view, so the line reaches the edges.
 
-### The numpad addresses the take, the number row addresses commands
+### The digits are a line across the take
 
-Numpad 0 to 9 jump the playhead to 0% to 90% of the take, the way a media player's number row
-scrubs. They are read by `KeyboardEvent.code` rather than by `key`, because with NumLock on the two
-rows report the same `key` and `0` above the letters is Exclude Blob. Reading the code keeps them
-two keys rather than one key with two meanings.
+The ten digit keys sit in a line, and the take is laid out in a line, so the row maps onto it: `1`
+is the start, `0` is the end, and the eight between them are evenly spaced. Stepping in tens
+instead would leave the last tenth of the take with no key on it, which is the one position the
+row's last key should reach. Either digit row answers, and both are read by `KeyboardEvent.code`
+rather than by `key`, so a layout that puts a symbol on an unshifted digit still works.
+
+That took the digits away from the commands: Exclude Blob moved from `0` to `E`. No command takes a
+bare digit now, because a digit that sometimes scrubbed and sometimes edited would be neither.
 
 ### The inspector folds to a rail
 
@@ -842,3 +846,12 @@ the label alone.
 The first grip was a dotted strip above the title bar, which added an area rather than marking one.
 The gap between the title and the close button was already draggable and is where a hand reaches
 for a panel, so the dots moved into it and the strip is gone.
+
+### The inspector divider is a grid column
+
+Folding the panel away was not the whole of it: the width someone wants depends on the take and on
+the screen, so the divider between the canvas and the inspector is dragged to set it. It is a grid
+column of its own rather than a handle laid over either neighbour, because the inspector scrolls
+and a handle inside it would scroll away with the settings. Arrow keys move it and a double-click
+puts it back, which is what every other divider does. The width is a device preference, and it is
+clamped so the column can be neither hidden nor made to swallow the editor.

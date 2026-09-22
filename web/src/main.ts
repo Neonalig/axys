@@ -12,7 +12,7 @@
 import { buildCommands, findCommand } from './app/commands.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { bindShortcuts } from './app/shortcuts.js';
-import { loadPreferences, savePreferences } from './app/preferences.js';
+import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
 import { AppStore, initialState } from './app/store.js';
@@ -1197,6 +1197,11 @@ function buildHooks(
       savePreferences({ inspectorCollapsed: on });
       store.update({ inspectorCollapsed: on });
     },
+    setInspectorWidth(pixels: number): void {
+      const width = clampInspectorWidth(pixels);
+      savePreferences({ inspectorWidth: width });
+      store.update({ inspectorWidth: width });
+    },
     setTheme(choice: ThemeChoice): void {
       savePreferences({ theme: choice });
       applyTheme(resolvedTheme(choice));
@@ -1236,6 +1241,7 @@ async function start(): Promise<void> {
     followMode: preferences.followMode,
     toolbarLabels: preferences.toolbarLabels,
     inspectorCollapsed: preferences.inspectorCollapsed,
+    inspectorWidth: preferences.inspectorWidth,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });
   const commands = buildCommands();
