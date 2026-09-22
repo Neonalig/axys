@@ -323,3 +323,77 @@ These were resolved while implementing `crates/axys-core`. Each names the module
 Added to the list at the end of this document rather than repeated here: the PSOLA seek cost, the
 half-period phase error on unstable pitch, cepstral formant estimation accuracy, segmentation of
 slow glissandi, and the base64 and schema-migration leniencies. See Known limitations.
+
+## Implementation decisions recorded during the browser build
+
+### The AudioWorklet calls the WebAssembly ABI directly
+
+`web/src/audio/worklet/renderer-worklet.ts` does not import the generated wasm-bindgen glue. An
+AudioWorklet module is loaded as a single file with no import support in Chrome, and the worklet
+scope has neither `fetch` nor `TextEncoder`/`TextDecoder`, all of which the generated glue needs at
+module scope. The worklet therefore builds its own import object, matching each mangled import by
+its stable prefix read from `WebAssembly.Module.imports` and throwing a named error on anything it
+does not recognise, then calls `playbackrenderer_create`, `setPlan`, `render` and `outputFrames`
+directly on the instance the main thread posts to it.
+
+This couples the worklet to the wasm-bindgen ABI, which is the real cost of the decision. It is
+accepted because the alternative is a second, hand-written C-style export surface on the Rust side
+purely for the audio thread, which would duplicate the contract and give two things to keep in
+step instead of one. The unknown-import error makes an ABI change fail loudly at startup rather
+than silently producing wrong audio, and `npm run check` builds both halves together so a drift
+cannot reach a user.
+
+Plan and track JSON are encoded to UTF-8 on the main thread and posted as `Uint8Array`, so the
+worklet needs no text encoder and a plan update costs one memcpy on the audio thread.
+
+### The AudioContext opens at the source sample rate
+
+Where the host refuses that rate, the worklet resamples its output by the ratio rather than letting
+the plan and the device disagree about what a second is. A rejected plan leaves the previous plan
+rendering and reports the failure to the main thread; a failed render, a missing renderer or a
+missing core outputs silence and counts an underrun. Nothing in the audio path ever emits noise on
+failure.
+
+### Compare modes
+
+`original` plays the source on the same transport clock as the processed output rather than through
+the time map, so A/B on a timing edit lets the user hear the original timing against the new one.
+`split` puts original left and processed right. `processed` is the default.
+
+### One path from edit to sound
+
+Every edit path in `main.ts` ends in a single method that reads `session.plan()`, hands it to
+`AudioEngine.setPlan`, and then updates blobs, conflicts and edit state in one store patch. The
+audible result and the drawn result therefore cannot disagree, and a control that does not reach
+that method is dead by construction rather than by accident.
+
+### Bars and beats are computed in TypeScript for drawing
+
+The ruler and grid layers derive bar lines from `state.edits.timeline` rather than calling
+`Session.beatGridJson` per frame, so layers stay pure draw functions with no WebAssembly call
+inside the render loop. The arithmetic mirrors the Rust contract and is capped at 4096 grid points.
+The core remains the authority for snapping and for the playhead readout, where exactness matters
+more than frame cost.
+
+### Time domains
+
+The store's `view.playhead` is in source seconds; the engine's position and loop range are in
+output seconds. The workspace converts between them through the plan's time map, so a loop set from
+a selection follows timing edits instead of drifting off them.
+
+### Gestures and undo
+
+Each gesture commits exactly one `EditOp`. Previews are held as controller state and drawn by the
+renderer rather than by mutating the store, so an in-flight drag can never be mistaken for a
+committed edit and undo is always one step per gesture. Modifier meaning is uniform across tools:
+Shift constrains, Alt is fine adjustment at a fifth of the travel with snapping off, and Ctrl or
+Cmd toggles snapping.
+
+### Persistence details
+
+`project-io.ts` carries a TypeScript mirror of `axys_core::project::fingerprint`, verified byte for
+byte against the Rust implementation, because relinking has to digest a candidate file before a
+session exists to ask. Relink decodes through an `OfflineAudioContext` at the project's own sample
+rate, so no hardware device is opened and the digest is comparable. `MediaStore` picks OPFS or
+IndexedDB once at `open()` and keeps it, so a project never has half its audio in one and half in
+the other.
