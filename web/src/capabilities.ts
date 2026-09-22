@@ -169,6 +169,13 @@ function probeOpfsSync(): boolean {
   return hasPrototypeMember('FileSystemFileHandle', 'createSyncAccessHandle');
 }
 
+function probeFilePickers(): boolean {
+  return (
+    typeof globalRecord()['showOpenFilePicker'] === 'function' &&
+    typeof globalRecord()['showSaveFilePicker'] === 'function'
+  );
+}
+
 function probeSecureContext(): boolean {
   return safe(() => globalThis.isSecureContext === true);
 }
@@ -292,6 +299,14 @@ export async function probeCapabilities(): Promise<Capability[]> {
       opfs,
       'Decoded audio is cached between sessions.',
       'Decoded audio is not cached, so reopening a project decodes the source file again.',
+    ),
+    capability(
+      'file-pickers',
+      'File Pickers',
+      false,
+      probeFilePickers(),
+      'Saving asks where the file goes and writes there again without asking.',
+      'Every save downloads to the browser download folder; Save As cannot offer a picker.',
     ),
     capability(
       'opfs-sync',

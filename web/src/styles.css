@@ -514,10 +514,12 @@ input[type='checkbox'] {
 .axys-note-toggle {
   position: relative;
   display: flex;
+  gap: 4px;
   align-items: center;
   justify-content: center;
   height: 24px;
   min-width: 0;
+  padding: 0 8px;
   font-size: var(--axys-size-sm);
   font-variant-numeric: tabular-nums;
   color: var(--axys-text-muted);
@@ -531,7 +533,8 @@ input[type='checkbox'] {
     color var(--axys-motion) ease;
 }
 
-.axys-note-toggle > input[type='checkbox'] {
+.axys-note-toggle > input[type='checkbox'],
+.axys-note-toggle > input[type='radio'] {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -542,6 +545,11 @@ input[type='checkbox'] {
 .axys-note-toggle:hover {
   border-color: var(--axys-border-strong);
   color: var(--axys-text);
+}
+
+.axys-note-toggle:has(> input:disabled) {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .axys-note-toggle:has(> input:checked) {

@@ -58,13 +58,17 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
   figures.className = 'axys-panel';
   content.append(figures);
 
+  // What was selected is what an export is usually for, so a selection is what the dialog
+  // opens on. With nothing selected there is only one range to offer.
   const whole = radio('axys-export-range', 'Whole Project');
   const selected = radio('axys-export-range', 'Selected Range');
-  whole.input.checked = true;
-  selected.input.disabled = options.selection === null;
+  const hasSelection = options.selection !== null;
+  selected.input.disabled = !hasSelection;
+  selected.input.checked = hasSelection;
+  whole.input.checked = !hasSelection;
 
   const rangeGroup = document.createElement('div');
-  rangeGroup.className = 'axys-group';
+  rangeGroup.className = 'axys-group axys-segmented';
   rangeGroup.append(whole.label, selected.label);
   settings.append(labelled('Range', rangeGroup));
 
@@ -95,14 +99,29 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
     depth: depthOf(depths.value),
   });
 
-  const refresh = (): void => {
+  // Measuring a range renders it, which is the same work the export itself does, so nothing is
+  // measured until it is asked for. Changing the range or the format simply invites it again.
+  const measure = document.createElement('button');
+  measure.type = 'button';
+  measure.textContent = 'Measure Range';
+  measure.addEventListener('click', () => {
     const choice = chosen();
     describe(figures, options.preview(choice.range), choice);
+  });
+
+  const invite = (): void => {
+    figures.replaceChildren();
+    const heading = document.createElement('h2');
+    heading.textContent = 'Export Preview';
+    const line = document.createElement('p');
+    line.className = 'axys-hint';
+    line.textContent = describeChoice(chosen());
+    figures.append(heading, line, measure);
   };
-  refresh();
+  invite();
 
   for (const control of [whole.input, selected.input, rates, depths]) {
-    control.addEventListener('change', refresh);
+    control.addEventListener('change', invite);
   }
 
   return Dialog.open({
@@ -126,6 +145,20 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
       },
     ],
   });
+}
+
+/** What an export would write, from what the dialog already knows and without measuring it. */
+function describeChoice(choice: ExportChoice): string {
+  const range =
+    choice.range === null
+      ? 'The whole project'
+      : `${seconds(choice.range.start)} to ${seconds(choice.range.end)}`;
+  return `${range}, at ${String(choice.sampleRate)} Hz, ${depthLabel(choice.depth)}. Measure it for peak level, clipping and timing conflicts.`;
+}
+
+/** How a bit depth names itself. */
+function depthLabel(depth: BitDepth): string {
+  return DEPTHS.find((entry) => entry.value === depth)?.label ?? String(depth);
 }
 
 /** Rewrites the figures panel for one range and its chosen format. */
