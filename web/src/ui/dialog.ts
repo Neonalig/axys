@@ -98,6 +98,13 @@ export class Dialog {
     element.setAttribute('aria-label', options.title);
     element.tabIndex = -1;
 
+    // A dotted strip across the top of the panel. The title bar has always been the grab area;
+    // nothing on it said so, so panels were dragged by accident or not at all.
+    const grip = document.createElement('span');
+    grip.className = 'axys-dialog-grip';
+    grip.setAttribute('aria-hidden', 'true');
+    grip.addEventListener('pointerdown', this.#onDragStart);
+
     const head = document.createElement('div');
     head.className = 'axys-dialog-head';
 
@@ -127,7 +134,7 @@ export class Dialog {
     });
     head.append(close);
     head.addEventListener('pointerdown', this.#onDragStart);
-    element.append(head);
+    element.append(grip, head);
 
     const body = document.createElement('div');
     body.className = 'axys-dialog-body';

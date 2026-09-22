@@ -824,6 +824,24 @@ input[type='checkbox'] {
   user-select: none;
 }
 
+/* The grip: a dotted strip across the top saying the panel is a thing you can move */
+
+.axys-dialog-grip {
+  height: 10px;
+  margin: -8px -8px 8px;
+  cursor: grab;
+  border-radius: var(--axys-radius);
+  background-image: radial-gradient(var(--axys-border-strong) 1px, transparent 1px);
+  background-size: 4px 4px;
+  background-position: 0 3px;
+  opacity: 0.7;
+}
+
+.axys-dialog:hover > .axys-dialog-grip,
+.axys-dialog.is-dragging > .axys-dialog-grip {
+  opacity: 1;
+}
+
 .axys-dialog.is-dragging .axys-dialog-head {
   cursor: grabbing;
 }
