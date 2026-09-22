@@ -35,7 +35,7 @@ const NAMES = 'https://raw.githubusercontent.com/w3c/smufl/gh-pages/metadata/gly
 /**
  * The codepoint ranges shipped, inclusive at both ends.
  *
- * @remarks Locked by the design maturity document. Widening a range widens the file, so measure
+ * @remarks Locked by design bible section 14. Widening a range widens the file, so measure
  * against the 16.4 KB budget before adding one.
  */
 const RANGES = [

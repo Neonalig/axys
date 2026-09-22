@@ -1,8 +1,10 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # Axys decisions
 
-Material implementation choices, the reasoning behind them, and the limitations that remain open.
-`docs/design_bible.md` section 15 lists what must eventually be recorded here; each of those has an
-entry below.
+Material implementation choices and the reasoning behind each one, grouped by what they
+govern. `docs/design_bible.md` is the authority on what Axys does; this records how, and why
+the alternatives were not taken.
 
 ## Platform and toolchain
 
@@ -65,7 +67,14 @@ therefore cannot disagree about pitch, timing, alignment or boundaries; they dif
 `render::Quality`, which changes how much formant work is done per grain, never what the edit
 means.
 
-## Audio and DSP
+### The development wasm is optimised
+
+`npm run dev` builds the core with `--dev`, and an unoptimised analysis pass is what a contributor
+measures import against. `[profile.dev] opt-level = 2` with `opt-level = 3` for dependencies brings
+a take's analysis back into the seconds it takes in release while leaving debug assertions and
+incremental builds on. Measured on the project's own test suite: 51.6 s to 2.9 s.
+
+## Analysis and DSP
 
 ### Pitch analysis is pYIN-style YIN with a Viterbi pass
 
@@ -83,7 +92,7 @@ learned estimators (a model download and a licence question, against a local-fir
 Time-domain pitch-synchronous overlap-add transforms pitch and time independently, preserves
 consonants better than a plain phase vocoder, is cheap enough for the realtime path, and degrades
 predictably. Reference: Moulines and Charpentier, _Pitch-synchronous waveform processing techniques
-for text-to-speech synthesis using diphones_, Speech Communication 1990. Rejected for now: phase
+for text-to-speech synthesis using diphones_, Speech Communication 1990. Rejected: phase
 vocoder (transient smearing on plosives), sinusoidal modelling (heavier and harder to make
 deterministic per output block). The DSP sits behind `dsp::psola` and `render::Renderer`, so a
 second method can be compared without touching the UI or the project model.
@@ -140,6 +149,56 @@ parts sum back to the original contour exactly. A one-pole pair was tried first 
 only -8 dB one octave above the split it left audible vibrato in the drift band. That is what lets correction strength and vibrato depth be independent
 controls rather than one blunt amount.
 
+### Analysis implementation
+
+- **`analysis/f0.rs`** computes YIN's difference function through an FFT autocorrelation rather than
+  a direct double loop, packing the two real inputs into one complex transform. Frame centres sit on
+  exact multiples of the realised hop so the pitch and energy grids line up. At the buffer edges the
+  window slides inside the buffer instead of zero-padding, so no frame is analysed against half
+  silence. Viterbi costs are 0.08 per semitone of transition, 0.15 per voicing switch and an
+  unvoiced observation cost of twice the YIN threshold; these are tuned against the fixture battery,
+  not taken from the paper.
+- **NaN crosses JSON as null.** `serde_json` cannot represent NaN, and an unvoiced frame's MIDI
+  value is NaN. `PitchFrame` and `PitchTrackArrays` carry serde shims mapping it to and from `null`,
+  so a project containing any unvoiced frame reopens. Without this the round trip silently failed.
+- **`analysis/energy.rs`** normalises spectral flux by the track maximum, so an onset threshold is
+  relative to the loudest transient in the clip rather than an absolute level. Crowded onset peaks
+  resolve strongest-first, so a weak precursor cannot mask the real attack.
+- **`analysis/segment.rs`** confirms a sustained pitch step at two window scales, because one
+  hold-length window cannot tell a real step from the steep part of a 5 to 6 Hz vibrato. Leading
+  consonant attachment is capped at 250 ms and never crosses the previous blob's end.
+
+### Transformation implementation
+
+- **Formant modes are acoustic, not literal.** Plain TD-PSOLA already preserves the spectral
+  envelope when grain content is copied untouched, so `Preserve` copies 1:1, `Follow` resamples
+  grain content by the pitch ratio so the envelope rides pitch the way plain resampling would, and
+  `Shift(s)` resamples by `2^(s/12)`. Resampling under the name Preserve would have moved formants,
+  which design bible 7.3 forbids.
+- **Overlap-add is normalised by accumulated window weight**, not by a fixed gain. The weight sums
+  to roughly the pitch ratio, so this doubles as gain compensation and keeps level constant under a
+  varying ratio without clicks. Below a weight of 0.05 the sample is left un-normalised rather than
+  amplified.
+- **The mark phase seed is epoch 0 mapped into output time**, not output sample 0. It stays a pure
+  function of the closures and the epoch map, so determinism holds, and it is what makes a unit
+  ratio render reproduce the source rather than delaying it by a fraction of a period.
+- **Clamps that keep a bad plan controlled**: pitch ratio 0.25 to 4.0, grain content resampling 0.5
+  to 2.0, grain half-width 50 ms, output magnitude 4.0, formant shift one octave either way.
+- **`dsp/window.rs::hann_symmetric` uses the half-sample grid**, `0.5 - 0.5 cos(2 pi (n + 0.5) / N)`.
+  The textbook symmetric Hann is symmetric but fails constant overlap-add; the periodic Hann
+  satisfies overlap-add but is not symmetric. The half-sample form is the only one that is both.
+- **`dsp/resample.rs`** normalises kernel weights per output sample rather than using an analytic
+  gain, which makes an identity-ratio conversion exact. The anti-alias cutoff sits at 0.97 of the
+  target Nyquist, trading a sliver of top end for real stopband rejection at practical kernel widths.
+- **`render.rs` Quality tiers differ in fidelity, never in intent.** `Offline` adds a short-time
+  cepstral envelope pass on top of PSOLA, gain-matched so it moves spectral shape only. Its frame
+  grid is anchored at absolute output sample 0, which keeps block-split offline rendering bit-exact.
+  `Preview` relies on the PSOLA approximation alone and caps each synthesiser call at 4096 frames to
+  bound per-block work.
+- **Rendering past the end of the source is silence, not a repeated grain.** PSOLA clamps a grain to
+  the nearest pitch mark, so `render_range` masks any output sample whose mapped source position
+  lies outside the buffer.
+
 ## Edit model
 
 ### What dragging each blob edge means
@@ -190,128 +249,7 @@ the recorded analysis parameters. Linked, never embedded: the source audio itsel
 the browser's Origin Private File System and is verified on relink by fingerprint rather than by
 name.
 
-## Persistence
-
-### Origin Private File System for media, IndexedDB for documents
-
-Project documents are small JSON and live in IndexedDB with explicit schema versioning. Decoded
-source audio is large and lives in OPFS, keyed by fingerprint. Explicit project import and export
-write a single `.axys.json` file, so the only recoverable copy of a user's work is never trapped in
-an opaque browser cache. Autosave writes the document, not the media.
-
-## Licensing
-
-- Application code is `AGPL-3.0-or-later`; `LICENSE` holds the full text and every
-  application-owned source file carries an SPDX identifier.
-- Every dependency is MIT, Apache-2.0 or dual MIT/Apache-2.0, all compatible with
-  `AGPL-3.0-or-later`. `THIRD_PARTY_LICENSES.md` lists them.
-- The npm dependencies are development tooling only. Nothing third-party is bundled into `dist/`
-  beyond the application's own compiled output.
-- The in-app Source Code entry resolves to the repository and the build's revision, supplied at
-  build time by `AXYS_SOURCE_REPOSITORY` and `AXYS_SOURCE_REVISION` so a fork or third-party host
-  can point it at their own corresponding source.
-
-## Supported envelope
-
-- Browsers: current Chrome, Edge and Firefox on desktop, and Safari 17 or newer. `AudioWorklet`,
-  WebAssembly, IndexedDB and OPFS are required; WebGPU, OPFS `createSyncAccessHandle` and
-  cross-origin isolation are optional and feature-detected.
-- Baseline hardware for the stated performance envelope: a 2020-or-later x86-64 laptop, four cores,
-  8 GB RAM.
-- Representative project: one mono vocal of up to ten minutes at 44.1 or 48 kHz with one MIDI
-  guide. Analysis is chunked and cancellable; longer files work but analysis time grows linearly
-  and memory with it.
-- Hard limits live in `axys_core::limits` and are enforced on import.
-
-## Known limitations
-
-- TD-PSOLA is honest but not mature. Large downward shifts on breathy material can sound rough, and
-  very rapid pitch gestures can buzz. The interface is replaceable by design.
-- Formant preservation is cepstral, not source-filter. It holds vowel character well for moderate
-  shifts and becomes approximate past roughly seven semitones.
-- Analysis assumes one dominant pitched voice. Strong bleed, heavy reverb, chorus or clipping
-  produce unreliable F0, which the confidence track shows rather than hides.
-- Octave ambiguity on very low or very breathy voices still occurs; the Viterbi pass reduces it, it
-  does not eliminate it. Manual correction is the intended remedy.
-- Time stretching beyond roughly 1.5x or below 0.7x begins to show granularity.
-- Scrubbing plays short grains from the rendered stream rather than a continuously varying-rate
-  render.
-- Rendering an output range costs a grain-phase integration from output sample 0, because
-  determinism forbids carrying phase in state. `render::Renderer` memoises phase checkpoints so
-  sequential playback and seeking stay bounded, but a cold seek deep into a very long file does
-  measurable work before the first block.
-- PSOLA snaps each output mark to the nearest source epoch, which leaves up to half a period of
-  phase error where the mark grid drifts against the epoch grid. Inaudible as a constant sub-period
-  delay on steady material; it is the main residual artefact on unstable pitch.
-- Cepstral liftering at order 40 smooths the log spectrum over roughly 500 to 600 Hz, so closely
-  spaced formants merge and an estimated peak can sit up to 200 Hz from the true formant. Good
-  enough to hold timbre under moderate pitch movement, not an accurate formant tracker.
-- Repitching material with little harmonic content, a near-pure sine for instance, produces quiet
-  output at the new pitch. This is inherent to TD-PSOLA; real vocal material is unaffected.
-- A slow glissando through more than the segmentation step threshold is split where the two-scale
-  test first fires, which may not be where a musician would put the boundary.
-- Blob ids are stable within one segmentation run only, so a re-analysis renumbers them.
-- A project document written by a newer build is refused rather than parsed best-effort.
-- Format 2 MIDI files are read as if their tracks were parallel, and SMPTE timecode divisions are
-  rejected outright.
-- WAV import does not support RF64/BW64, ADPCM, A-law or mu-law; export writes 16-bit, 24-bit and
-  32-bit float only, with no dither or normalisation.
-
-## Implementation decisions recorded during the core build
-
-These were resolved while implementing `crates/axys-core`. Each names the module that owns it.
-
-### Analysis
-
-- **`analysis/f0.rs`** computes YIN's difference function through an FFT autocorrelation rather than
-  a direct double loop, packing the two real inputs into one complex transform. Frame centres sit on
-  exact multiples of the realised hop so the pitch and energy grids line up. At the buffer edges the
-  window slides inside the buffer instead of zero-padding, so no frame is analysed against half
-  silence. Viterbi costs are 0.08 per semitone of transition, 0.15 per voicing switch and an
-  unvoiced observation cost of twice the YIN threshold; these are tuned against the fixture battery,
-  not taken from the paper.
-- **NaN crosses JSON as null.** `serde_json` cannot represent NaN, and an unvoiced frame's MIDI
-  value is NaN. `PitchFrame` and `PitchTrackArrays` carry serde shims mapping it to and from `null`,
-  so a project containing any unvoiced frame reopens. Without this the round trip silently failed.
-- **`analysis/energy.rs`** normalises spectral flux by the track maximum, so an onset threshold is
-  relative to the loudest transient in the clip rather than an absolute level. Crowded onset peaks
-  resolve strongest-first, so a weak precursor cannot mask the real attack.
-- **`analysis/segment.rs`** confirms a sustained pitch step at two window scales, because one
-  hold-length window cannot tell a real step from the steep part of a 5 to 6 Hz vibrato. Leading
-  consonant attachment is capped at 250 ms and never crosses the previous blob's end.
-
-### Transformation
-
-- **Formant modes are acoustic, not literal.** Plain TD-PSOLA already preserves the spectral
-  envelope when grain content is copied untouched, so `Preserve` copies 1:1, `Follow` resamples
-  grain content by the pitch ratio so the envelope rides pitch the way plain resampling would, and
-  `Shift(s)` resamples by `2^(s/12)`. Resampling under the name Preserve would have moved formants,
-  which design bible 7.3 forbids.
-- **Overlap-add is normalised by accumulated window weight**, not by a fixed gain. The weight sums
-  to roughly the pitch ratio, so this doubles as gain compensation and keeps level constant under a
-  varying ratio without clicks. Below a weight of 0.05 the sample is left un-normalised rather than
-  amplified.
-- **The mark phase seed is epoch 0 mapped into output time**, not output sample 0. It stays a pure
-  function of the closures and the epoch map, so determinism holds, and it is what makes a unit
-  ratio render reproduce the source rather than delaying it by a fraction of a period.
-- **Clamps that keep a bad plan controlled**: pitch ratio 0.25 to 4.0, grain content resampling 0.5
-  to 2.0, grain half-width 50 ms, output magnitude 4.0, formant shift one octave either way.
-- **`dsp/window.rs::hann_symmetric` uses the half-sample grid**, `0.5 - 0.5 cos(2 pi (n + 0.5) / N)`.
-  The textbook symmetric Hann is symmetric but fails constant overlap-add; the periodic Hann
-  satisfies overlap-add but is not symmetric. The half-sample form is the only one that is both.
-- **`dsp/resample.rs`** normalises kernel weights per output sample rather than using an analytic
-  gain, which makes an identity-ratio conversion exact. The anti-alias cutoff sits at 0.97 of the
-  target Nyquist, trading a sliver of top end for real stopband rejection at practical kernel widths.
-- **`render.rs` Quality tiers differ in fidelity, never in intent.** `Offline` adds a short-time
-  cepstral envelope pass on top of PSOLA, gain-matched so it moves spectral shape only. Its frame
-  grid is anchored at absolute output sample 0, which keeps block-split offline rendering bit-exact.
-  `Preview` relies on the PSOLA approximation alone and caps each synthesiser call at 4096 frames to
-  bound per-block work.
-- **Rendering past the end of the source is silence, not a repeated grain.** PSOLA clamps a grain to
-  the nearest pitch mark, so `render_range` masks any output sample whose mapped source position
-  lies outside the buffer.
-
-### Edit model
+### Edit model implementation
 
 - **`target.rs` splits modulation with a 2nd-order Butterworth biquad run forward and backward.** A
   compensated one-pole pair only reaches about -8 dB one octave above the split and left audible
@@ -332,38 +270,125 @@ These were resolved while implementing `crates/axys-core`. Each names the module
 - **`timing_conflicts` reports a gap only when the edited gap exceeds the gap the detected
   segmentation already had**, so ordinary silence between notes is not reported as an edit conflict.
 
-### Import and persistence
+### Gestures and undo
 
-- **`midi.rs` validates the SMF chunk layout itself before calling `midly`**, because `midly` is
-  lenient about truncated trailing chunks and would return a partial file instead of an error.
-  Tempo and meter events are collected from every track, so format 0 and sloppy format 1 both work.
-  Percussion is detected from channel 10 or a General MIDI percussive program.
-- **Mapping score is 0.7 temporal intersection-over-union plus 0.3 pitch proximity**, requiring real
-  overlap, with ties broken by index so proposals are deterministic. Nothing is deleted to force a
-  one-to-one result; leftovers go in the report.
-- **Overlapping notes in a monophonic guide are reported, never resolved.** `Session.guideOverlaps`
-  lists every overlapping pair in the selected track and channel, and the editor warns and shows the
-  count beside the mapping report. No note is truncated, moved or deleted to force monophony, and
-  mapping assigns at most one blob per note, so the extra notes appear as unmapped rather than
-  merged. Resolving an overlap is the user's call.
-- **`timeline.rs` accepts 60,000 to 16,777,215 microseconds per quarter**, the upper bound being the
-  24-bit maximum a Standard MIDI File can carry. A meter change lands a bar line even mid-bar, so
-  the interrupted bar is short.
-- **`audio/wav.rs` never fails an export over one bad sample**: NaN writes as zero, infinities clamp
-  to full scale, and both are counted in the clipping report. `peak` reports the largest pre-clamp
-  magnitude, so a caller can see how far over full scale a render went.
-- **`project.rs` fingerprints sample bit patterns and then the sample count**, so two buffers
-  differing only in trailing silence cannot collide. `matches_source` compares fingerprint, rate,
-  channels and frames and deliberately ignores the file name, so a renamed identical file relinks
-  and a different file with the same name is refused.
+Each gesture commits exactly one `EditOp`. Previews are held as controller state and drawn by the
+renderer rather than by mutating the store, so an in-flight drag can never be mistaken for a
+committed edit and undo is always one step per gesture. Modifier meaning is uniform across tools:
+Shift constrains, Alt is fine adjustment at a fifth of the travel with snapping off, and Ctrl or
+Cmd toggles snapping.
 
-### Limitations found during implementation
+### One Reset, and a structural reset in the core
 
-Added to the list at the end of this document rather than repeated here: the PSOLA seek cost, the
-half-period phase error on unstable pitch, cepstral formant estimation accuracy, segmentation of
-slow glissandi, and the base64 and schema-migration leniencies. See Known limitations.
+`EditOp::ResetRange` restores the analysed segmentation across a span, which is the only way a
+split or a join is undone by anything other than undo. `EditState` does not carry the analysed
+blobs; the baseline lives in the wasm `Session`, which already reconstructed it for history replay,
+and reaches `edit::apply_with_baseline` as a parameter. A blob the span only partly covers is
+restored whole, because a segmentation cannot be half undone.
 
-## Implementation decisions recorded during the browser build
+Limitation: a curve-only reset over part of a blob is no longer reachable from the UI. `ResetSpan`
+remains in the core for callers that want it.
+
+### Correction and voice character are operations
+
+Both were rows in the inspector, which made a decision about a take look like a preference about
+the editor. Each is now a button that opens a panel, applies its settings as they are moved, and
+ends in Apply or Discard. With a span selected the operation applies to that span by excluding
+every blob outside it.
+
+Previewing without filling the history needed the workspace to own the run: `previewEdits` unwinds
+whatever the previous call applied before applying the next, `pinPreview` fixes the part that does
+not change as the controls move, and the run ends in `commitPreview` or `discardPreview`. Dragging
+a slider therefore leaves one history entry, and discarding leaves none. Undo and redo are disabled
+while a run is open, because the top of the stack is the operation's rather than the user's, and an
+edit made anywhere else commits the run rather than being unwound out from under.
+
+Limitation: correction is compiled project-wide, so "apply to the selection" is expressed as
+excluding everything else. A project that already had blobs excluded by hand has those exclusions
+folded into the operation and restored by Discard, but Apply cannot tell the two apart afterwards.
+
+### A stroke belongs to the take, not to a blob
+
+The pen and the line start anywhere, including over open canvas, and apply to every blob they
+cross. Each blob is given the part of the stroke that falls inside it, with a point interpolated at
+each edge the stroke crosses so a curve reaches the boundary instead of stopping at the last sample
+inside it.
+
+Limitation: one stroke is one `EditOp` per blob, so undoing a stroke across four blobs is four
+steps, the same as joining four blobs.
+
+### Undo replays from a base state
+
+`Session::replay` rebuilt the edit state from a fresh `EditState::default()` and resegmented blobs,
+so an undo silently discarded everything the history had never recorded. The timeline a MIDI import
+adopted was the visible one: every guide note and bar line moved on the first Ctrl+Z, the project
+autosaved in that state, and reopening it kept the damage. A reopened project was worse still,
+because its scale, modulation, formant and guide settings live in the document rather than in the
+history, and the replay reset them all.
+
+The session now holds a `base: EditState` and replays the applied ops over a clone of it. The base
+is the analysis for a new project, the document's own `base` for a reopened one, and a MIDI import
+writes its timeline into both the base and the state, because an import is not an edit. The project
+document carries the base for the same reason.
+
+Removing the resegmentation also removed the freeze: the first undo after reopening used to run
+energy analysis and segmentation over the whole take on the main thread, which is the "lags the
+whole site" in the report, and the several seconds the first slider of an operation cost.
+
+### A group is one undo step
+
+`EditOp::Group` applies several operations as one history entry. A stroke across four blobs, a join
+across a selection, excluding a selection and an operation panel's whole preview are each one
+press of undo. The preview machinery got simpler with it: one group is one entry, so `previewEdits`
+undoes exactly one thing before applying the next, and the pinning that kept an operation's scope
+out of the replaced part is gone.
+
+### Aligning the guide is an operation
+
+Align Guide was a button that had already happened: it proposed mappings, committed them and put
+the result in a toast, and with the guide in Visual Only it moved nothing at all, which is what made
+it look broken. It is now an operation like Correction and Voice Character. It carries the guide
+mode and strength, previews against the material while it is open, and is kept with Apply or thrown
+away with Discard.
+
+That needed a proposal the core would hand back without applying it. `proposeMappingsPreview`
+returns the mappings and the report; the panel narrows them to the selection, leaving every blob
+outside it mapped as it was, and commits what it kept as one `setMappings` edit inside the preview
+group. One alignment is therefore one undo step whatever it covered.
+
+### A level is a plan stage, not a mixer strip
+
+A blob's `gain_db` compiles into `RenderPlan::gain`, an amplitude curve indexed by source time
+alongside the pitch ratio, and `render_range` applies it last on both the copy path and the
+synthesis path. So a level is the same multiplier whichever produced the sample under it, and it
+reaches the export as surely as it reaches playback, which is what makes it an edit rather than a
+monitoring choice.
+
+The curve holds the level flat across the blob and reads 1.0 outside it, so the grid's own
+interpolation ramps over one 5 ms hop at each edge rather than stepping the level at a boundary.
+Decibels, not an amplitude, because that is what a level is read and typed in, and the floor is
+silence rather than -60 dB of signal, so a field taken all the way down is off.
+
+### The project's name lives in the edit state
+
+Renaming has to be undoable like any other edit, and the history replays `EditOp`s over the base
+state, so the name is a field of `EditState` and `SetName` is an ordinary operation. `Project.name`
+stays at the top of the saved file, written from `edits.name` on save, so a reader of the file finds
+the name where it expects to while the editor keeps one copy of it.
+
+Nothing reads the top-level field back. Axys has not shipped, so there are no files carrying a name
+in the old place and no migration to write for them. `schemaVersion` and `migrate()` are already in
+the format for when there is.
+
+It opens as the imported audio's file name with the extension stripped, and it is edited in the
+inspector's Project panel. The tab title, the window titlebar, the save file name and the export
+default all read that one field. Title format: `Axys` with nothing open, `Take 3 - Axys` open and
+saved, `*Take 3 - Axys` while `store.dirty`; the marker leads so a truncated tab still shows it.
+
+Renaming does not move an already-saved file. Save writes to the handle it is bound to; the new
+name is what Save As and Export offer.
+
+## Playback and mixing
 
 ### The AudioWorklet calls the WebAssembly ABI directly
 
@@ -427,6 +452,120 @@ Every edit path in `main.ts` ends in a single method that reads `session.plan()`
 audible result and the drawn result therefore cannot disagree, and a control that does not reach
 that method is dead by construction rather than by accident.
 
+### Time domains
+
+The store's `view.playhead` is in source seconds; the engine's position and loop range are in
+output seconds. The workspace converts between them through the plan's time map, so a loop set from
+a selection follows timing edits instead of drifting off them.
+
+### Bypass is gone
+
+Blob bypass and project-wide bypass both answered "hear this without its edits", which is what
+Compare and Reset already answer, one for listening and one for committing. Two more ways to say it
+made four controls to reason about and no new capability. Nothing of either remains: the ops, the
+`Blob::bypassed` and `EditState::global_bypass` fields and the plan's bypass flag are all gone,
+because nothing has shipped that could be holding one.
+
+Rendering kept what the bypass path was good for. `RenderPlan::is_identity` recognises a plan that
+asks for nothing, and `render_range` copies the source rather than resynthesising it, so an
+unedited take exports as the file that was imported.
+
+Exclusion survives and is now drawn as what it is: dim, dotted and without the marks that invite an
+edit. It means "no automatic correction here", not "no sound here": the blob still plays and the
+edits made on it by hand still apply.
+
+### Export measures when it is asked to
+
+Measuring a range renders it, which is the work the export itself does, so opening the panel and
+switching between whole project and selection no longer render anything. The figures and their
+warnings are behind Measure Range, and what will be written is described from what the panel
+already knows. The range defaults to the selection whenever there is one.
+
+### The plan carries the target pitch
+
+The editor drew the gold target line by reading the plan's pitch ratio and adding it to its own
+detected track. The core compiles the ratio against its own reading of the same track, and the two
+disagree wherever detection is uncertain, so every octave-ambiguous frame drew a spike a semitone
+or an octave tall. `RenderPlan::target_midi` publishes the absolute target, 0.0 where the plan
+leaves pitch alone, and the editor draws that.
+
+Sampling it needed care of its own: interpolating between an edited sample and the zero beyond it
+drew a line plunging towards MIDI zero at every span edge, which is what the spikes at the ends of
+a drawn stroke were. The sampler mixes two samples only when both carry a target.
+
+### One renderer per session
+
+`Renderer::new` builds an epoch map across the whole source, and every export preview built a new
+one, so asking what one second of a long take would export cost a pass over the take. The session
+keeps one renderer and swaps the plan into it on recompile, which also keeps the grain checkpoints
+that let a range late in the output be rendered without walking to it. Measuring a two-second
+selection seventeen seconds into a one-minute take went from a whole-take render to 64 ms.
+
+### The desk supersedes Compare
+
+Compare was one toolbar button with three faces, and it answered one question: which take is
+audible. A mixer answers it with the control everyone already knows, and answers the questions
+Compare could not: how loud the original is against the processed one, where each sits in the
+field, and how loud the click is. `CompareMode` is gone with the button, and the split mode with
+it: original hard left and processed hard right is two pan controls rather than a mode.
+
+Swap Vocal keeps `C`, and exchanges which of the two vocal strips is heard. It moves mute and solo
+only: a swap answers which take is being listened to, and taking each strip's level and pan with it
+would answer a question nobody asked. With both strips up, or both down, it says so rather than
+silently picking one.
+
+### The mixer is monitoring, not an edit to the take
+
+Strip levels never reach `compile_plan`, so an export is exactly what it was before the fader
+moved. A blob's own gain is the opposite: it is a plan stage and is written on export. The two are
+different questions, and folding them together would mean either an export that changes when the
+monitor does or a monitor that cannot be turned down without changing the file.
+
+The desk still lives in the project document, in `EditState` beside the scale and modulation
+settings, because how a take is listened to is part of the work. That also makes it an `EditOp`
+like everything else, so it undoes and autosaves with no machinery of its own.
+
+### The worklet mixes voices rather than switching between them
+
+The realtime path summed processed, original and click and then switched on a compare mode. It now
+resolves the desk to a left and right amplitude per voice when a message arrives, and every block
+is a sum of those, so the audio thread does no mixing arithmetic beyond two multiplies per voice
+per sample. A voice nothing can be heard from is not rendered at all, so a muted processed strip
+costs no synthesis.
+
+Pan is equal power, so a strip swept across the field holds its loudness instead of dipping through
+the middle. `audio/mixer.ts` is the one place the desk becomes amplitudes, shared by the worklet,
+the blob layer that draws what is audible, and the toolbar face that names it.
+
+### A fader is heard as it moves and kept when it is let go
+
+Dragging a fader sends the desk straight to the engine and commits one `setMixer` when the pointer
+is released, so the sound follows the hand and the history gets one entry per drag rather than one
+per frame. It is the same shape as the guide strength slider, without the operation machinery,
+because a fader has nothing to discard.
+
+### Mute and solo are exclusive until Ctrl says otherwise
+
+Pressing a mute or a solo settles the desk on that strip alone, which is what someone wants nine
+times in ten. Ctrl or Cmd adds instead, which is how more than one strip is muted or soloed at a
+time. The same modifier that adds a span to a selection.
+
+### Compare has no button at all
+
+Which vocal is playing is two strips with their own mutes, so a toolbar button that says the same
+thing is a second control to keep in step with the first. Swap Vocal keeps `C`, because a one-key
+A/B is worth having without opening the panel, and it is drawn nowhere.
+
+The click strip is called Metronome, which is what the transport control that starts it is called.
+Two names for one sound is a thing to work out rather than a thing to read.
+
+### The mixer answers for the monitoring on its own
+
+Swap Vocal is gone, command and all. Two strips with their own mutes already say which take is
+playing and set it, and a second way to say it is a second thing to keep in step. `C` is free.
+
+## Timeline and musical time
+
 ### Bars and beats are computed in TypeScript for drawing
 
 The ruler, the grid and the metronome derive bar lines from `state.edits.timeline` rather than
@@ -435,30 +574,20 @@ call inside the render loop. `core/timeline.ts` is the one copy of that arithmet
 Rust contract and is capped at 4096 grid points. The core remains the authority for snapping, where
 exactness matters more than frame cost.
 
-### Time domains
+### The metronome flash is read from the playhead
 
-The store's `view.playhead` is in source seconds; the engine's position and loop range are in
-output seconds. The workspace converts between them through the plan's time map, so a loop set from
-a selection follows timing edits instead of drifting off them.
+A CSS animation on a timer of its own was never on the beat and its brightest point was the middle
+of the cycle. The flash is now computed from the playhead against the timeline: full brightness at
+the click, fading over 120 ms, over a darkened ground that still says the metronome is on while the
+transport is stopped.
 
-### Gestures and undo
+### Time zero is a landmark, not a measurement
 
-Each gesture commits exactly one `EditOp`. Previews are held as controller state and drawn by the
-renderer rather than by mutating the store, so an in-flight drag can never be mistaken for a
-committed edit and undo is always one step per gesture. Modifier meaning is uniform across tools:
-Shift constrains, Alt is fine adjustment at a fifth of the travel with snapping off, and Ctrl or
-Cmd toggles snapping.
+Every other line on the timeline says where something is; zero says where the take starts. It is
+drawn in `gridLineOctave` at twice the weight of the grid, the same emphasis an octave boundary
+gets against the semitone lines, and after the rest of the grid so nothing is written over it.
 
-### Persistence details
-
-`project-io.ts` carries a TypeScript mirror of `axys_core::project::fingerprint`, verified byte for
-byte against the Rust implementation, because relinking has to digest a candidate file before a
-session exists to ask. Relink decodes through an `OfflineAudioContext` at the project's own sample
-rate, so no hardware device is opened and the digest is comparable. `MediaStore` picks OPFS or
-IndexedDB once at `open()` and keeps it, so a project never has half its audio in one and half in
-the other.
-
-## Editor interaction, after the first testing round
+## Editor interaction
 
 ### The playhead is one object, reachable anywhere
 
@@ -488,45 +617,6 @@ the blob set, so a selection can never name a blob a split or join has removed. 
 of a selection: a drag along one pitch selects everything it passes under, which is what the shaded
 region on screen already showed.
 
-### One Reset, and a structural reset in the core
-
-`EditOp::ResetRange` restores the analysed segmentation across a span, which is the only way a
-split or a join is undone by anything other than undo. `EditState` does not carry the analysed
-blobs; the baseline lives in the wasm `Session`, which already reconstructed it for history replay,
-and reaches `edit::apply_with_baseline` as a parameter. A blob the span only partly covers is
-restored whole, because a segmentation cannot be half undone.
-
-Limitation: a curve-only reset over part of a blob is no longer reachable from the UI. `ResetSpan`
-remains in the core for callers that want it.
-
-### The development wasm is optimised
-
-`npm run dev` builds the core with `--dev`, and an unoptimised analysis pass is what a contributor
-measures import against. `[profile.dev] opt-level = 2` with `opt-level = 3` for dependencies brings
-a take's analysis back into the seconds it takes in release while leaving debug assertions and
-incremental builds on. Measured on the project's own test suite: 51.6 s to 2.9 s.
-
-### Tooltips and menus are drawn by the page
-
-A host tooltip appears only after a delay the page cannot set and only while the window holds
-focus, which is exactly when a control's name is least readable. `ui/tooltip.ts` owns one delegated
-tooltip layer keyed on a `data-axys-tip` attribute, and no control carries `title`. The canvas
-carries none either: the renderer draws its own readout, and both together showed two tooltips that
-disagreed about when to appear. Accessible names stay on the controls, and the shown tooltip is
-pointed at by `aria-describedby`.
-
-### File access prefers the host's own picker
-
-`persistence/file-access.ts` uses the File System Access API where it exists, which gives one picker
-listing every kind Axys opens and a handle to write back to, so a second Save needs no dialog.
-Firefox and Safari fall back to a hidden input and a download, where every save asks again. The
-project document is also mirrored into device storage on every save, so a lost file is not a lost
-session.
-
-Limitation: dropping an audio file replaces the whole project. The drop marker names what would
-open rather than implying a position it would land at, because a project is one source and placing
-a clip at an offset would be a timeline feature the core does not have.
-
 ### What the canvas says about itself
 
 The waveform is drawn inside each blob, in that blob's own vertical extent and over its own source
@@ -535,8 +625,6 @@ draws what is being heard solid and what is not transient, with the analysed pos
 colour, so the picture and the monitoring choice cannot disagree. Guide notes are hatched and
 borderless: a guide is read, never edited, so it must not carry the border that means "grab this"
 on a blob.
-
-## Editor interaction, after the second testing round
 
 ### A selection is several spans
 
@@ -549,40 +637,6 @@ export range.
 
 Limitation: everything that reads a span still reads the hull, so looping a disjoint selection
 loops across the material between its parts.
-
-### Bypass is gone
-
-Blob bypass and project-wide bypass both answered "hear this without its edits", which is what
-Compare and Reset already answer, one for listening and one for committing. Two more ways to say it
-made four controls to reason about and no new capability. Nothing of either remains: the ops, the
-`Blob::bypassed` and `EditState::global_bypass` fields and the plan's bypass flag are all gone,
-because nothing has shipped that could be holding one.
-
-Rendering kept what the bypass path was good for. `RenderPlan::is_identity` recognises a plan that
-asks for nothing, and `render_range` copies the source rather than resynthesising it, so an
-unedited take exports as the file that was imported.
-
-Exclusion survives and is now drawn as what it is: dim, dotted and without the marks that invite an
-edit. It means "no automatic correction here", not "no sound here": the blob still plays and the
-edits made on it by hand still apply.
-
-### Correction and voice character are operations
-
-Both were rows in the inspector, which made a decision about a take look like a preference about
-the editor. Each is now a button that opens a panel, applies its settings as they are moved, and
-ends in Apply or Discard. With a span selected the operation applies to that span by excluding
-every blob outside it.
-
-Previewing without filling the history needed the workspace to own the run: `previewEdits` unwinds
-whatever the previous call applied before applying the next, `pinPreview` fixes the part that does
-not change as the controls move, and the run ends in `commitPreview` or `discardPreview`. Dragging
-a slider therefore leaves one history entry, and discarding leaves none. Undo and redo are disabled
-while a run is open, because the top of the stack is the operation's rather than the user's, and an
-edit made anywhere else commits the run rather than being unwound out from under.
-
-Limitation: correction is compiled project-wide, so "apply to the selection" is expressed as
-excluding everything else. A project that already had blobs excluded by hand has those exclusions
-folded into the operation and restored by Discard, but Apply cannot tell the two apart afterwards.
 
 ### The compiled plan reaches the store
 
@@ -603,16 +657,6 @@ The time ruler and the note gutter report the position under the cursor the way 
 no readout of their own and no selection gesture of their own; a loop comes from the selection
 through Loop Selection and its edges are dragged once it exists. Each ruler previews only the axis
 it measures: a vertical line over the time ruler, a horizontal one over the note gutter.
-
-### A stroke belongs to the take, not to a blob
-
-The pen and the line start anywhere, including over open canvas, and apply to every blob they
-cross. Each blob is given the part of the stroke that falls inside it, with a point interpolated at
-each edge the stroke crosses so a curve reaches the boundary instead of stopping at the last sample
-inside it.
-
-Limitation: one stroke is one `EditOp` per blob, so undoing a stroke across four blobs is four
-steps, the same as joining four blobs.
 
 ### The detected line is cut on a fixed grid
 
@@ -637,13 +681,6 @@ blocks because its question has to be answered before anything else happens, and
 does not, because the editor behind it is where its result appears. Help is what the diagnostics
 panel is called, because that is what someone opens it to get.
 
-### Export measures when it is asked to
-
-Measuring a range renders it, which is the work the export itself does, so opening the panel and
-switching between whole project and selection no longer render anything. The figures and their
-warnings are behind Measure Range, and what will be written is described from what the panel
-already knows. The range defaults to the selection whenever there is one.
-
 ### Toolbar names are a setting, and the file buttons carry menus
 
 The toolbar is icons by default and Button Names in the inspector puts each name beside its icon,
@@ -652,79 +689,11 @@ Save and Save As, because where a file goes is a variation on saving rather than
 Import is its own button with its own menu, because a guide is imported into an open project rather
 than opening one, which is the opposite of what Open does.
 
-### File pickers are a reported capability
-
-A host without the File System Access API downloads every save and cannot offer Save As a picker at
-all. That was invisible and read as a bug, so the capability is probed and reported in Help beside
-the rest.
-
-## Editor interaction, after the third testing round
-
-### Undo replays from a base state
-
-`Session::replay` rebuilt the edit state from a fresh `EditState::default()` and resegmented blobs,
-so an undo silently discarded everything the history had never recorded. The timeline a MIDI import
-adopted was the visible one: every guide note and bar line moved on the first Ctrl+Z, the project
-autosaved in that state, and reopening it kept the damage. A reopened project was worse still,
-because its scale, modulation, formant and guide settings live in the document rather than in the
-history, and the replay reset them all.
-
-The session now holds a `base: EditState` and replays the applied ops over a clone of it. The base
-is the analysis for a new project, the document's own `base` for a reopened one, and a MIDI import
-writes its timeline into both the base and the state, because an import is not an edit. The project
-document carries the base for the same reason.
-
-Removing the resegmentation also removed the freeze: the first undo after reopening used to run
-energy analysis and segmentation over the whole take on the main thread, which is the "lags the
-whole site" in the report, and the several seconds the first slider of an operation cost.
-
-### A group is one undo step
-
-`EditOp::Group` applies several operations as one history entry. A stroke across four blobs, a join
-across a selection, excluding a selection and an operation panel's whole preview are each one
-press of undo. The preview machinery got simpler with it: one group is one entry, so `previewEdits`
-undoes exactly one thing before applying the next, and the pinning that kept an operation's scope
-out of the replaced part is gone.
-
-### The plan carries the target pitch
-
-The editor drew the gold target line by reading the plan's pitch ratio and adding it to its own
-detected track. The core compiles the ratio against its own reading of the same track, and the two
-disagree wherever detection is uncertain, so every octave-ambiguous frame drew a spike a semitone
-or an octave tall. `RenderPlan::target_midi` publishes the absolute target, 0.0 where the plan
-leaves pitch alone, and the editor draws that.
-
-Sampling it needed care of its own: interpolating between an edited sample and the zero beyond it
-drew a line plunging towards MIDI zero at every span edge, which is what the spikes at the ends of
-a drawn stroke were. The sampler mixes two samples only when both carry a target.
-
 ### Both pitch lines are cut on a fixed grid
 
 The detected line was already sampled on a grid anchored at time zero; the target line was still
 sampled per screen column, so a following view resampled it into a slightly different shape every
 frame and it shimmered. It is now read at the same absolute times whatever the view is doing.
-
-### One renderer per session
-
-`Renderer::new` builds an epoch map across the whole source, and every export preview built a new
-one, so asking what one second of a long take would export cost a pass over the take. The session
-keeps one renderer and swaps the plan into it on recompile, which also keeps the grain checkpoints
-that let a range late in the output be rendered without walking to it. Measuring a two-second
-selection seventeen seconds into a one-minute take went from a whole-take render to 64 ms.
-
-### Opening asks before discarding
-
-Open and a dropped file both replace the whole project, and neither asked. Both now put the
-question when the project is dirty, and offer to save first rather than only to discard.
-
-### The metronome flash is read from the playhead
-
-A CSS animation on a timer of its own was never on the beat and its brightest point was the middle
-of the cycle. The flash is now computed from the playhead against the timeline: full brightness at
-the click, fading over 120 ms, over a darkened ground that still says the metronome is on while the
-transport is stopped.
-
-## Editor interaction, after the fourth testing round
 
 ### The tools answer to letters, not to a numbered row
 
@@ -748,19 +717,6 @@ more selected blobs that are actually neighbours.
 
 Smoothing existed twice the same way, as a tool and as a command. The tool is gone; Smooth Span on
 `H` reads the selected span, which is the same span the rest of the span commands read.
-
-### Aligning the guide is an operation
-
-Align Guide was a button that had already happened: it proposed mappings, committed them and put
-the result in a toast, and with the guide in Visual Only it moved nothing at all, which is what made
-it look broken. It is now an operation like Correction and Voice Character. It carries the guide
-mode and strength, previews against the material while it is open, and is kept with Apply or thrown
-away with Discard.
-
-That needed a proposal the core would hand back without applying it. `proposeMappingsPreview`
-returns the mappings and the report; the panel narrows them to the selection, leaving every blob
-outside it mapped as it was, and commits what it kept as one `setMappings` edit inside the preview
-group. One alignment is therefore one undo step whatever it covered.
 
 ### An explainer belongs on the label, not on the control
 
@@ -856,7 +812,147 @@ and a handle inside it would scroll away with the settings. Arrow keys move it a
 puts it back, which is what every other divider does. The width is a device preference, and it is
 clamped so the column can be neither hidden nor made to swallow the editor.
 
-## Offline install
+### The mixer is a panel, opened from the footer
+
+The first mixer was a bar of its own across the bottom, carrying the control that folded it away.
+That is two bars where one would do, and the footer already holds the controls that say how the
+editor is laid out rather than what is in it. The fold moved there, beside the zoom, and it takes
+its name from Button Names like every other control that has one. The panel itself is now only the
+desk.
+
+The strips are laid out the way a desk lays one out: the name, the pan above the fader, a vertical
+fader, its level, and mute and solo under it. A horizontal row of sliders is quicker to write and
+slower to read, and a level is a height everywhere else it is drawn. The fader carries both
+spellings of a vertical range input, the modern `writing-mode` and the older `slider-vertical`, so
+it stands up in every browser in the supported envelope.
+
+### A control under the hand is not rewritten from behind it
+
+The store updates on every animation frame while the transport runs, and the panel refreshed every
+control from it, so a fader being dragged was fighting the value it had not committed yet. Each
+control is now left alone while it has focus, readouts included.
+
+### Pan has a detent and no explainer
+
+A continuous pan cannot be put back on centre by hand, so a drag that ends within six percent of the
+middle lands there. The detent belongs to the drag rather than to the value: the arrow keys step
+through that span one hundredth at a time and must still reach every value in it.
+
+The strips carry no tooltips. A strip named Processed, Original or Metronome is not a thing that
+needs explaining, and a tip on every control is a tip on nothing.
+
+### A loop is undrawn where it was drawn
+
+A loop comes from dragging across the ruler, so a double-click there clears it. Anywhere else is
+left alone, because a loop is not what is under the cursor there.
+
+### A panel reopens where it was left
+
+Where a panel sits is a working arrangement, and dragging Export or Voice Character out of the way
+of the material only for it to come back over that material is the editor forgetting something the
+user said. Positions are kept by title on the device.
+
+A remembered position is checked against the window before it is used: a panel left near the right
+edge of a wide screen would open off a narrow one, so a position that no longer fits is ignored and
+the panel opens centred. It is not forgotten, because the window may be that size again.
+
+### The guide panel says what is left over, or nothing
+
+"Guide notes are shown over the vocal" described what was already on screen. The line now carries
+what the mapping left unmapped and how many notes overlap, and is hidden when there is neither.
+
+### A strip's value sits under its control
+
+The pan readout was beside the slider, which left the slider about sixty pixels to say the whole
+stereo field in. Each control now gets the width of the strip and its value gets the line under it.
+
+The centre detent had the same fault in a different place: it wrote the detented value back to the
+slider mid-drag, which does not move the drag the browser is running, so the raw position came back
+on release and a pan dragged to centre landed a few percent off it. The slider is left where the
+pointer puts it and the detent is applied to what is heard and committed, which is what the readout
+was already saying.
+
+### Pressing a menu button again closes its menu
+
+A menu dismisses itself on a press outside it, and that press is the button's own, so the click
+that followed reopened it and the menu never closed. The menu now knows which control it hangs off
+and ignores the click from the press that dismissed it.
+
+### An inline width outranked the rail
+
+Folding the inspector added `is-inspector-collapsed`, which sets the column to the rail width, and
+the shell also wrote the dragged width to the same custom property inline. An inline property beats
+any rule, so the class changed nothing and the panel kept its full width with only its rail drawn
+in it. The width is written while the column is open and removed when it folds, so the rule applies.
+
+The control carries a sidebar icon rather than an arrow, because what it shows and hides is a panel
+beside a pane, and an arrow that flipped said only which way something was about to move.
+
+## Persistence and offline install
+
+### Origin Private File System for media, IndexedDB for documents
+
+Project documents are small JSON and live in IndexedDB with explicit schema versioning. Decoded
+source audio is large and lives in OPFS, keyed by fingerprint. Explicit project import and export
+write a single `.axys.json` file, so the only recoverable copy of a user's work is never trapped in
+an opaque browser cache. Autosave writes the document, not the media.
+
+### Import and persistence implementation
+
+- **`midi.rs` validates the SMF chunk layout itself before calling `midly`**, because `midly` is
+  lenient about truncated trailing chunks and would return a partial file instead of an error.
+  Tempo and meter events are collected from every track, so format 0 and sloppy format 1 both work.
+  Percussion is detected from channel 10 or a General MIDI percussive program.
+- **Mapping score is 0.7 temporal intersection-over-union plus 0.3 pitch proximity**, requiring real
+  overlap, with ties broken by index so proposals are deterministic. Nothing is deleted to force a
+  one-to-one result; leftovers go in the report.
+- **Overlapping notes in a monophonic guide are reported, never resolved.** `Session.guideOverlaps`
+  lists every overlapping pair in the selected track and channel, and the editor warns and shows the
+  count beside the mapping report. No note is truncated, moved or deleted to force monophony, and
+  mapping assigns at most one blob per note, so the extra notes appear as unmapped rather than
+  merged. Resolving an overlap is the user's call.
+- **`timeline.rs` accepts 60,000 to 16,777,215 microseconds per quarter**, the upper bound being the
+  24-bit maximum a Standard MIDI File can carry. A meter change lands a bar line even mid-bar, so
+  the interrupted bar is short.
+- **`audio/wav.rs` never fails an export over one bad sample**: NaN writes as zero, infinities clamp
+  to full scale, and both are counted in the clipping report. `peak` reports the largest pre-clamp
+  magnitude, so a caller can see how far over full scale a render went.
+- **`project.rs` fingerprints sample bit patterns and then the sample count**, so two buffers
+  differing only in trailing silence cannot collide. `matches_source` compares fingerprint, rate,
+  channels and frames and deliberately ignores the file name, so a renamed identical file relinks
+  and a different file with the same name is refused.
+
+### Persistence details
+
+`project-io.ts` carries a TypeScript mirror of `axys_core::project::fingerprint`, verified byte for
+byte against the Rust implementation, because relinking has to digest a candidate file before a
+session exists to ask. Relink decodes through an `OfflineAudioContext` at the project's own sample
+rate, so no hardware device is opened and the digest is comparable. `MediaStore` picks OPFS or
+IndexedDB once at `open()` and keeps it, so a project never has half its audio in one and half in
+the other.
+
+### File access prefers the host's own picker
+
+`persistence/file-access.ts` uses the File System Access API where it exists, which gives one picker
+listing every kind Axys opens and a handle to write back to, so a second Save needs no dialog.
+Firefox and Safari fall back to a hidden input and a download, where every save asks again. The
+project document is also mirrored into device storage on every save, so a lost file is not a lost
+session.
+
+Limitation: dropping an audio file replaces the whole project. The drop marker names what would
+open rather than implying a position it would land at, because a project is one source and placing
+a clip at an offset would be a timeline feature the core does not have.
+
+### File pickers are a reported capability
+
+A host without the File System Access API downloads every save and cannot offer Save As a picker at
+all. That was invisible and read as a bug, so the capability is probed and reported in Help beside
+the rest.
+
+### Opening asks before discarding
+
+Open and a dropped file both replace the whole project, and neither asked. Both now put the
+question when the project is dirty, and offer to save first rather than only to discard.
 
 ### One cache per build, filled as one unit
 
@@ -897,148 +993,6 @@ touches neither.
 to compare against. Registration happens in the production build only, which also keeps a stale
 worker from serving yesterday's bundle over a dev server.
 
-## Per-blob gain
-
-### A level is a plan stage, not a mixer strip
-
-A blob's `gain_db` compiles into `RenderPlan::gain`, an amplitude curve indexed by source time
-alongside the pitch ratio, and `render_range` applies it last on both the copy path and the
-synthesis path. So a level is the same multiplier whichever produced the sample under it, and it
-reaches the export as surely as it reaches playback, which is what makes it an edit rather than a
-monitoring choice.
-
-The curve holds the level flat across the blob and reads 1.0 outside it, so the grid's own
-interpolation ramps over one 5 ms hop at each edge rather than stepping the level at a boundary.
-Decibels, not an amplitude, because that is what a level is read and typed in, and the floor is
-silence rather than -60 dB of signal, so a field taken all the way down is off.
-
-## The mixer
-
-### The desk supersedes Compare
-
-Compare was one toolbar button with three faces, and it answered one question: which take is
-audible. A mixer answers it with the control everyone already knows, and answers the questions
-Compare could not: how loud the original is against the processed one, where each sits in the
-field, and how loud the click is. `CompareMode` is gone with the button, and the split mode with
-it: original hard left and processed hard right is two pan controls rather than a mode.
-
-Swap Vocal keeps `C`, and exchanges which of the two vocal strips is heard. It moves mute and solo
-only: a swap answers which take is being listened to, and taking each strip's level and pan with it
-would answer a question nobody asked. With both strips up, or both down, it says so rather than
-silently picking one.
-
-### The mixer is monitoring, not an edit to the take
-
-Strip levels never reach `compile_plan`, so an export is exactly what it was before the fader
-moved. A blob's own gain is the opposite: it is a plan stage and is written on export. The two are
-different questions, and folding them together would mean either an export that changes when the
-monitor does or a monitor that cannot be turned down without changing the file.
-
-The desk still lives in the project document, in `EditState` beside the scale and modulation
-settings, because how a take is listened to is part of the work. That also makes it an `EditOp`
-like everything else, so it undoes and autosaves with no machinery of its own.
-
-### The worklet mixes voices rather than switching between them
-
-The realtime path summed processed, original and click and then switched on a compare mode. It now
-resolves the desk to a left and right amplitude per voice when a message arrives, and every block
-is a sum of those, so the audio thread does no mixing arithmetic beyond two multiplies per voice
-per sample. A voice nothing can be heard from is not rendered at all, so a muted processed strip
-costs no synthesis.
-
-Pan is equal power, so a strip swept across the field holds its loudness instead of dipping through
-the middle. `audio/mixer.ts` is the one place the desk becomes amplitudes, shared by the worklet,
-the blob layer that draws what is audible, and the toolbar face that names it.
-
-### A fader is heard as it moves and kept when it is let go
-
-Dragging a fader sends the desk straight to the engine and commits one `setMixer` when the pointer
-is released, so the sound follows the hand and the history gets one entry per drag rather than one
-per frame. It is the same shape as the guide strength slider, without the operation machinery,
-because a fader has nothing to discard.
-
-### Mute and solo are exclusive until Ctrl says otherwise
-
-Pressing a mute or a solo settles the desk on that strip alone, which is what someone wants nine
-times in ten. Ctrl or Cmd adds instead, which is how more than one strip is muted or soloed at a
-time. The same modifier that adds a span to a selection.
-
-## Editor interaction, after the fifth testing round
-
-### The mixer is a panel, opened from the footer
-
-The first mixer was a bar of its own across the bottom, carrying the control that folded it away.
-That is two bars where one would do, and the footer already holds the controls that say how the
-editor is laid out rather than what is in it. The fold moved there, beside the zoom, and it takes
-its name from Button Names like every other control that has one. The panel itself is now only the
-desk.
-
-The strips are laid out the way a desk lays one out: the name, the pan above the fader, a vertical
-fader, its level, and mute and solo under it. A horizontal row of sliders is quicker to write and
-slower to read, and a level is a height everywhere else it is drawn. The fader carries both
-spellings of a vertical range input, the modern `writing-mode` and the older `slider-vertical`, so
-it stands up in every browser in the supported envelope.
-
-### Compare has no button at all
-
-Which vocal is playing is two strips with their own mutes, so a toolbar button that says the same
-thing is a second control to keep in step with the first. Swap Vocal keeps `C`, because a one-key
-A/B is worth having without opening the panel, and it is drawn nowhere.
-
-The click strip is called Metronome, which is what the transport control that starts it is called.
-Two names for one sound is a thing to work out rather than a thing to read.
-
-### A control under the hand is not rewritten from behind it
-
-The store updates on every animation frame while the transport runs, and the panel refreshed every
-control from it, so a fader being dragged was fighting the value it had not committed yet. Each
-control is now left alone while it has focus, readouts included.
-
-### Pan has a detent and no explainer
-
-A continuous pan cannot be put back on centre by hand, so a drag that ends within six percent of the
-middle lands there. The detent belongs to the drag rather than to the value: the arrow keys step
-through that span one hundredth at a time and must still reach every value in it.
-
-The strips carry no tooltips. A strip named Processed, Original or Metronome is not a thing that
-needs explaining, and a tip on every control is a tip on nothing.
-
-### A loop is undrawn where it was drawn
-
-A loop comes from dragging across the ruler, so a double-click there clears it. Anywhere else is
-left alone, because a loop is not what is under the cursor there.
-
-### A panel reopens where it was left
-
-Where a panel sits is a working arrangement, and dragging Export or Voice Character out of the way
-of the material only for it to come back over that material is the editor forgetting something the
-user said. Positions are kept by title on the device.
-
-A remembered position is checked against the window before it is used: a panel left near the right
-edge of a wide screen would open off a narrow one, so a position that no longer fits is ignored and
-the panel opens centred. It is not forgotten, because the window may be that size again.
-
-### The guide panel says what is left over, or nothing
-
-"Guide notes are shown over the vocal" described what was already on screen. The line now carries
-what the mapping left unmapped and how many notes overlap, and is hidden when there is neither.
-
-### The mixer answers for the monitoring on its own
-
-Swap Vocal is gone, command and all. Two strips with their own mutes already say which take is
-playing and set it, and a second way to say it is a second thing to keep in step. `C` is free.
-
-### A strip's value sits under its control
-
-The pan readout was beside the slider, which left the slider about sixty pixels to say the whole
-stereo field in. Each control now gets the width of the strip and its value gets the line under it.
-
-The centre detent had the same fault in a different place: it wrote the detented value back to the
-slider mid-drag, which does not move the drag the browser is running, so the raw position came back
-on release and a pan dragged to centre landed a few percent off it. The slider is left where the
-pointer puts it and the detent is applied to what is heard and committed, which is what the readout
-was already saying.
-
 ### New Project is a command of its own
 
 Opening a file replaced the project and nothing emptied it. New Project sits before Open, asks the
@@ -1046,6 +1000,17 @@ same question about unsaved work in its own words, and returns the editor to the
 session in, leaving the device's own settings alone. It lets go of the source in the worklet as
 well, so an empty editor has nothing to play; the context and the processor stay up for the next
 project. Not `Ctrl+N`, which the browser answers first with a window of its own.
+
+## Interface design system
+
+### Tooltips and menus are drawn by the page
+
+A host tooltip appears only after a delay the page cannot set and only while the window holds
+focus, which is exactly when a control's name is least readable. `ui/tooltip.ts` owns one delegated
+tooltip layer keyed on a `data-axys-tip` attribute, and no control carries `title`. The canvas
+carries none either: the renderer draws its own readout, and both together showed two tooltips that
+disagreed about when to appear. Accessible names stay on the controls, and the shown tooltip is
+pointed at by `aria-describedby`.
 
 ### A number field is dragged sideways
 
@@ -1071,24 +1036,6 @@ Focus is given instead on release, with the whole number offered, which is what 
 scrubbable field is for: drag it, or type over it. The spinner arrows go with the default, and are
 not drawn; they were a two-pixel target on a field that is now dragged, and the arrow keys still
 step it.
-
-### Pressing a menu button again closes its menu
-
-A menu dismisses itself on a press outside it, and that press is the button's own, so the click
-that followed reopened it and the menu never closed. The menu now knows which control it hangs off
-and ignores the click from the press that dismissed it.
-
-### An inline width outranked the rail
-
-Folding the inspector added `is-inspector-collapsed`, which sets the column to the rail width, and
-the shell also wrote the dragged width to the same custom property inline. An inline property beats
-any rule, so the class changed nothing and the panel kept its full width with only its rail drawn
-in it. The width is written while the column is open and removed when it folds, so the rule applies.
-
-The control carries a sidebar icon rather than an arrow, because what it shows and hides is a panel
-beside a pane, and an arrow that flipped said only which way something was about to move.
-
-## Interface design system
 
 ### The accent is a generated ramp, not a picked colour
 
@@ -1261,25 +1208,6 @@ The installed app draws its own titlebar through `window-controls-overlay` in `d
 the `titlebar-area-*` environment variables and `app-region`. The toolbar rises into the overlay and
 carries the project name. Every browser tab reports a zero-height title area and keeps the ordinary
 toolbar, so there is one layout with one extra rule rather than two.
-
-### The project's name lives in the edit state
-
-Renaming has to be undoable like any other edit, and the history replays `EditOp`s over the base
-state, so the name is a field of `EditState` and `SetName` is an ordinary operation. `Project.name`
-stays at the top of the saved file, written from `edits.name` on save, so a reader of the file finds
-the name where it expects to while the editor keeps one copy of it.
-
-Nothing reads the top-level field back. Axys has not shipped, so there are no files carrying a name
-in the old place and no migration to write for them. `schemaVersion` and `migrate()` are already in
-the format for when there is.
-
-It opens as the imported audio's file name with the extension stripped, and it is edited in the
-inspector's Project panel. The tab title, the window titlebar, the save file name and the export
-default all read that one field. Title format: `Axys` with nothing open, `Take 3 - Axys` open and
-saved, `*Take 3 - Axys` while `store.dirty`; the marker leads so a truncated tab still shows it.
-
-Renaming does not move an already-saved file. Save writes to the handle it is bound to; the new
-name is what Save As and Export offer.
 
 ### The palette and the cheatsheet read the command list, nothing else
 
@@ -1492,12 +1420,6 @@ mixer is on every frame of playback, rewrote its glyph and restarted its fade si
 That is what made the mute switches flicker under the transport and the metronome. The same record
 tells a control's first glyph from a swap, so nothing fades in behind the shell as it is built.
 
-### Time zero is a landmark, not a measurement
-
-Every other line on the timeline says where something is; zero says where the take starts. It is
-drawn in `gridLineOctave` at twice the weight of the grid, the same emphasis an octave boundary
-gets against the semitone lines, and after the rest of the grid so nothing is written over it.
-
 ### A panel leaves the way it arrived
 
 Dialogs animated in and then vanished. Closing now plays the entry in reverse, shrinking back into
@@ -1505,3 +1427,61 @@ the panel's own centre while the backdrop fades, through the same `animateOut` t
 use. Focus goes back and `onClose` reports the moment the panel is dismissed rather than when it
 has finished leaving, because a panel that previews in the editor has to put the preview down at
 once, and a leaving panel takes no pointer events so the page is usable immediately.
+
+## Licensing
+
+- Application code is `AGPL-3.0-or-later`; `LICENSE` holds the full text and every
+  application-owned source file carries an SPDX identifier.
+- Every dependency is MIT, Apache-2.0 or dual MIT/Apache-2.0, all compatible with
+  `AGPL-3.0-or-later`. `THIRD_PARTY_LICENSES.md` lists them.
+- The npm dependencies are development tooling only. Nothing third-party is bundled into `dist/`
+  beyond the application's own compiled output.
+- The in-app Source Code entry resolves to the repository and the build's revision, supplied at
+  build time by `AXYS_SOURCE_REPOSITORY` and `AXYS_SOURCE_REVISION` so a fork or third-party host
+  can point it at their own corresponding source.
+
+## Supported envelope
+
+- Browsers: current Chrome, Edge and Firefox on desktop, and Safari 17 or newer. `AudioWorklet`,
+  WebAssembly, IndexedDB and OPFS are required; WebGPU, OPFS `createSyncAccessHandle` and
+  cross-origin isolation are optional and feature-detected.
+- Baseline hardware for the stated performance envelope: a 2020-or-later x86-64 laptop, four cores,
+  8 GB RAM.
+- Representative project: one mono vocal of up to ten minutes at 44.1 or 48 kHz with one MIDI
+  guide. Analysis is chunked and cancellable; longer files work but analysis time grows linearly
+  and memory with it.
+- Hard limits live in `axys_core::limits` and are enforced on import.
+
+## Known limitations
+
+- TD-PSOLA is honest but not mature. Large downward shifts on breathy material can sound rough, and
+  very rapid pitch gestures can buzz. The interface is replaceable by design.
+- Formant preservation is cepstral, not source-filter. It holds vowel character well for moderate
+  shifts and becomes approximate past roughly seven semitones.
+- Analysis assumes one dominant pitched voice. Strong bleed, heavy reverb, chorus or clipping
+  produce unreliable F0, which the confidence track shows rather than hides.
+- Octave ambiguity on very low or very breathy voices still occurs; the Viterbi pass reduces it, it
+  does not eliminate it. Manual correction is the intended remedy.
+- Time stretching beyond roughly 1.5x or below 0.7x begins to show granularity.
+- Scrubbing plays short grains from the rendered stream rather than a continuously varying-rate
+  render.
+- Rendering an output range costs a grain-phase integration from output sample 0, because
+  determinism forbids carrying phase in state. `render::Renderer` memoises phase checkpoints so
+  sequential playback and seeking stay bounded, but a cold seek deep into a very long file does
+  measurable work before the first block.
+- PSOLA snaps each output mark to the nearest source epoch, which leaves up to half a period of
+  phase error where the mark grid drifts against the epoch grid. Inaudible as a constant sub-period
+  delay on steady material; it is the main residual artefact on unstable pitch.
+- Cepstral liftering at order 40 smooths the log spectrum over roughly 500 to 600 Hz, so closely
+  spaced formants merge and an estimated peak can sit up to 200 Hz from the true formant. Good
+  enough to hold timbre under moderate pitch movement, not an accurate formant tracker.
+- Repitching material with little harmonic content, a near-pure sine for instance, produces quiet
+  output at the new pitch. This is inherent to TD-PSOLA; real vocal material is unaffected.
+- A slow glissando through more than the segmentation step threshold is split where the two-scale
+  test first fires, which may not be where a musician would put the boundary.
+- Blob ids are stable within one segmentation run only, so a re-analysis renumbers them.
+- A project document written by a newer build is refused rather than parsed best-effort.
+- Format 2 MIDI files are read as if their tracks were parallel, and SMPTE timecode divisions are
+  rejected outright.
+- WAV import does not support RF64/BW64, ADPCM, A-law or mu-law; export writes 16-bit, 24-bit and
+  32-bit float only, with no dither or normalisation.

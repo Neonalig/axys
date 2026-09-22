@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # Axys core contracts
 
 Authoritative Rust type and signature contract for `crates/axys-core`. Every module must implement
@@ -16,13 +18,6 @@ House rules that apply to every file:
 - Every module ends with a `#[cfg(test)] mod tests` covering the behaviour it owns.
 - All times are **source seconds** as `f64` unless a name says otherwise.
 - Serde types use `#[serde(rename_all = "camelCase")]`.
-
-Already implemented and stable: `units.rs` (`Tuning`, `AccidentalStyle`, `cents_between`,
-`midi_to_name`, `name_to_midi`, `midi_cents_deviation`, `semitones_to_cents`, `cents_to_semitones`)
-and `curve.rs` (`Interp`, `Anchor`, `PitchCurve` with `from_anchors`, `anchors`, `insert`, `remove`,
-`move_anchor`, `clear_span`, `eval`, `sample_uniform`, `start`, `end`, `len`, `is_empty`).
-
----
 
 ## `analysis/f0.rs`
 

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # Axys web contracts
 
 Authoritative module and API contract for `web/src`. Implement these names and shapes exactly;
@@ -42,6 +44,15 @@ in undo:
 - `{ type: 'setAccidentals', accidentals: 'sharps' | 'flats' }` replaces the spelling convention.
 
 `isEditOp` in `core/json.ts` accepts both.
+
+`core/notes.ts` is the one spelling of a note name: `SHARP_NAMES`, `FLAT_NAMES`, `pitchClass`,
+`isBlackKey`, `noteName(midi, style)` and `noteNameWithCents(midi, style)`. Nothing else builds a
+pitch-class table, so the grid, the inspector and the scale key always agree.
+
+`core/timeline.ts` is the one TypeScript copy of musical time: `ppqOf`, `tempoAt`, `meterAt`,
+`bpmAt`, `tickToSeconds`, `secondsToTick`, `barBeatAt` and `beatGrid`. It mirrors `timeline.rs` so
+the ruler, the tools and the metronome can be drawn and scheduled without a WebAssembly call per
+frame; `tests/timeline-parity.test.ts` holds the two to the same answers.
 
 A blob carries its own level, so one word can be lifted or dropped:
 
@@ -349,6 +360,9 @@ export class Viewport {
 `dispose()`. It draws to Canvas 2D, respects `devicePixelRatio`, decimates the pitch polyline to at
 most one point per pixel column, and keeps a frame under 16 ms for the representative project.
 
+`editor/view.ts` owns screen geometry only. Musical time lives in `core/timeline.ts`, because the
+audio engine needs it too and must not import from the editor.
+
 Layers in `editor/layers/`, each a pure draw function taking
 `(ctx, state, viewport, theme)`: `grid.ts` (pitch rows, octave labels, cents guides), `ruler.ts`
 (seconds or bars and beats), `waveform.ts` (peak envelope behind the blobs), `pitch.ts` (detected
@@ -375,6 +389,10 @@ range, hover readout, drag preview).
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 
 ## UI: `ui/`
+
+Styles live in `web/src/styles/`, one file per area, imported by `web/src/styles.css`. A colour or
+a measurement written into a rule instead of a token is a defect; design bible section 14 lists
+the tokens and their permitted use.
 
 `app/preferences.ts` holds the settings that belong to the person rather than to the project: the
 theme choice including `system`, the follow mode and the time display. They live in local storage
@@ -510,6 +528,12 @@ export class MediaStore {
 `importProject(file)` reading one back, plus `relink(file, expected: SourceInfo)` which verifies the
 fingerprint and refuses a different file with a clear message. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
+
+`persistence/restore.ts` exports `restoreNewest(source, open)`, which picks the newest stored copy
+this build can still read. A copy is written only after passing the project contract, so one that
+no longer opens was written under an earlier contract and has no version to migrate from. It is
+discarded and the next is tried, because keeping it is a failure on every launch for a document
+nothing can open.
 
 ## Offline install: `app/service-worker.ts` and `app/offline.ts`
 

@@ -76,7 +76,7 @@ Only shared project structure is committed from `.idea/`; user state is ignored.
 crates/axys-core   Rust: analysis, DSP, blobs, curves, timeline, MIDI, project model
 crates/axys-wasm   The wasm-bindgen boundary, deliberately narrow
 web/src            TypeScript: editor, renderer, audio engine, workers, persistence
-docs/              Design bible, recorded decisions, core contracts, deployment
+docs/              Design bible, recorded decisions, module contracts, testing, deployment
 fixtures/          Generated, redistributable audio and MIDI test material
 .run/              Shared RustRover run configurations
 ```
@@ -90,8 +90,8 @@ The build is ordinary static files in `dist/` and needs no running server. It wo
 root and at a repository subpath, because assets are referenced relatively and no origin is baked
 in.
 
-- Cloudflare Pages is the primary documented target: see [docs/deployment.md](docs/deployment.md).
-- A GitHub Actions workflow for GitHub Pages is in `.github/workflows/pages.yml`.
+Cloudflare Pages is the target. `.github/workflows/deploy.yml` checks, builds and uploads `dist/`
+on every push to `main`. See [docs/deployment.md](docs/deployment.md).
 
 HTTPS is required in production because the browser capabilities Axys uses need a secure context.
 Cross-origin isolation is not required.

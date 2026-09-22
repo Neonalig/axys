@@ -1,8 +1,10 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # Axys Design Bible
 
 **Product:** Axys  
 **Purpose:** Authoritative product and technical requirements for a local-first monophonic vocal pitch and timing editor  
-**Status:** Working design reference  
+**Status:** Reference  
 **Priority order:** Core, Wanted, Nice-to-have  
 **Licence:** AGPL-3.0-or-later  
 
@@ -10,9 +12,9 @@
 
 This document defines what Axys must enable, how editing should behave, the technical and distribution constraints, and the quality bar used to judge the result. It is the authoritative requirements document for implementation decisions.
 
-The named technologies and algorithms are investigation pointers unless this document explicitly labels them as constraints. Where a choice remains open, select it using measured browser compatibility, audio quality, maintainability, reproducibility, contributor setup cost and licence compatibility. Record material choices and unresolved limitations in `docs/decisions.md`.
+A named technology or algorithm is a constraint only where this document labels it one. `docs/decisions.md` records which were chosen, why, and what limitations remain.
 
-The feature groups express priority and dependency, not fixed release phases. Work may draw from a later group when that resolves a core workflow or major research risk. A functional Core product takes priority over broad but shallow feature coverage.
+The feature groups in section 4 express priority and dependency, not release phases. A functional Core product takes priority over broad but shallow feature coverage.
 
 ## 2. Product definition
 
@@ -546,70 +548,12 @@ Before considering implementation complete:
 - Audio and MIDI import, tempo changes and meter changes must be verified.
 - Source-code and third-party licence notices must be present and accurate.
 
-## 14. Technology investigation map
-
-These are research directions rather than prescribed implementations.
-
-### 14.1 Analysis
-
-- YIN and pYIN-family F0 estimation;
-- McLeod pitch methods;
-- autocorrelation and cepstral approaches;
-- voiced or unvoiced classification;
-- confidence calibration;
-- energy, onset, pitch-change and hysteresis segmentation.
-
-### 14.2 Transformation
-
-- PSOLA and TD-PSOLA;
-- WSOLA;
-- phase-vocoder variants with transient handling;
-- sinusoidal models;
-- source-filter analysis and resynthesis;
-- formant envelope estimation;
-- continuously varying pitch targets;
-- hybrid preview and offline rendering strategies.
-
-### 14.3 Browser execution and rendering
-
-- AudioWorklet with WASM;
-- Web Workers and transferable buffers;
-- optional shared memory and threading;
-- WebGPU, WebGL and Canvas rendering tradeoffs;
-- GPU hit-testing and text-rendering implications;
-- browser codec and file-system support;
-- capability detection and reduced-function operation.
-
-### 14.4 Evaluation questions
-
-- Does the method follow arbitrary target curves without losing intelligibility or stable phase?
-- How are consonants attached to blobs and preserved through timing changes?
-- How are melisma, rests, overlaps and segmentation differences represented during MIDI mapping?
-- Can preview and high-quality rendering share one canonical interpretation of edits?
-- At what shift size does formant treatment become necessary for representative voices?
-- Which browser limitations materially alter supported file length, latency or quality?
-
-## 15. Required recorded decisions
-
-The implementation must eventually decide and record:
-
-- what dragging each blob edge means;
-- how timing edits treat gaps, overlaps and neighbours;
-- whether MIDI guidance updates live or is committed as an undoable operation;
-- how intent sources compose and take precedence;
-- how interpolation crosses blob and voiced or unvoiced boundaries;
-- which project data is embedded, cached or externally linked;
-- supported browsers, file durations and hardware envelope;
-- preview and export quality differences;
-- chosen pitch-analysis and resynthesis methods;
-- all material dependency and licensing decisions.
-
-## 16. Interface design system
+## 14. Interface design system
 
 Every value the chrome draws with is a token. A number written into a rule is a number nobody can
-change consistently later, so a literal in `web/src/styles.css` outside `:root` is a defect.
+change consistently later, so a literal outside `:root` in `web/src/styles/` is a defect.
 
-### 16.1 Tokens
+### 14.1 Tokens
 
 | Scale | Tokens | Permitted use |
 | --- | --- | --- |
@@ -618,7 +562,7 @@ change consistently later, so a literal in `web/src/styles.css` outside `:root` 
 | Elevation | `--axys-elevation-1` `0 1px 2px`, `-2` `0 4px 12px`, `-3` `0 12px 32px` | 1 raised controls, the inspector rail, the mixer bar. 2 menus, dropdowns, tooltips. 3 dialogs, toasts, the backdrop layer. |
 | Weight | `--axys-weight-body` 400, `--axys-weight-control` 500, `--axys-weight-strong` 600 | Body text, a control's own label, a heading or a checked state. |
 | Size | `--axys-size-sm` 12px, `--axys-size-md` 13px, `--axys-size-lg` 16px | Secondary text, body and controls, headings. 12px is the floor everywhere, canvas labels included. |
-| Duration | `--axys-duration-fast` 90ms, `-base` 150ms, `-slow` 240ms | See 16.3. |
+| Duration | `--axys-duration-fast` 90ms, `-base` 150ms, `-slow` 240ms | See 14.3. |
 | Easing | `--axys-ease-standard`, `-enter`, `-exit` | Standard for a move, enter for something arriving, exit for something leaving. |
 | Icon | `--axys-icon` | 20px in the toolbar and tool palette, 16px everywhere else. No third size. |
 
@@ -629,7 +573,7 @@ colour.
 Focus is a two-layer `box-shadow` ring, 1px of `bg` inside and 2px of `focus` outside, never an
 outline: a shadow follows whatever radius the element already has.
 
-### 16.2 Component inventory
+### 14.2 Component inventory
 
 Every control is defined once, in `web/src/ui/controls/`. A container arranges controls; it does
 not restyle them.
@@ -648,7 +592,7 @@ not restyle them.
 
 A control that would be a tenth row here is a control that should have been one of the nine.
 
-### 16.3 Motion
+### 14.3 Motion
 
 | Animation | Duration | Easing |
 | --- | --- | --- |
@@ -666,7 +610,7 @@ A control that would be a tenth row here is a control that should have been one 
 Never animate the playhead, a canvas drag, a value scrub, zoom, or anything else the editor drives
 per frame. Latency reads as lag in an editor.
 
-### 16.4 Writing style
+### 14.4 Writing style
 
 Strings follow the GNOME Human Interface Guidelines. It is written for desktop application chrome
 rather than for marketing pages, and it matches the house style already in use.
@@ -688,7 +632,18 @@ rather than for marketing pages, and it matches the house style already in use.
   unreachable to assistive technology.
 - A toggle's tooltip names what pressing it will do, and follows the state icon.
 
-## 17. Glossary
+### 14.5 Sources
+
+- Lucide licence and sizing rule: https://lucide.dev/guide/lucide/basics/sizing
+- Bravura and SMuFL licensing: https://www.smufl.org/fonts/
+- Atkinson Hyperlegible licence and Next release: https://www.brailleinstitute.org/freefont/
+- fontTools subsetter: https://fonttools.readthedocs.io/en/latest/subset/
+- Window Controls Overlay: https://web.dev/articles/window-controls-overlay
+- Mica material, native only: https://learn.microsoft.com/en-us/windows/apps/design/style/mica
+- GNOME HIG tooltips: https://developer.gnome.org/hig/patterns/feedback/tooltips.html
+- GNOME HIG writing style: https://developer.gnome.org/hig/guidelines/writing-style.html
+
+## 15. Glossary
 
 | Term | Meaning |
 | --- | --- |
