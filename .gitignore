@@ -1,0 +1,45 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+.npm/
+*.tsbuildinfo
+
+# Build output
+dist/
+crates/axys-core/pkg/
+web/src/wasm/
+
+# Test / coverage output
+coverage/
+test-results/
+playwright-report/
+.vite/
+
+# JetBrains: share project structure, ignore user state
+# https://www.jetbrains.com/help/rust/configuring-project-structure.html
+.idea/**
+!.idea/misc.xml
+!.idea/modules.xml
+!.idea/vcs.xml
+!.idea/encodings.xml
+!.idea/*.iml
+!.idea/runConfigurations/
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/shelf/
+.idea/httpRequests/
+.idea/dictionaries/
+.idea/dataSources/
+.idea/**/*.local.xml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local env
+.env
+.env.local

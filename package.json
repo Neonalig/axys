@@ -1,0 +1,9 @@
+{
+  "name": "axys",
+  "version": "0.1.0",
+  "description": "Local-first monophonic vocal pitch and timing editor",
+  "license": "AGPL-3.0-or-later",
+  "author": "Neonalig",
+  "private": true,
+  "scripts": {}
+}

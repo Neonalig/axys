@@ -1,0 +1,13 @@
+Create Axys as specified in `docs/design_bible.md`.
+
+Read the complete design bible before making architectural or implementation decisions. Treat it as the authoritative product and technical requirements document. Follow its priority order of Core, Wanted, then Nice-to-have capabilities. Do not stop at a visual scaffold, mocked analysis, silent DSP stubs or controls that do not affect processed playback.
+
+Begin by inspecting the existing repository, Git configuration and design bible. Establish a buildable application structure, then implement and verify the requirements. Keep the repository runnable throughout development and preserve unrelated existing work.
+
+Before starting make sure to setup gitignore and commit the current starting template, then during work, commit at relevant milestones.
+
+Use subagents and ultracode where useful. When the design bible intentionally leaves a choice open, decide using measured compatibility, audio quality, maintainability and licensing, then record the decision in `docs/decisions.md`.
+
+Before declaring completion, run every validation and completion check required by the design bible and fix resulting failures.
+
+Ask only when a missing decision would substantially change the product, conflict with the design bible, require credentials or external authority, or create an irreversible compatibility commitment.
