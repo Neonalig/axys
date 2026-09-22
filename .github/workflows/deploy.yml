@@ -1,23 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-name: Deploy to GitHub Pages
+name: Deploy
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 concurrency:
-  group: pages
+  group: deploy
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,26 +35,14 @@ jobs:
 
       - run: npm run check
 
-      - name: Build for the repository subpath
+      - name: Build
         env:
-          # A project site is served from /<repo>/, so assets resolve relatively.
-          AXYS_BASE: ./
           AXYS_SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
           AXYS_SOURCE_REVISION: ${{ github.sha }}
         run: npm run build
 
-      - uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v3
+      - uses: cloudflare/wrangler-action@v4
         with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=axys --branch=main

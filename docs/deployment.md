@@ -5,9 +5,8 @@
 The production build is ordinary static files. Nothing runs server-side, so any static host works.
 `npm run build` writes `dist/` and that directory is the whole deployment.
 
-No deployment has been performed from this repository and no domain has been configured. The
-settings below are documentation, ready to apply when someone with authority over the account
-chooses to.
+Cloudflare Pages is the target. `.github/workflows/deploy.yml` checks, builds and uploads `dist/`
+on every push to `main`; `.github/workflows/ci.yml` validates pull requests on Linux and Windows.
 
 ## Build facts every host needs
 
@@ -20,8 +19,7 @@ chooses to.
 | Server runtime   | none                      |
 
 Rust and the `wasm32-unknown-unknown` target must be available to the build. Hosts that do not
-provide Rust need the build to run in CI instead, uploading `dist/` as an artefact; the GitHub
-Actions workflow in `.github/workflows/pages.yml` shows that shape.
+provide Rust need the build to run in CI instead, uploading `dist/` from there.
 
 ## Root and subpath
 
@@ -48,25 +46,27 @@ own corresponding source rather than to the upstream repository. `GITHUB_SHA` an
 
 ## Cloudflare Pages
 
-The primary documented target.
+The target. Cloudflare's build image ships no Rust, and a Pages Git build gets no cargo cache, so
+the build runs in GitHub Actions and Wrangler uploads the finished `dist/`. Direct upload also
+keeps the Cloudflare project free of build settings that could drift from the repository.
 
-1. **Connect the repository.** Workers and Pages, Create, Pages, Connect to Git, pick the
-   repository and the production branch.
-2. **Build settings.** Framework preset None. Build command `npm ci && npm run build`. Output
-   directory `dist`. Root directory the repository root.
-3. **Environment variables.** Set `NODE_VERSION` to `20.19.0`. Set `AXYS_SOURCE_REPOSITORY` to your
-   repository URL. `CF_PAGES_COMMIT_SHA` is provided by Cloudflare and used automatically. None of
-   these are secrets.
-4. **Rust.** Cloudflare's build image does not ship Rust. Either add
-   `curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --target wasm32-unknown-unknown`
-   ahead of the build command, or build in CI and deploy `dist/` with Wrangler. The second is
-   faster and is what a busy repository should do.
-5. **Preview deployments.** On by default for every non-production branch and pull request. They
-   are separate origins, which is a good place to test the subpath-free root case.
-6. **Custom domain.** Pages, the project, Custom domains, Set up a domain. Cloudflare issues the
-   certificate. HTTPS is required because `AudioWorklet`, OPFS and WebAssembly need a secure
-   context.
-7. **Caching.** `web/public/_headers` ships with the build and sets immutable long-lived caching
+1. **Create the project.** Workers and Pages, Create, Pages, Upload assets. Name it `axys`.
+   Uploading a placeholder is enough; the workflow replaces it on the first push.
+2. **Credentials.** An account API token from the Edit Cloudflare Workers template, scoped to the
+   one account, plus the account id. Both go in the repository as the `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID` secrets. The token is a secret; the account id is not, and is a secret
+   only to keep the workflow free of account identifiers.
+3. **Deploys.** `.github/workflows/deploy.yml` runs `npm run doctor`, `npm run check` and
+   `npm run build`, then `wrangler pages deploy dist`. `AXYS_SOURCE_REPOSITORY` and
+   `AXYS_SOURCE_REVISION` come from the workflow, so the AGPL Source Code entry resolves to the
+   repository and commit the build was made from.
+4. **Preview deployments.** A branch other than `main` passed to `--branch` lands on its own
+   preview origin, which is a good place to test the subpath-free root case.
+5. **Custom domain.** Pages, the project, Custom domains, Set up a domain. Cloudflare issues the
+   certificate and writes the record itself when it holds the zone. It adds one record for that
+   hostname and leaves every other record in the zone alone. HTTPS is required because
+   `AudioWorklet`, OPFS and WebAssembly need a secure context.
+6. **Caching.** `web/public/_headers` ships with the build and sets immutable long-lived caching
    for `/assets/*`, which are content-hashed, and `no-cache` for `/index.html`. That gives instant
    updates without stale asset references.
 
@@ -108,21 +108,10 @@ panel, so the app still works while you fix the host configuration.
 
 ## GitHub Pages
 
-`.github/workflows/pages.yml` installs the declared Node and Rust versions, adds the WASM target,
-restores locked dependencies with `npm ci`, runs `npm run doctor` and `npm run check`, builds, and
-deploys `dist/` with the official Pages actions.
-
-Repository settings needed once:
-
-1. Settings, Pages, Build and deployment, Source: **GitHub Actions**.
-2. Settings, Actions, General, Workflow permissions: read is enough; the workflow requests
-   `pages: write` and `id-token: write` itself.
-3. For an organisation with restricted Actions, allow `actions/checkout`, `actions/setup-node`,
-   `actions/configure-pages`, `actions/upload-pages-artifact`, `actions/deploy-pages` and
-   `Swatinem/rust-cache`.
-
-A project site is served from `https://<owner>.github.io/<repo>/`. The relative base handles that
-without configuration.
+Serves the build correctly but cannot set response headers, so `_headers` is ignored: no
+Content-Security-Policy, and `/sw.js` and `/version.json` are served with GitHub's own caching. A
+cached copy of either reports the build it came from as the current one, which breaks the update
+prompt. Usable as a mirror, not as the primary host.
 
 ## Other static hosts
 
