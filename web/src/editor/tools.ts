@@ -29,7 +29,7 @@ export const EDGE_GRIP = 5;
 /** Vertical slack in pixels around a blob body. */
 export const BODY_SLACK = 4;
 
-/** Shortest audition a click produces, in seconds. */
+/** Shortest snippet an Alt-click plays, in seconds. */
 export const AUDITION_SECONDS = 0.35;
 
 /** Snap radius in pixels around a grid line or blob edge. */
@@ -92,13 +92,6 @@ export const TOOLS: readonly ToolDefinition[] = [
     hint: 'Drag a blob or its edges in time',
     key: 't',
     cursor: 'ew-resize',
-  },
-  {
-    id: 'audition',
-    label: 'Audition',
-    hint: 'Click or drag to hear a region',
-    key: 'a',
-    cursor: 'pointer',
   },
 ];
 

@@ -408,10 +408,10 @@ export class EditorController {
     });
   }
 
-  /** Scrolls the view by a pixel delta. */
+  /** Scrolls the view by a pixel delta, which hands control of the view back to the user. */
   panBy(dx: number, dy: number): void {
     const viewport = this.viewport;
-    this.#store.update({ view: viewport.pan(dx, dy) });
+    this.#store.update({ view: viewport.pan(dx, dy), follow: false });
   }
 
   /** Frames the whole project, or the selection when there is one. */
@@ -539,9 +539,9 @@ export class EditorController {
         view: viewport.zoomPitch(Math.exp(-event.deltaY * WHEEL_ZOOM), point.y),
       });
     } else if (event.shiftKey) {
-      this.#store.update({ view: viewport.pan(event.deltaY, 0) });
+      this.#store.update({ view: viewport.pan(event.deltaY, 0), follow: false });
     } else {
-      this.#store.update({ view: viewport.pan(event.deltaX, event.deltaY) });
+      this.#store.update({ view: viewport.pan(event.deltaX, event.deltaY), follow: false });
     }
     event.preventDefault();
   };
@@ -595,11 +595,19 @@ export class EditorController {
       return { kind: 'scrub' };
     }
 
+    // Alt over open canvas hears a snippet and leaves the playhead where it was. Over a blob
+    // Alt stays the fine-adjustment modifier the drag gestures read.
+    if (hit.kind === 'empty' && modifiers.fine) {
+      return { kind: 'audition', start: hit.time, end: hit.time };
+    }
+
     switch (state.tool) {
       case 'select':
         return { kind: 'rubberBand', additive: modifiers.constrain };
       case 'split':
-        return hit.blob === null ? null : { kind: 'split', blob: hit.blob, time: hit.sourceTime };
+        return hit.blob === null
+          ? this.#beginScrub(hit)
+          : { kind: 'split', blob: hit.blob, time: hit.sourceTime };
       case 'pitch': {
         if (hit.kind === 'anchor' && hit.blob !== null && hit.anchor !== null) {
           return {
@@ -611,24 +619,24 @@ export class EditorController {
           };
         }
         if (hit.blob === null) {
-          return null;
+          return this.#beginScrub(hit);
         }
         return { kind: 'pitch', blobs: this.#dragSet(hit.blob), semitones: 0 };
       }
       case 'pen':
         return hit.blob === null
-          ? null
+          ? this.#beginScrub(hit)
           : { kind: 'pen', blob: hit.blob, points: [{ time: hit.sourceTime, midi: hit.midi }] };
       case 'line': {
         if (hit.blob === null) {
-          return null;
+          return this.#beginScrub(hit);
         }
         const from = { time: hit.sourceTime, midi: hit.midi };
         return { kind: 'line', blob: hit.blob, from, to: from, curved: modifiers.fine };
       }
       case 'smooth':
         return hit.blob === null
-          ? null
+          ? this.#beginScrub(hit)
           : {
               kind: 'smooth',
               blob: hit.blob,
@@ -638,7 +646,7 @@ export class EditorController {
             };
       case 'time': {
         if (hit.blob === null) {
-          return null;
+          return this.#beginScrub(hit);
         }
         if (hit.kind === 'blobEdge' && hit.edge !== null) {
           const blob = this.#blob(hit.blob);
@@ -655,13 +663,20 @@ export class EditorController {
         }
         return { kind: 'time', blobs: this.#dragSet(hit.blob), seconds: 0 };
       }
-      case 'audition': {
-        this.#scrubTo(hit.time);
-        return { kind: 'audition', start: hit.time, end: hit.time };
-      }
       default:
-        return null;
+        return this.#beginScrub(hit);
     }
+  }
+
+  /**
+   * Places the playhead where the pointer went down and keeps dragging it.
+   *
+   * @remarks What every tool does over open canvas, so the playhead is reachable without
+   * travelling to the ruler for it.
+   */
+  #beginScrub(hit: Hit): Gesture {
+    this.#scrubTo(hit.time);
+    return { kind: 'scrub' };
   }
 
   #advanceGesture(modifiers: Modifiers): void {
@@ -1002,11 +1017,12 @@ export class EditorController {
         break;
       }
       case 'audition': {
+        // A snippet deliberately leaves both the playhead and the selection alone, so it can be
+        // heard anywhere without losing the position being worked at.
         const start = Math.min(gesture.start, gesture.end);
         const end = Math.max(gesture.start, gesture.end);
         const span = end - start < AUDITION_SECONDS ? start + AUDITION_SECONDS : end;
         this.#options.audition?.(start, span);
-        this.#setRange(start, span);
         break;
       }
       case 'scrub':
@@ -1074,6 +1090,7 @@ export class EditorController {
     }
     if (hit.blob === null) {
       this.#setSelection({ blobs: [], anchors: [], range: null });
+      this.#scrubTo(hit.time);
       return;
     }
     const id = hit.blob;
@@ -1162,11 +1179,6 @@ export class EditorController {
       transport: { ...state.transport, loop: { start, end } },
       view: { ...state.view, loopStart: start, loopEnd: end },
     });
-  }
-
-  #setRange(start: number, end: number): void {
-    const selection = this.#store.state.selection;
-    this.#setSelection({ ...selection, range: { start, end } });
   }
 
   #setSelection(selection: Selection): void {

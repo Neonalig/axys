@@ -34,7 +34,7 @@ import type {
 import { EditorController } from './editor/interaction.js';
 import { buildPeaks, clearPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
-import { fitView } from './editor/view.js';
+import { fitView, followView } from './editor/view.js';
 import { Autosave } from './persistence/autosave.js';
 import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
@@ -816,9 +816,11 @@ function startPlayheadLoop(
     const movedTransport =
       Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
       audio.playing !== state.transport.playing;
-    if (movedPlayhead || movedTransport) {
+    const view = movedPlayhead ? { ...state.view, playhead } : state.view;
+    const followed = state.follow && audio.playing ? followView(view, playhead) : null;
+    if (movedPlayhead || movedTransport || followed !== null) {
       store.update({
-        ...(movedPlayhead ? { view: { ...state.view, playhead } } : {}),
+        ...(movedPlayhead || followed !== null ? { view: followed ?? view } : {}),
         ...(movedTransport
           ? { transport: { ...state.transport, position: output, playing: audio.playing } }
           : {}),

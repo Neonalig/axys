@@ -77,12 +77,6 @@ const TOOLS: readonly ToolEntry[] = [
   { id: 'line', label: 'Line Tool', icon: 'line', tooltip: 'Draws a straight pitch transition.' },
   { id: 'smooth', label: 'Smooth Tool', icon: 'smooth', tooltip: 'Reduces jitter over a span.' },
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time.' },
-  {
-    id: 'audition',
-    label: 'Audition Tool',
-    icon: 'audition',
-    tooltip: 'Plays a short region under the cursor.',
-  },
 ];
 
 const COMPARE_OPTIONS: readonly { value: CompareMode; label: string }[] = [
@@ -136,6 +130,7 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Zoom Out': 'zoomOut',
   'Zoom Fit': 'zoomFit',
   'Toggle Bars Beats': 'barsBeats',
+  'Follow Playhead': 'follow',
   'Toggle Metronome': 'metronome',
   'Align Guide': 'time',
   'Show Diagnostics': 'diagnostics',

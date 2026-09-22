@@ -131,6 +131,7 @@ export interface AppState {
   transport: TransportState;
   analysis: { running: boolean; progress: number; stage: string };
   compare: CompareMode;
+  follow: boolean;
   dirty: boolean;
 }
 
@@ -142,7 +143,7 @@ export interface Selection {
 }
 
 /** Editor tool in use. */
-export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time' | 'audition';
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time';
 
 /** Which audio the transport plays. */
 export type CompareMode = 'processed' | 'original' | 'split';

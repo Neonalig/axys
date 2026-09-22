@@ -21,7 +21,7 @@ export type IconName =
   | 'line'
   | 'smooth'
   | 'time'
-  | 'audition'
+  | 'follow'
   | 'select'
   | 'zoomIn'
   | 'zoomOut'
@@ -97,8 +97,8 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   time: stroked(
     `<path d="M3 3.6v8.8M13 3.6v8.8"/><path d="M5.2 8h5.6"/><path d="m6.8 6.4-1.6 1.6 1.6 1.6"/><path d="m9.2 6.4 1.6 1.6-1.6 1.6"/>`,
   ),
-  audition: stroked(
-    `<path d="M2.8 6.3h2L7.6 4v8L4.8 9.7h-2Z"/><path d="M10.2 6.2a2.6 2.6 0 0 1 0 3.6"/><path d="M12.1 4.5a5.2 5.2 0 0 1 0 7"/>`,
+  follow: stroked(
+    `<path d="M8 2.2v11.6"/><path d="M2.6 8h2.8"/><path d="M4.2 6.4 5.8 8 4.2 9.6"/><path d="M13.4 8h-2.8"/><path d="M11.8 6.4 10.2 8l1.6 1.6"/>`,
   ),
   select: stroked(`<path d="m4 2.5 8.1 5.4-3.7.6 2 3.8-1.8.9-2-3.8-2.6 2.6Z"/>`),
   zoomIn: stroked(

@@ -14,7 +14,7 @@ import { MIN_BLOB_SECONDS } from '../core/types.js';
 import type { Blob, EditOp, ExportPreview, TimelineMap } from '../core/types.js';
 import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
-import { fitView, Viewport } from '../editor/view.js';
+import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
 import { showSourceCode, showDiagnostics } from '../ui/diagnostics.js';
 import { showExportDialog } from '../ui/export-dialog.js';
 import type { ExportChoice, ExportRange } from '../ui/export-dialog.js';
@@ -263,7 +263,6 @@ const TOOLS: readonly { id: ToolCommandId; label: string; shortcut: string }[] =
   { id: 'line', label: 'Line Tool', shortcut: '5' },
   { id: 'smooth', label: 'Smooth Tool', shortcut: '6' },
   { id: 'time', label: 'Time Tool', shortcut: '7' },
-  { id: 'audition', label: 'Audition Tool', shortcut: '8' },
 ];
 
 /** Builds the full command list. */
@@ -522,8 +521,17 @@ export function buildCommands(): Command[] {
       shortcut: 'Space',
       enabled: ready,
       run: async (ctx) => {
-        if (ctx.audio.playing) ctx.audio.pause();
-        else await ctx.audio.play();
+        if (ctx.audio.playing) {
+          ctx.audio.pause();
+          return;
+        }
+        // Playing from a playhead already in sight is a request to watch it, so the view
+        // takes the playhead back up. Playing from one off screen leaves the view alone.
+        const state = ctx.store.state;
+        if (!state.follow && isVisible(state.view, state.view.playhead)) {
+          ctx.store.update({ follow: true });
+        }
+        await ctx.audio.play();
       },
     },
     {
@@ -614,6 +622,21 @@ export function buildCommands(): Command[] {
       enabled: () => true,
       run: (ctx) => {
         fitToContent(ctx.store);
+      },
+    },
+    {
+      id: 'view.followPlayhead',
+      label: 'Follow Playhead',
+      group: 'View',
+      shortcut: 'F',
+      enabled: () => true,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        if (state.follow) {
+          ctx.store.update({ follow: false });
+          return;
+        }
+        ctx.store.update({ follow: true, view: snapViewTo(state.view, state.view.playhead) });
       },
     },
     {

@@ -155,6 +155,39 @@ function withPitchWindow(view: ViewState, low: number, range: number): ViewState
   return { ...view, lowMidi, highMidi: lowMidi + span };
 }
 
+/** Fraction of the visible span a followed playhead is placed at. */
+const FOLLOW_ANCHOR = 0.15;
+
+/** Fraction of the visible span a followed playhead may reach before the view moves again. */
+const FOLLOW_EDGE = 0.85;
+
+/** True when a time sits inside a view's visible span. */
+export function isVisible(view: ViewState, seconds: number): boolean {
+  return seconds >= view.visibleStart && seconds <= view.visibleEnd;
+}
+
+/** Scrolls a view so a time sits at the position a followed playhead is held at. */
+export function snapViewTo(view: ViewState, seconds: number): ViewState {
+  const span = Math.max(MIN_TIME_SPAN, view.visibleEnd - view.visibleStart);
+  const start = seconds - FOLLOW_ANCHOR * span;
+  return { ...view, visibleStart: start, visibleEnd: start + span };
+}
+
+/**
+ * Scrolls a view so a moving playhead stays in sight.
+ *
+ * @remarks `null` while the playhead is comfortably inside the window, so the view pages forward
+ * at the edge rather than sliding under every frame. Only the time axis moves.
+ */
+export function followView(view: ViewState, playhead: number): ViewState | null {
+  const span = Math.max(MIN_TIME_SPAN, view.visibleEnd - view.visibleStart);
+  const offset = (playhead - view.visibleStart) / span;
+  if (offset >= 0 && offset <= FOLLOW_EDGE) {
+    return null;
+  }
+  return snapViewTo(view, playhead);
+}
+
 /**
  * Frames a view on a time and pitch extent with a margin.
  *

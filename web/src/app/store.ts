@@ -36,6 +36,8 @@ export interface AppState {
   transport: TransportState;
   analysis: { running: boolean; progress: number; stage: string };
   compare: CompareMode;
+  /** Whether the view scrolls to keep the playhead in sight. Panning the view clears it. */
+  follow: boolean;
   dirty: boolean;
 }
 
@@ -47,7 +49,7 @@ export interface Selection {
 }
 
 /** Editor tool in use. */
-export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time' | 'audition';
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'smooth' | 'time';
 
 /** Which audio the transport plays. */
 export type CompareMode = 'processed' | 'original' | 'split';
@@ -167,6 +169,7 @@ export function initialState(): AppState {
     },
     analysis: { running: false, progress: 0, stage: '' },
     compare: 'processed',
+    follow: true,
     dirty: false,
   };
 }
