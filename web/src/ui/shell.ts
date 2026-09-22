@@ -115,9 +115,6 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'view.zoomOut',
   'view.zoomFit',
   'view.toggleBarsBeats',
-  // A project-wide bypass is a state of the project, not a transport button, and it reads as a
-  // duplicate of Compare while it sits beside it.
-  'edit.bypassAll',
   // Cancelling an import belongs under the progress it is cancelling.
   'file.cancelImport',
   // Selecting everything is a keyboard action; a button for it would say nothing a drag does not.
@@ -156,9 +153,8 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Redo: 'redo',
   'Split Blob': 'split',
   'Join Blobs': 'join',
-  Reset: 'undo',
+  Reset: 'reset',
   'Smooth Span': 'smooth',
-  'Bypass Blob': 'bypass',
   'Exclude Blob': 'exclude',
   Play: 'play',
   Pause: 'pause',

@@ -54,6 +54,7 @@ import { importProject, relink } from './persistence/project-io.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { showContextMenu } from './ui/menu.js';
 import type { MenuEntry } from './ui/menu.js';
+import type { IconName } from './ui/icons.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
@@ -734,29 +735,30 @@ function describe(error: unknown): string {
 /**
  * The menu shown over the editor.
  *
- * @remarks Every entry runs a command, so the menu, the toolbar and the keyboard cannot drift
- * apart, and each item carries the key that runs it while the menu is open. Over open canvas the
- * blob entries are shown disabled rather than removed, so the menu keeps its shape.
+ * @remarks Every entry runs a command and takes its key and its icon from that command, so the
+ * menu, the toolbar and the keyboard cannot drift apart, and the key shown is the one that works
+ * whether or not the menu is open. Over open canvas the blob entries are shown disabled rather
+ * than removed, so the menu keeps its shape.
  */
-function blobMenu(onBlob: boolean, hooks: ShellHooks): MenuEntry[] {
-  const item = (id: string, label: string, key: string, needsBlob = true): MenuEntry => ({
+function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHooks): MenuEntry[] {
+  const item = (id: string, label: string, icon: IconName, needsBlob = true): MenuEntry => ({
     label,
-    key,
+    icon,
+    key: findCommand(commands, id)?.shortcut,
     enabled: (!needsBlob || onBlob) && hooks.isCommandEnabled(id),
     run: () => {
       hooks.runCommand(id);
     },
   });
   return [
-    item('edit.reset', 'Reset To Origin', 'r'),
-    item('edit.splitBlob', 'Split Blob', 's'),
-    item('edit.joinBlobs', 'Join Blobs', 'j'),
+    item('edit.reset', 'Reset To Origin', 'reset'),
+    item('edit.splitBlob', 'Split Blob', 'split'),
+    item('edit.joinBlobs', 'Join Blobs', 'join'),
     { separator: true },
-    item('edit.bypassBlob', 'Bypass Blob', 'b'),
-    item('edit.excludeBlob', 'Exclude Blob', 'x'),
+    item('edit.excludeBlob', 'Exclude Blob', 'exclude'),
     { separator: true },
-    item('transport.loopSelection', 'Loop Selection', 'l', false),
-    item('file.exportWav', 'Export Audio', 'e', false),
+    item('transport.loopSelection', 'Loop Selection', 'loop', false),
+    item('file.exportWav', 'Export Audio', 'export', false),
   ];
 }
 
@@ -1178,7 +1180,7 @@ async function start(): Promise<void> {
       shell.announce(message);
     },
     contextMenu: (hit, at) => {
-      showContextMenu(blobMenu(hit.blob !== null, hooks), at);
+      showContextMenu(blobMenu(hit.blob !== null, commands, hooks), at);
     },
   });
   context = { store, editor, audio, toast, workspace };

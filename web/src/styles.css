@@ -381,7 +381,11 @@ input[type='checkbox'] {
 }
 
 .axys-tab {
+  display: flex;
   flex: 1 1 0;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
   height: 24px;
   padding: 0 8px;
   border: 0;
@@ -389,6 +393,15 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--axys-text-muted);
   font-size: var(--axys-size-sm);
+}
+
+.axys-tab-icon {
+  display: flex;
+}
+
+.axys-tab-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
 .axys-tab[aria-selected='true'] {
@@ -586,7 +599,6 @@ input[type='checkbox'] {
 .axys-menu-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--axys-gap);
   height: 26px;
   padding: 0 8px;
@@ -595,6 +607,24 @@ input[type='checkbox'] {
   background: transparent;
   font-size: var(--axys-size-md);
   text-align: left;
+}
+
+/* The column is kept even for an entry without an icon, so every label starts at one place */
+
+.axys-menu-icon {
+  display: flex;
+  flex: none;
+  width: 16px;
+  color: var(--axys-text-muted);
+}
+
+.axys-menu-label {
+  flex: 1 1 auto;
+}
+
+.axys-menu-item:hover:not(:disabled) .axys-menu-icon,
+.axys-menu-item:focus-visible .axys-menu-icon {
+  color: inherit;
 }
 
 .axys-menu-item:hover:not(:disabled),

@@ -12,6 +12,8 @@
 /** One runnable entry. */
 export interface MenuItem {
   label: string;
+  /** Icon drawn ahead of the label, the same one the command's button carries. */
+  icon?: IconName;
   /** Single key that runs this item while the menu is open, shown beside the label. */
   key?: string;
   /** Whether the item can run. A disabled item is shown, so the menu does not change shape. */
@@ -28,6 +30,9 @@ export interface MenuSeparator {
 
 /** Anything a menu may hold. */
 export type MenuEntry = MenuItem | MenuSeparator;
+
+import { ICONS } from './icons.js';
+import type { IconName } from './icons.js';
 
 /** Distance in pixels a menu is kept from the viewport edge. */
 const MARGIN = 8;
@@ -70,9 +75,15 @@ export function showContextMenu(
     button.setAttribute('role', 'menuitem');
     button.disabled = entry.enabled === false;
 
+    // Every item carries the icon its toolbar button carries, so the same action is recognised
+    // in either place. An entry without one keeps the column, so the labels stay aligned.
+    const mark = document.createElement('span');
+    mark.className = 'axys-menu-icon';
+    mark.innerHTML = entry.icon === undefined ? '' : ICONS[entry.icon];
     const label = document.createElement('span');
+    label.className = 'axys-menu-label';
     label.textContent = entry.checked === true ? `${entry.label} ✓` : entry.label;
-    button.append(label);
+    button.append(mark, label);
 
     if (entry.key !== undefined) {
       const key = document.createElement('kbd');

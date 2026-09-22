@@ -18,6 +18,7 @@ export type IconName =
   | 'compareSplit'
   | 'split'
   | 'join'
+  | 'reset'
   | 'pitch'
   | 'pen'
   | 'line'
@@ -30,9 +31,12 @@ export type IconName =
   | 'zoomFit'
   | 'metronome'
   | 'barsBeats'
-  | 'bypass'
   | 'exclude'
   | 'settings'
+  | 'theme'
+  | 'correct'
+  | 'voice'
+  | 'properties'
   | 'help'
   | 'diagnostics'
   | 'sourceCode'
@@ -69,7 +73,7 @@ export const ICONS: Readonly<Record<IconName, string>> = {
     `<path d="M3 4.2a1.2 1.2 0 0 1 1.2-1.2h6.6L13 5.2v6.6a1.2 1.2 0 0 1-1.2 1.2H4.2A1.2 1.2 0 0 1 3 11.8Z"/><path d="M5.5 3v3.1h4.6V3"/><path d="M5.5 13V9.6h5V13"/>`,
   ),
   export: stroked(
-    `<path d="M8 2.4v7.2"/><path d="M5.3 5.1 8 2.4l2.7 2.7"/><path d="M3 9.8v2.6a1.1 1.1 0 0 0 1.1 1.1h7.8a1.1 1.1 0 0 0 1.1-1.1V9.8"/>`,
+    `<path d="M8 2.4v7.2"/><path d="m5.3 6.9 2.7 2.7 2.7-2.7"/><path d="M3 9.8v2.6a1.1 1.1 0 0 0 1.1 1.1h7.8a1.1 1.1 0 0 0 1.1-1.1V9.8"/>`,
   ),
   undo: stroked(
     `<path d="M6.1 4.1 3.3 6.9l2.8 2.8"/><path d="M3.3 6.9h6.1a3.3 3.3 0 0 1 0 6.6H6.6"/>`,
@@ -92,8 +96,12 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   compareSplit: stroked(
     `<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11"/><path fill="currentColor" stroke="none" d="M8 2.5a5.5 5.5 0 0 0 0 11Z"/>`,
   ),
-  split: stroked(`<path d="M8 2v12"/><path d="M5.4 6 3.4 8l2 2"/><path d="m10.6 6 2 2-2 2"/>`),
-  join: stroked(`<path d="M8 2v12"/><path d="m3.4 6 2 2-2 2"/><path d="m12.6 6-2 2 2 2"/>`),
+  split: stroked(
+    `<path d="M2.4 8.6h11.2l-1.3 4.1a.8.8 0 0 1-.8.6H4.5a.8.8 0 0 1-.8-.6Z"/><path d="M4.4 8.6V4a.8.8 0 0 1 .8-.8h5.6a.8.8 0 0 1 .8.8v4.6"/><path d="M6.3 5.6h3.4"/>`,
+  ),
+  join: stroked(
+    `<path d="M6.6 9.4a2.6 2.6 0 0 1 0-3.7l1.6-1.6a2.6 2.6 0 0 1 3.7 3.7l-.8.8"/><path d="M9.4 6.6a2.6 2.6 0 0 1 0 3.7l-1.6 1.6a2.6 2.6 0 0 1-3.7-3.7l.8-.8"/>`,
+  ),
   pitch: stroked(
     `<path d="M2.4 11.6c3.6 0 3.6-7.2 7.2-7.2 1.9 0 2.6 1.5 4 1.5"/><circle cx="9.6" cy="4.4" r="1.2"/>`,
   ),
@@ -105,8 +113,9 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   time: stroked(
     `<path d="M3 3.6v8.8M13 3.6v8.8"/><path d="M5.2 8h5.6"/><path d="m6.8 6.4-1.6 1.6 1.6 1.6"/><path d="m9.2 6.4 1.6 1.6-1.6 1.6"/>`,
   ),
+  reset: stroked(`<path d="M8 3.2a4.8 4.8 0 1 0 4.8 4.8"/><path d="m11.4 9.4 1.4-1.4 1.4 1.4"/>`),
   follow: stroked(
-    `<path d="M8 2.2v11.6"/><path d="M2.6 8h2.8"/><path d="M4.2 6.4 5.8 8 4.2 9.6"/><path d="M13.4 8h-2.8"/><path d="M11.8 6.4 10.2 8l1.6 1.6"/>`,
+    `<path d="M2 11.4h4.8"/><path stroke-dasharray="1.6 1.8" d="M9.2 11.4H14"/><path d="M8 5.2v7.4"/><path fill="currentColor" stroke="none" d="M5.5 2.8h5L8 6.2Z"/>`,
   ),
   select: stroked(`<path d="m4 2.5 8.1 5.4-3.7.6 2 3.8-1.8.9-2-3.8-2.6 2.6Z"/>`),
   zoomIn: stroked(
@@ -124,8 +133,19 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   barsBeats: stroked(
     `<path d="M3 2.8v10.4M8 2.8v10.4M13 2.8v10.4"/><path d="M5.3 8h1.2M9.5 8h1.2"/>`,
   ),
-  bypass: stroked(`<path d="M8 2.4v5"/><path d="M11.3 4.3a4.6 4.6 0 1 1-6.6 0"/>`),
   exclude: stroked(`<circle cx="8" cy="8" r="5.5"/><path d="m4.1 11.9 7.8-7.8"/>`),
+  theme: stroked(
+    `<path d="M8 2.2a5.8 5.8 0 0 0 0 11.6c.9 0 1.4-.5 1.4-1.3 0-.8-.7-1.2-.7-1.9 0-.6.5-1 1.1-1h1.1a3.5 3.5 0 0 0 3.5-3.5C14.4 4.4 11.6 2.2 8 2.2Z"/><path fill="currentColor" stroke="none" d="M5.5 6.8a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8ZM8.2 4.6a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8ZM11 6.4a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8Z"/>`,
+  ),
+  correct: stroked(
+    `<path d="M2.4 4.4h11.2M2.4 11.6h11.2"/><path d="M3.2 9.4c1.8 0 1.8-2.8 3.6-2.8s1.8 1.8 3.4 1.8h2.6"/>`,
+  ),
+  voice: stroked(
+    `<path d="M8 2.6a2.1 2.1 0 0 1 2.1 2.1v3.4a2.1 2.1 0 0 1-4.2 0V4.7A2.1 2.1 0 0 1 8 2.6Z"/><path d="M4.2 7.6a3.8 3.8 0 0 0 7.6 0"/><path d="M8 11.4v2"/>`,
+  ),
+  properties: stroked(
+    `<path d="M3 3.4h10M3 8h10M3 12.6h10"/><path fill="currentColor" stroke="none" d="M5.6 2.4a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM10.4 7a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM7 11.6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/>`,
+  ),
   settings: stroked(
     `<path d="M2.6 5h5.3M11.5 5h1.9M2.6 11h1.9M7.6 11h5.8"/><circle cx="9.7" cy="5" r="1.7"/><circle cx="6" cy="11" r="1.7"/>`,
   ),

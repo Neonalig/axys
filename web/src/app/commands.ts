@@ -147,6 +147,14 @@ function targetBlob(state: AppState): Blob | undefined {
   return selectedBlobs(state)[0] ?? blobAtPlayhead(state);
 }
 
+/** Every blob a command acts on: the selection, else the blob under the playhead. */
+function targetBlobs(state: AppState): Blob[] {
+  const selected = selectedBlobs(state);
+  if (selected.length > 0) return selected;
+  const blob = blobAtPlayhead(state);
+  return blob === undefined ? [] : [blob];
+}
+
 /**
  * The span the selection reaches across, in output seconds, or `null` when nothing is selected.
  *
@@ -451,7 +459,7 @@ export function buildCommands(): Command[] {
       id: 'edit.reset',
       label: 'Reset',
       group: 'Edit',
-      shortcut: 'Ctrl+R',
+      shortcut: 'R',
       enabled: (ctx) => editable(ctx) && resetTarget(ctx.store.state) !== null,
       run: (ctx) => {
         const op = resetTarget(ctx.store.state);
@@ -466,7 +474,7 @@ export function buildCommands(): Command[] {
       id: 'edit.smoothSpan',
       label: 'Smooth Span',
       group: 'Edit',
-      shortcut: 'Ctrl+H',
+      shortcut: 'H',
       enabled: (ctx) => editable(ctx) && targetSpan(ctx.store.state) !== null,
       run: (ctx) => {
         const span = targetSpan(ctx.store.state);
@@ -484,38 +492,22 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      id: 'edit.bypassBlob',
-      label: 'Bypass Blob',
-      group: 'Edit',
-      shortcut: 'B',
-      enabled: (ctx) => editable(ctx) && targetBlob(ctx.store.state) !== undefined,
-      run: (ctx) => {
-        const blob = targetBlob(ctx.store.state);
-        if (!blob) return;
-        ctx.workspace.apply({ type: 'setBypass', blob: blob.id, bypassed: !blob.bypassed });
-      },
-    },
-    {
+      // Acts on every selected blob, so the key does what the menu on any one of them does,
+      // whether or not the menu is open. Mixed selections are excluded rather than toggled one
+      // by one, because half a selection changing state is not a result anybody asked for.
       id: 'edit.excludeBlob',
       label: 'Exclude Blob',
       group: 'Edit',
       shortcut: 'X',
-      enabled: (ctx) => editable(ctx) && targetBlob(ctx.store.state) !== undefined,
+      enabled: (ctx) => editable(ctx) && targetBlobs(ctx.store.state).length > 0,
       run: (ctx) => {
-        const blob = targetBlob(ctx.store.state);
-        if (!blob) return;
-        ctx.workspace.apply({ type: 'setExcluded', blob: blob.id, excluded: !blob.excluded });
-      },
-    },
-    {
-      id: 'edit.bypassAll',
-      label: 'Bypass Edits',
-      group: 'Edit',
-      shortcut: 'Ctrl+B',
-      enabled: editable,
-      run: (ctx) => {
-        const bypassed = ctx.store.state.edits?.globalBypass ?? false;
-        ctx.workspace.apply({ type: 'setGlobalBypass', bypassed: !bypassed });
+        const blobs = targetBlobs(ctx.store.state);
+        if (blobs.length === 0) return;
+        const excluded = !blobs.every((blob) => blob.excluded);
+        for (const blob of blobs) {
+          if (blob.excluded === excluded) continue;
+          ctx.workspace.apply({ type: 'setExcluded', blob: blob.id, excluded });
+        }
       },
     },
 
@@ -707,6 +699,6 @@ export function buildCommands(): Command[] {
 }
 
 /** Looks a command up by id. */
-export function findCommand(commands: Command[], id: string): Command | undefined {
+export function findCommand(commands: readonly Command[], id: string): Command | undefined {
   return commands.find((command) => command.id === id);
 }

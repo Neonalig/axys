@@ -7,6 +7,8 @@
  * built once and refreshed from state, and a control the user is editing is left alone.
  */
 
+import { ICONS } from './icons.js';
+import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState, FollowMode } from '../app/store.js';
 import type {
@@ -237,7 +239,6 @@ export class Inspector {
   readonly #targetName: HTMLElement;
   readonly #semitones: HTMLInputElement;
   readonly #cents: HTMLInputElement;
-  readonly #bypass: HTMLInputElement;
   readonly #excluded: HTMLInputElement;
   readonly #splitButton: HTMLButtonElement;
   readonly #resetButton: HTMLButtonElement;
@@ -256,7 +257,6 @@ export class Inspector {
   readonly #vibratoSplit: HTMLInputElement;
   readonly #formantMode: HTMLSelectElement;
   readonly #formantShift: HTMLInputElement;
-  readonly #globalBypass: HTMLInputElement;
 
   readonly #tuning: HTMLInputElement;
   readonly #accidentals: HTMLSelectElement;
@@ -291,8 +291,8 @@ export class Inspector {
     const tabs = document.createElement('div');
     tabs.className = 'axys-tabs';
     tabs.setAttribute('role', 'tablist');
-    const project = this.#buildTab(tabs, 'project', 'Project');
-    const properties = this.#buildTab(tabs, 'properties', 'Properties');
+    const project = this.#buildTab(tabs, 'project', 'Project', 'settings');
+    const properties = this.#buildTab(tabs, 'properties', 'Properties', 'properties');
     element.append(tabs, project, properties);
 
     // Blob panel.
@@ -313,7 +313,6 @@ export class Inspector {
     this.#targetName.className = 'axys-readout';
     this.#semitones = numberInput({ step: 0.01, min: -48, max: 48 });
     this.#cents = numberInput({ step: 1, min: -4800, max: 4800 });
-    this.#bypass = checkboxInput();
     this.#excluded = checkboxInput();
 
     blobPanel.append(
@@ -335,11 +334,6 @@ export class Inspector {
       ),
       field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch.'),
       field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents.'),
-      field(
-        'Bypass Blob',
-        this.#bypass,
-        'Plays this blob unprocessed without discarding its edits.',
-      ),
       field(
         'Exclude Blob',
         this.#excluded,
@@ -425,7 +419,6 @@ export class Inspector {
       { value: 'shift', label: 'Shift Formants' },
     ]);
     this.#formantShift = rangeInput(-12, 12, 0.1);
-    this.#globalBypass = checkboxInput();
 
     voicePanel.append(
       this.#readoutField(
@@ -443,11 +436,6 @@ export class Inspector {
       field('Vibrato Split', this.#vibratoSplit, 'Boundary in Hz between drift and vibrato.'),
       field('Formant Mode', this.#formantMode, 'How the vocal tract is treated while pitch moves.'),
       field('Formant Shift', this.#formantShift, 'Independent formant movement in semitones.'),
-      field(
-        'Global Bypass',
-        this.#globalBypass,
-        'Plays the source untouched so edits can be compared.',
-      ),
     );
     project.append(voicePanel);
 
@@ -526,11 +514,16 @@ export class Inspector {
 
   /** Refreshes every control from application state. */
   /** Builds one tab button and its pane, and registers both. */
-  #buildTab(tabs: HTMLElement, name: InspectorTab, label: string): HTMLElement {
+  #buildTab(tabs: HTMLElement, name: InspectorTab, label: string, icon: IconName): HTMLElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'axys-tab';
-    button.textContent = label;
+    const mark = document.createElement('span');
+    mark.className = 'axys-tab-icon';
+    mark.innerHTML = ICONS[icon];
+    const text = document.createElement('span');
+    text.textContent = label;
+    button.append(mark, text);
     button.setAttribute('role', 'tab');
     button.addEventListener('click', () => {
       this.#setTab(name);
@@ -597,7 +590,6 @@ export class Inspector {
       this.#target,
       this.#semitones,
       this.#cents,
-      this.#bypass,
       this.#excluded,
     ];
     for (const control of controls) {
@@ -638,7 +630,6 @@ export class Inspector {
     this.#targetName.textContent = noteName(target, style);
     setValue(this.#semitones, blob.pitchOffset.toFixed(2));
     setValue(this.#cents, Math.round(blob.pitchOffset * 100).toFixed(0));
-    setChecked(this.#bypass, blob.bypassed);
     setChecked(this.#excluded, blob.excluded);
   }
 
@@ -675,7 +666,6 @@ export class Inspector {
       this.#vibratoSplit,
       this.#formantMode,
       this.#formantShift,
-      this.#globalBypass,
     ]) {
       control.disabled = disabled;
     }
@@ -696,7 +686,6 @@ export class Inspector {
     setValue(this.#formantMode, mode);
     setValue(this.#formantShift, typeof formant === 'string' ? '0' : String(formant.shift));
     this.#formantShift.disabled = disabled || mode !== 'shift';
-    setChecked(this.#globalBypass, edits.globalBypass);
   }
 
   #updateDisplay(state: AppState): void {
@@ -842,12 +831,6 @@ export class Inspector {
       });
     });
 
-    this.#bypass.addEventListener('change', () => {
-      const blob = this.#blob;
-      if (!blob) return;
-      this.#hooks.applyEdit({ type: 'setBypass', blob: blob.id, bypassed: this.#bypass.checked });
-    });
-
     this.#excluded.addEventListener('change', () => {
       const blob = this.#blob;
       if (!blob) return;
@@ -909,13 +892,6 @@ export class Inspector {
     });
     this.#formantShift.addEventListener('change', () => {
       this.#commitFormant();
-    });
-
-    this.#globalBypass.addEventListener('change', () => {
-      this.#hooks.applyEdit({
-        type: 'setGlobalBypass',
-        bypassed: this.#globalBypass.checked,
-      });
     });
 
     this.#tuning.addEventListener('change', () => {

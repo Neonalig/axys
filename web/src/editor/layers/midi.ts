@@ -133,7 +133,9 @@ function drawGuideNote(
   // Bounded to what is on screen, so a note wider than the canvas costs no more than the canvas.
   const from = Math.max(box.x0, -height);
   const to = Math.min(box.x1, viewport.width);
-  const first = Math.ceil((from - box.x0) / HATCH_SPACING) * HATCH_SPACING;
+  // A stroke rises to the right, so the one that covers the top-left corner starts a full
+  // note-height to the left of the corner. Beginning at the edge itself leaves that corner bare.
+  const first = Math.ceil((from - box.x0 - height) / HATCH_SPACING) * HATCH_SPACING;
   for (let offset = first; offset < to - box.x0 + height; offset += HATCH_SPACING) {
     ctx.moveTo(box.x0 + offset, box.bottom);
     ctx.lineTo(box.x0 + offset + height, box.top);
