@@ -77,7 +77,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     id: 'line',
     label: 'Draw Ramp',
     hint: 'Drag a ramp, Alt curves it',
-    key: '',
+    key: 'N',
     cursor: 'crosshair',
   },
   {

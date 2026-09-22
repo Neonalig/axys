@@ -66,6 +66,8 @@ export interface ShellHooks {
   setTheme(choice: ThemeChoice): void;
   /** Shows or hides the names beside the toolbar icons, and remembers the choice. */
   setToolbarLabels(on: boolean): void;
+  /** Folds the inspector away to its rail, or opens it again, and remembers the choice. */
+  setInspectorCollapsed(on: boolean): void;
 }
 
 /** What the chrome is built from. */
@@ -574,6 +576,9 @@ export class AppShell {
       setAccidentals: (style) => {
         this.#hooks.setAccidentals(style);
       },
+      setCollapsed: (on) => {
+        this.#hooks.setInspectorCollapsed(on);
+      },
     });
 
     const footer = document.createElement('footer');
@@ -751,6 +756,9 @@ export class AppShell {
     );
 
     this.setToolbarLabels(state.toolbarLabels);
+    // The column width is the grid's, so the shell carries the folded state rather than the
+    // panel that asked for it.
+    this.#root.classList.toggle('is-inspector-collapsed', state.inspectorCollapsed);
     this.#view = state.view;
     const duration = state.source?.duration ?? 0;
     this.#timeBar.update({

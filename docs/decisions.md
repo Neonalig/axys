@@ -818,3 +818,27 @@ the line fell apart into ticks that drew further apart the further in the zoom w
 than the frame spacing is the zoom rather than an unvoiced stretch, so the frames either side of it
 are joined; anything wider is material with no pitch in it and stays open. The collection window
 also reaches one frame past each edge of the view, so the line reaches the edges.
+
+### The numpad addresses the take, the number row addresses commands
+
+Numpad 0 to 9 jump the playhead to 0% to 90% of the take, the way a media player's number row
+scrubs. They are read by `KeyboardEvent.code` rather than by `key`, because with NumLock on the two
+rows report the same `key` and `0` above the letters is Exclude Blob. Reading the code keeps them
+two keys rather than one key with two meanings.
+
+### The inspector folds to a rail
+
+The editor is the thing being looked at and the panel beside it is not always wanted, so the
+column folds to a rail carrying the one control that opens it again. The choice is a device
+preference, like the theme: it follows the person rather than the project. The shell owns the
+column width because the grid is the shell's; the panel owns nothing but its own class.
+
+The column also got wider. The info icon added to every label pushed "Tuning Reference" onto two
+lines, so the label column is sized for the longest label with its icon beside it rather than for
+the label alone.
+
+### The grip went where the hand already was
+
+The first grip was a dotted strip above the title bar, which added an area rather than marking one.
+The gap between the title and the close button was already draggable and is where a hand reaches
+for a panel, so the dots moved into it and the strip is gone.

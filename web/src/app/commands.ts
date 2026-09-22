@@ -323,14 +323,14 @@ function timelineOf(state: AppState): TimelineMap | null {
 function toolCommand(
   id: ToolCommandId,
   label: string,
-  shortcut: string | undefined,
+  shortcut: string,
   alt: string | undefined,
 ): Command {
   return {
     id: `tools.${id}`,
     label,
     group: 'Tools',
-    ...(shortcut === undefined ? {} : { shortcut }),
+    shortcut,
     ...(alt === undefined ? {} : { altShortcut: alt }),
     enabled: (ctx) => ctx.store.state.phase === 'ready',
     run: (ctx) => {
@@ -347,12 +347,12 @@ type ToolCommandId = AppState['tool'];
  * @remarks Slice answers to both X and S, because the two editors disagree about which one it is
  * and neither is worth being wrong about.
  */
-const TOOLS: readonly { id: ToolCommandId; label: string; shortcut?: string; alt?: string }[] = [
+const TOOLS: readonly { id: ToolCommandId; label: string; shortcut: string; alt?: string }[] = [
   { id: 'select', label: 'Select Tool', shortcut: 'V' },
   { id: 'split', label: 'Slice Tool', shortcut: 'X', alt: 'S' },
   { id: 'pitch', label: 'Pitch Tool', shortcut: 'P' },
   { id: 'pen', label: 'Draw Tool', shortcut: 'B' },
-  { id: 'line', label: 'Ramp Tool' },
+  { id: 'line', label: 'Ramp Tool', shortcut: 'N' },
   { id: 'time', label: 'Time Tool', shortcut: 'T' },
 ];
 
@@ -450,23 +450,27 @@ export function buildCommands(): Command[] {
     },
 
     {
+      // Voice Character before Correction, so the buttons sit in the order their keys do.
+      id: 'edit.voiceCharacter',
+      label: 'Voice Character',
+      group: 'Edit',
+      shortcut: 'I',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.edits !== null,
+      run: (ctx) => {
+        showVoiceCharacter(ctx);
+      },
+    },
+    {
       // Correction is an operation, not a project setting: it is chosen, watched against the
       // material, and then kept or thrown away. With a span selected it applies to that span.
       id: 'edit.correction',
       label: 'Correction',
       group: 'Edit',
+      shortcut: 'O',
+      altShortcut: '1',
       enabled: (ctx) => editable(ctx) && ctx.store.state.edits !== null,
       run: (ctx) => {
         showCorrection(ctx);
-      },
-    },
-    {
-      id: 'edit.voiceCharacter',
-      label: 'Voice Character',
-      group: 'Edit',
-      enabled: (ctx) => editable(ctx) && ctx.store.state.edits !== null,
-      run: (ctx) => {
-        showVoiceCharacter(ctx);
       },
     },
     {

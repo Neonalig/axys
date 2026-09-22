@@ -25,6 +25,8 @@ export interface Preferences {
   timeDisplay: TimeDisplay;
   /** Whether the toolbar buttons carry their names beside their icons. */
   toolbarLabels: boolean;
+  /** Whether the inspector starts folded away to its rail. */
+  inspectorCollapsed: boolean;
 }
 
 /** Local storage key holding the settings document. */
@@ -36,7 +38,13 @@ const TIME_DISPLAYS: readonly TimeDisplay[] = ['seconds', 'barsBeats'];
 
 /** The settings a device with nothing stored starts from. */
 export function defaultPreferences(): Preferences {
-  return { theme: 'system', followMode: 'page', timeDisplay: 'seconds', toolbarLabels: false };
+  return {
+    theme: 'system',
+    followMode: 'page',
+    timeDisplay: 'seconds',
+    toolbarLabels: false,
+    inspectorCollapsed: false,
+  };
 }
 
 /** Reads the stored settings, falling back to the defaults value by value. */
@@ -69,6 +77,10 @@ export function loadPreferences(): Preferences {
       typeof record['toolbarLabels'] === 'boolean'
         ? record['toolbarLabels']
         : defaults.toolbarLabels,
+    inspectorCollapsed:
+      typeof record['inspectorCollapsed'] === 'boolean'
+        ? record['inspectorCollapsed']
+        : defaults.inspectorCollapsed,
   };
 }
 

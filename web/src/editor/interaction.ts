@@ -637,6 +637,11 @@ export class EditorController {
     if (event.ctrlKey || event.metaKey || event.altKey) {
       return;
     }
+    // The numpad addresses the take by proportion and is answered where the shortcuts are bound,
+    // so its digits are not read here as the view keys they share a `key` with.
+    if (event.code.startsWith('Numpad')) {
+      return;
+    }
     switch (event.key) {
       case '+':
       case '=':

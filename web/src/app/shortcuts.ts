@@ -27,6 +27,20 @@ const TIME_STEP_FINE = 0.001;
 const SEEK_STEP = 1;
 const SEEK_STEP_COARSE = 5;
 
+/** Digits the numpad carries, which address the take by proportion rather than by command. */
+const NUMPAD_DIGITS: readonly string[] = [
+  'Numpad0',
+  'Numpad1',
+  'Numpad2',
+  'Numpad3',
+  'Numpad4',
+  'Numpad5',
+  'Numpad6',
+  'Numpad7',
+  'Numpad8',
+  'Numpad9',
+];
+
 interface Chord {
   primary: boolean;
   shift: boolean;
@@ -126,6 +140,22 @@ function seekBy(ctx: CommandContext, event: KeyboardEvent): boolean {
   return false;
 }
 
+/**
+ * Jumps the playhead to a proportion of the take.
+ *
+ * @remarks Numpad 0 to 9 are 0% to 90%, the way a media player's number row scrubs. They are read
+ * by `code` rather than by `key`, so the numpad digit and the digit above the letters stay two
+ * different keys: `0` on the number row excludes a blob.
+ */
+function jumpToPercent(ctx: CommandContext, code: string): boolean {
+  const digit = NUMPAD_DIGITS.indexOf(code);
+  if (digit < 0) return false;
+  const duration = ctx.store.state.source?.duration ?? 0;
+  if (!(duration > 0)) return false;
+  ctx.editor.goTo((duration * digit) / 10);
+  return true;
+}
+
 function clearSelection(ctx: CommandContext): void {
   const state = ctx.store.state;
   if (
@@ -159,6 +189,11 @@ export function bindShortcuts(
 
     if (event.key === 'Escape') {
       clearSelection(ctx);
+      event.preventDefault();
+      return;
+    }
+
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && jumpToPercent(ctx, event.code)) {
       event.preventDefault();
       return;
     }

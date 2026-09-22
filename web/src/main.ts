@@ -1193,6 +1193,10 @@ function buildHooks(
       savePreferences({ toolbarLabels: on });
       store.update({ toolbarLabels: on });
     },
+    setInspectorCollapsed(on: boolean): void {
+      savePreferences({ inspectorCollapsed: on });
+      store.update({ inspectorCollapsed: on });
+    },
     setTheme(choice: ThemeChoice): void {
       savePreferences({ theme: choice });
       applyTheme(resolvedTheme(choice));
@@ -1231,6 +1235,7 @@ async function start(): Promise<void> {
   store.update({
     followMode: preferences.followMode,
     toolbarLabels: preferences.toolbarLabels,
+    inspectorCollapsed: preferences.inspectorCollapsed,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });
   const commands = buildCommands();

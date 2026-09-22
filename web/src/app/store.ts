@@ -42,6 +42,8 @@ export interface AppState {
   followMode: FollowMode;
   /** Whether the toolbar buttons carry their names beside their icons. */
   toolbarLabels: boolean;
+  /** Whether the inspector is folded away to its rail. */
+  inspectorCollapsed: boolean;
   dirty: boolean;
 }
 
@@ -190,6 +192,7 @@ export function initialState(): AppState {
     follow: true,
     followMode: 'page',
     toolbarLabels: false,
+    inspectorCollapsed: false,
     dirty: false,
   };
 }

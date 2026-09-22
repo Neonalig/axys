@@ -16,7 +16,8 @@
   --axys-gap: 8px;
   --axys-pad: 10px;
   --axys-control-height: 28px;
-  --axys-inspector-width: 288px;
+  --axys-inspector-width: 328px;
+  --axys-inspector-rail: 34px;
   --axys-toolbar-height: 44px;
   --axys-status-height: 26px;
   --axys-scrollbar: 12px;
@@ -204,6 +205,48 @@ body {
   padding: var(--axys-pad);
   background: var(--axys-surface);
   border-left: 1px solid var(--axys-border);
+}
+
+/* Folding the inspector away: the column narrows to a rail carrying the control that opens it */
+
+#app.is-inspector-collapsed {
+  --axys-inspector-width: var(--axys-inspector-rail);
+}
+
+.axys-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: var(--axys-gap);
+  margin-bottom: var(--axys-pad);
+}
+
+.axys-inspector-head > .axys-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.axys-inspector-fold > svg {
+  transition: transform var(--axys-motion) ease;
+}
+
+.axys-inspector.is-collapsed {
+  padding: var(--axys-pad) 0;
+  overflow: hidden;
+}
+
+.axys-inspector.is-collapsed .axys-tabs,
+.axys-inspector.is-collapsed .axys-tab-pane {
+  display: none;
+}
+
+.axys-inspector.is-collapsed .axys-inspector-head {
+  justify-content: center;
+  margin-bottom: 0;
+}
+
+.axys-inspector.is-collapsed .axys-inspector-fold > svg {
+  transform: scaleX(-1);
 }
 
 #app > footer,
@@ -469,7 +512,8 @@ input[type='checkbox'] {
 
 .axys-field {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
+  /* Wide enough for the longest label plus its info icon on one line */
+  grid-template-columns: 120px minmax(0, 1fr);
   align-items: center;
   gap: var(--axys-gap);
   margin-bottom: 6px;
@@ -851,21 +895,21 @@ input[type='checkbox'] {
   user-select: none;
 }
 
-/* The grip: a dotted strip across the top saying the panel is a thing you can move */
+/* The grip: dots in the gap beside the title, saying the panel is a thing you can move */
 
 .axys-dialog-grip {
-  height: 10px;
-  margin: -8px -8px 8px;
+  align-self: center;
+  min-width: 32px;
+  height: 12px;
+  margin: 0 var(--axys-gap);
   cursor: grab;
-  border-radius: var(--axys-radius);
   background-image: radial-gradient(var(--axys-border-strong) 1px, transparent 1px);
   background-size: 4px 4px;
-  background-position: 0 3px;
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
-.axys-dialog:hover > .axys-dialog-grip,
-.axys-dialog.is-dragging > .axys-dialog-grip {
+.axys-dialog:hover .axys-dialog-grip,
+.axys-dialog.is-dragging .axys-dialog-grip {
   opacity: 1;
 }
 

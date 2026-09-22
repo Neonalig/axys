@@ -36,6 +36,8 @@ export interface InspectorHooks {
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
   setAccidentals(style: AccidentalStyle): void;
+  /** Folds the inspector away to its rail, or opens it again. */
+  setCollapsed(on: boolean): void;
 }
 
 /** Pitch-class names in each accidental spelling. */
@@ -361,6 +363,9 @@ export class Inspector {
   readonly #tabButtons = new Map<InspectorTab, HTMLButtonElement>();
   readonly #tabPanes = new Map<InspectorTab, HTMLElement>();
 
+  readonly #fold: HTMLButtonElement;
+  #collapsed = false;
+
   #blob: Blob | null = null;
   /** Every selected blob, which is what the bulk-editable fields commit to. */
   #blobs: readonly Blob[] = [];
@@ -383,7 +388,25 @@ export class Inspector {
     tabs.setAttribute('role', 'tablist');
     const project = this.#buildTab(tabs, 'project', 'Project', 'settings');
     const properties = this.#buildTab(tabs, 'properties', 'Properties', 'properties');
-    element.append(tabs, project, properties);
+
+    // The fold control sits beside the tabs rather than inside them: it is not a third thing to
+    // look at, it is what gets all of them out of the way of the editor.
+    const fold = document.createElement('button');
+    fold.type = 'button';
+    fold.className = 'axys-icon axys-inspector-fold';
+    fold.innerHTML = ICONS.collapse;
+    fold.addEventListener('click', () => {
+      this.#hooks.setCollapsed(!this.#collapsed);
+    });
+    fold.setAttribute('aria-label', 'Hide Inspector');
+    fold.setAttribute('aria-expanded', 'true');
+    setTooltip(fold, 'Hide Inspector');
+    this.#fold = fold;
+
+    const head = document.createElement('div');
+    head.className = 'axys-inspector-head';
+    head.append(tabs, fold);
+    element.append(head, project, properties);
 
     // Blob panel. Its heading names what is selected, so the fields under it need not repeat
     // the word blob, and the actions on a blob stay on the blob, in its own menu.
@@ -551,6 +574,24 @@ export class Inspector {
     return pane;
   }
 
+  /**
+   * Folds the panel away, or opens it again.
+   *
+   * @remarks Only the element's own class and the fold button's face. How wide the column is
+   * belongs to the shell, which owns the grid the panel sits in.
+   */
+  #setCollapsed(on: boolean): void {
+    if (this.#collapsed === on) {
+      return;
+    }
+    this.#collapsed = on;
+    this.#element.classList.toggle('is-collapsed', on);
+    const label = on ? 'Show Inspector' : 'Hide Inspector';
+    this.#fold.setAttribute('aria-label', label);
+    this.#fold.setAttribute('aria-expanded', String(!on));
+    setTooltip(this.#fold, label);
+  }
+
   /** Shows one tab and marks its button, ignoring a tab that has nothing to show. */
   #setTab(name: InspectorTab): void {
     const button = this.#tabButtons.get(name);
@@ -566,6 +607,7 @@ export class Inspector {
 
   update(state: AppState): void {
     this.#state = state;
+    this.#setCollapsed(state.inspectorCollapsed);
 
     // Selecting something brings its fields forward; dropping the selection hands the panel
     // back to the project, so the sidebar is never a page of blanks.

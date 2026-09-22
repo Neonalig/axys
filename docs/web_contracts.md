@@ -236,9 +236,10 @@ Cancel Import lives under the import progress it cancels. Each keeps its shortcu
 presented.
 
 The tools carry the letters Melodyne and Ableton have already trained: `V` select, `X` or `S`
-slice, `P` pitch, `B` draw, `T` time. Everything else avoids the chords the browser answers first,
-so Reset is `R` and Smooth Span is `H` rather than `Ctrl+R` and `Ctrl+H`. Zoom Fit is `.` and
-Exclude Blob is `0`.
+slice, `P` pitch, `B` draw, `N` ramp, `T` time. The operations sit beside them on `I` and `O`, and
+the two buttons sit in that order. Everything else avoids the chords the browser answers first, so
+Reset is `R` and Smooth Span is `H` rather than `Ctrl+R` and `Ctrl+H`. Zoom Fit is `.` and Exclude
+Blob is `0`.
 
 An operation previews through the workspace rather than committing as it goes:
 
@@ -266,8 +267,9 @@ export function bindShortcuts(
 
 Space toggles play, Escape clears selection, arrow keys nudge, Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z
 or Ctrl+Y redoes. Home and End take the playhead to the start and the end, and the page keys page
-the view along the timeline, with Shift keeping them on the pitch axis. Shortcuts must not fire
-while a text input has focus.
+the view along the timeline, with Shift keeping them on the pitch axis. Numpad 0 to 9 jump the
+playhead to 0% to 90% of the take; they are read by `code`, so they stay distinct from the digits
+above the letters, which are commands. Shortcuts must not fire while a text input has focus.
 
 ## Audio: `audio/engine.ts`
 
@@ -390,8 +392,9 @@ selection and edit results.
 auto-dismissing and stacking.
 
 `ui/dialog.ts` exports `class Dialog`, the one panel system every panel goes through, export
-included. Each is draggable by its title bar, which carries a dotted grip across the top saying so,
-and closes on Escape, on its close button, or on a press outside it. `blocking` defaults to true,
+included. Each is draggable by its title bar, where the gap between the title and the close button
+carries a dotted grip saying so, and closes on Escape, on its close button, or on a press outside
+it. `blocking` defaults to true,
 which darkens what is behind and keeps the keyboard inside; an operation that shows its result in
 the editor passes `false`, so the transport and the canvas stay reachable.
 
@@ -421,6 +424,10 @@ change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `
 `ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
 settings, each bound to an `EditOp`. Correction and voice character are not here: they are
 operations.
+
+The panel folds away to a rail carrying the one control that opens it again, and that choice is a
+device preference rather than project state. The shell owns the column width, because the grid is
+the shell's; the panel owns nothing but its own class.
 
 A field's explainer hangs off its label, marked with an info icon, rather than off the control: a
 tooltip over the control covers the slider or the drop-down being reached for. The blob panel is

@@ -98,13 +98,6 @@ export class Dialog {
     element.setAttribute('aria-label', options.title);
     element.tabIndex = -1;
 
-    // A dotted strip across the top of the panel. The title bar has always been the grab area;
-    // nothing on it said so, so panels were dragged by accident or not at all.
-    const grip = document.createElement('span');
-    grip.className = 'axys-dialog-grip';
-    grip.setAttribute('aria-hidden', 'true');
-    grip.addEventListener('pointerdown', this.#onDragStart);
-
     const head = document.createElement('div');
     head.className = 'axys-dialog-head';
 
@@ -119,9 +112,12 @@ export class Dialog {
     heading.textContent = options.title;
     head.append(heading);
 
-    const spacer = document.createElement('span');
-    spacer.className = 'axys-spacer';
-    head.append(spacer);
+    // The gap between the title and the close button was already the grab area; the dots are
+    // there to say so. One area, where the hand was going anyway.
+    const grip = document.createElement('span');
+    grip.className = 'axys-spacer axys-dialog-grip';
+    grip.setAttribute('aria-hidden', 'true');
+    head.append(grip);
 
     const close = document.createElement('button');
     close.type = 'button';
@@ -134,7 +130,7 @@ export class Dialog {
     });
     head.append(close);
     head.addEventListener('pointerdown', this.#onDragStart);
-    element.append(grip, head);
+    element.append(head);
 
     const body = document.createElement('div');
     body.className = 'axys-dialog-body';
