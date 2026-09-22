@@ -285,8 +285,8 @@ body {
 }
 
 .axys-zoom .axys-icon {
-  width: 22px;
-  height: 20px;
+  width: 24px;
+  height: 22px;
   min-height: 0;
 }
 
@@ -418,8 +418,6 @@ body {
   width: 26px;
   min-width: 26px;
   height: 22px;
-  font-size: var(--axys-size-sm);
-  font-weight: var(--axys-weight-strong);
 }
 
 .axys-mixer-switch[aria-pressed='true'].is-mute {
@@ -619,9 +617,22 @@ button.axys-danger {
   border-color: var(--axys-danger);
 }
 
-button svg {
+/*
+ * Two rendered sizes and no others. Lucide's rule is stroke width equal to size over twelve, and
+ * the shipped `viewBox="0 0 24 24"` at `stroke-width="2"` gives 1.67 at 20px and 1.33 at 16px for
+ * free, so nothing here overrides the stroke.
+ */
+
+svg {
   display: block;
   flex: none;
+  width: var(--axys-icon, 16px);
+  height: var(--axys-icon, 16px);
+}
+
+#app > header,
+.axys-toolbar {
+  --axys-icon: 20px;
 }
 
 select,
@@ -674,11 +685,6 @@ input[type='checkbox'] {
 
 .axys-tab-icon {
   display: flex;
-}
-
-.axys-tab-icon svg {
-  width: 14px;
-  height: 14px;
 }
 
 .axys-tab[aria-selected='true'] {
@@ -766,9 +772,8 @@ input.is-adjustable {
   opacity: 1;
 }
 
-.axys-info > svg {
-  width: 12px;
-  height: 12px;
+.axys-info {
+  --axys-icon: 12px;
 }
 
 .axys-readout {

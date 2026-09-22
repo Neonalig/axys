@@ -1158,3 +1158,39 @@ already.
 
 The face is wider than `system-ui`, so the inspector opens at 344px rather than 328 and may be
 dragged down to 256 rather than 240. The 640 maximum is unchanged.
+
+### Lucide, generated into a committed file
+
+`scripts/build-icons.mjs` fetches the glyphs named in `scripts/icon-map.json` from the CDN at a
+pinned version and writes `web/src/ui/icons.ts`, which is committed. So a build and a test run need
+no network, the application carries no runtime icon dependency, and `currentColor` keeps working.
+`lucide-static` is not installed at all: it unpacks to roughly 50MB for the fifty-odd glyphs used
+here. `node scripts/build-icons.mjs --check` says whether the committed file is still what the map
+produces, and the generator formats its own output so that comparison is about the glyphs rather
+than the wrapping.
+
+The markup is taken unmodified but for the intrinsic size, which the stylesheet supplies. No stroke
+override, no `non-scaling-stroke`, no regridding to 16. Lucide's rule is stroke width equal to size
+over twelve, and the shipped `viewBox="0 0 24 24"` at `stroke-width="2"` gives 1.67 at 20px and
+1.33 at 16px for free, against the 1.4 the hand-drawn set used at every size.
+
+Two rendered sizes and no others: 20px in the toolbar and tool palette, 16px in menus, inspector
+rows and the status bar, both set from one `--axys-icon` property.
+
+`exclude` is `circle-minus`, not `circle-slash`. Slash reads as blocked; minus reads as removed
+from the set, which is what excluding a blob from analysis means.
+
+### A toggle swaps its glyph, it does not dim one
+
+`STATE_ICONS` pairs a control with the two glyphs it picks between, and the transport, loop,
+follow, inspector fold, mixer fold and channel mute all swap. A dimmed icon reads as disabled
+rather than off. `aria-pressed` carries the state either way, so the swap is decoration and no
+control depends on it.
+
+Where Lucide ships no off variant, the metronome and solo are the two here, the control keeps one
+glyph and carries its state in its pressed styling. A hand-drawn slashed variant beside real Lucide
+pairs is immediately visible.
+
+Four pairs in the table have no control yet: loop-one-range, monitoring, blob excluded and
+diagnostics. They are in `STATE_ICONS` so the control that grows them has the pair already settled
+rather than picking a glyph on the day.

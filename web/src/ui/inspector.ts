@@ -7,7 +7,7 @@
  * built once and refreshed from state, and a control the user is editing is left alone.
  */
 
-import { ICONS } from './icons.js';
+import { ICONS, stateIcon } from './icons.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState, FollowMode } from '../app/store.js';
@@ -526,7 +526,7 @@ export class Inspector {
     const fold = document.createElement('button');
     fold.type = 'button';
     fold.className = 'axys-icon axys-inspector-fold';
-    fold.innerHTML = ICONS.sidebar;
+    fold.innerHTML = stateIcon('inspectorFold', true);
     fold.addEventListener('click', () => {
       this.#hooks.setCollapsed(!this.#collapsed);
     });
@@ -725,6 +725,7 @@ export class Inspector {
     this.#collapsed = on;
     this.#element.classList.toggle('is-collapsed', on);
     const label = on ? 'Show Inspector' : 'Hide Inspector';
+    this.#fold.innerHTML = stateIcon('inspectorFold', !on);
     this.#fold.setAttribute('aria-label', label);
     this.#fold.setAttribute('aria-expanded', String(!on));
     setTooltip(this.#fold, label);

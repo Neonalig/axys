@@ -35,6 +35,13 @@ These crates compile into the WebAssembly module in `dist/`.
 No JavaScript library is bundled into `dist/`. The application's own TypeScript is the only script
 that ships.
 
+### Icons
+
+Lucide 1.47.0, ISC licensed. No package is installed: `scripts/build-icons.mjs` fetches the
+fifty-odd glyphs named in `scripts/icon-map.json` from the CDN and writes
+`web/src/ui/icons.ts`, which is committed. `lucide-static` unpacks to roughly 50MB for that
+handful, and a runtime icon dependency would break `currentColor` theming.
+
 ### Fonts
 
 | Font                                | Licence | Files                                                              |

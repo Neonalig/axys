@@ -12,6 +12,7 @@ import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
 import type { EditOp, MixerSettings, MixerStrip } from '../core/types.js';
 import { DEFAULT_MIXER, STRIP_IDS, STRIP_NAMES } from '../audio/mixer.js';
 import type { StripId } from '../audio/mixer.js';
+import { ICONS, stateIcon } from './icons.js';
 import { rangeInput } from './inspector.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState } from '../app/store.js';
@@ -109,6 +110,7 @@ export class MixerPanel {
         setValue(controls.pan, String(strip.pan));
         controls.panReadout.textContent = panText(strip.pan);
       }
+      controls.mute.innerHTML = stateIcon('mute', !strip.mute);
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
       controls.solo.setAttribute('aria-pressed', String(strip.solo));
     }
@@ -136,8 +138,8 @@ export class MixerPanel {
     gain.setAttribute('aria-orientation', 'vertical');
     const gainReadout = readout('axys-mixer-level');
 
-    const mute = this.#buildSwitch(id, 'mute', 'M', `Mute ${label}`);
-    const solo = this.#buildSwitch(id, 'solo', 'S', `Solo ${label}`);
+    const mute = this.#buildSwitch(id, 'mute', `Mute ${label}`);
+    const solo = this.#buildSwitch(id, 'solo', `Solo ${label}`);
     const switches = document.createElement('div');
     switches.className = 'axys-mixer-switches';
     switches.append(mute, solo);
@@ -205,16 +207,13 @@ export class MixerPanel {
    * @remarks Pressing one settles the desk on that strip alone; Ctrl or Cmd adds it to whatever
    * is already switched on, which is how more than one strip is muted or soloed at a time.
    */
-  #buildSwitch(
-    id: StripId,
-    field: 'mute' | 'solo',
-    face: string,
-    label: string,
-  ): HTMLButtonElement {
+  #buildSwitch(id: StripId, field: 'mute' | 'solo', label: string): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `axys-icon axys-mixer-switch is-${field}`;
-    button.textContent = face;
+    // Mute swaps its glyph with its state; Lucide ships no off headphones, so solo carries its
+    // state in its pressed styling alone.
+    button.innerHTML = field === 'mute' ? stateIcon('mute', true) : ICONS.solo;
     button.setAttribute('aria-label', label);
     button.setAttribute('aria-pressed', 'false');
     setTooltip(button, `${label}. Ctrl-click for more than one`);

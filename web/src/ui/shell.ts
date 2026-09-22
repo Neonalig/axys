@@ -23,7 +23,7 @@ import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
-import { ICONS, type IconName } from './icons.js';
+import { ICONS, STATE_ICONS, stateIcon, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
 import { MixerPanel } from './mixer.js';
 import { showContextMenu } from './menu.js';
@@ -438,6 +438,8 @@ export class AppShell {
   readonly #header: HTMLElement;
   readonly #footer: HTMLElement;
   readonly #mixerToggle: HTMLButtonElement;
+  /* Assigned by #buildMixerToggle, which the constructor calls before anything reads it. */
+  #mixerIcon!: HTMLElement;
   readonly #themeButton: HTMLButtonElement;
   readonly #resizer: HTMLElement;
   /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
@@ -755,7 +757,7 @@ export class AppShell {
 
     const playing = state.transport.playing;
     this.#setFace('transport.play', {
-      icon: playing ? 'pause' : 'play',
+      icon: playing ? STATE_ICONS.transport.on : STATE_ICONS.transport.off,
       label: playing ? 'Pause' : 'Play',
       tooltip: playing ? 'Pause (Space)' : 'Play (Space)',
       pressed: playing,
@@ -767,16 +769,17 @@ export class AppShell {
     }
 
     // Following, looping and the metronome are switches, so each says whether it is on rather
-    // than only what pressing it would do.
+    // than only what pressing it would do. The first two swap their glyph with it; Lucide ships
+    // no off metronome, so that one carries its state in its pressed styling alone.
     this.#setFace('view.followPlayhead', {
-      icon: 'follow',
+      icon: state.follow ? STATE_ICONS.follow.on : STATE_ICONS.follow.off,
       label: 'Follow',
       tooltip: state.follow ? 'Following Playhead (F)' : 'Follow Playhead (F)',
       pressed: state.follow,
     });
     const looping = state.transport.loop !== null;
     this.#setFace('transport.loopSelection', {
-      icon: 'loop',
+      icon: looping ? STATE_ICONS.loop.on : STATE_ICONS.loop.off,
       label: 'Loop',
       tooltip: looping ? 'Stop Looping (L)' : 'Loop Selection (L)',
       pressed: looping,
@@ -825,6 +828,7 @@ export class AppShell {
 
     const mixerOpen = !state.mixerCollapsed;
     const mixerLabel = mixerOpen ? 'Hide Mixer' : 'Show Mixer';
+    this.#mixerIcon.innerHTML = stateIcon('mixerFold', mixerOpen);
     this.#mixerToggle.setAttribute('aria-label', mixerLabel);
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
     setTooltip(this.#mixerToggle, `${mixerLabel} (K)`);
@@ -918,7 +922,8 @@ export class AppShell {
     button.className = 'axys-icon';
     const icon = document.createElement('span');
     icon.className = 'axys-button-icon';
-    icon.innerHTML = ICONS.mixer;
+    icon.innerHTML = stateIcon('mixerFold', false);
+    this.#mixerIcon = icon;
     const text = document.createElement('span');
     text.className = 'axys-button-label';
     text.textContent = 'Mixer';
