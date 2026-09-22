@@ -206,6 +206,9 @@ export class AppShell {
   #announced = '';
   #lastSelection = '';
 
+  /** Whether the transport button currently draws the pause icon, so it is rewritten only on a change. */
+  #showingPause = false;
+
   private constructor(options: ShellOptions) {
     this.#hooks = options.hooks;
     this.#root = options.root;
@@ -374,8 +377,9 @@ export class AppShell {
     }
 
     const play = this.#byLabel('Play');
-    if (play) {
+    if (play && state.transport.playing !== this.#showingPause) {
       const playing = state.transport.playing;
+      this.#showingPause = playing;
       const command = this.#commandLabels.get(play.id);
       play.button.innerHTML = playing ? ICONS.pause : ICONS.play;
       play.button.setAttribute('aria-label', playing ? 'Pause' : 'Play');

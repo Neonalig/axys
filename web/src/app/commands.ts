@@ -270,6 +270,16 @@ const TOOLS: readonly { id: ToolCommandId; label: string; shortcut: string }[] =
 export function buildCommands(): Command[] {
   const ready = (ctx: CommandContext): boolean => ctx.store.state.phase === 'ready';
 
+  /**
+   * True when an edit may be committed.
+   *
+   * @remarks Editing is barred while the transport runs. Several edit commands are enabled by
+   * what the playhead is over, so during playback their answer changes every frame and the
+   * toolbar flickers; an edit mid-playback also swaps the plan under the renderer.
+   */
+  const editable = (ctx: CommandContext): boolean =>
+    ready(ctx) && !ctx.store.state.transport.playing;
+
   const commands: Command[] = [
     {
       id: 'file.openAudio',
@@ -364,7 +374,7 @@ export function buildCommands(): Command[] {
       label: 'Undo',
       group: 'Edit',
       shortcut: 'Ctrl+Z',
-      enabled: ready,
+      enabled: editable,
       run: (ctx) => {
         if (!ctx.workspace.undo()) ctx.toast.info('Nothing left to undo.');
       },
@@ -374,7 +384,7 @@ export function buildCommands(): Command[] {
       label: 'Redo',
       group: 'Edit',
       shortcut: 'Ctrl+Shift+Z',
-      enabled: ready,
+      enabled: editable,
       run: (ctx) => {
         if (!ctx.workspace.redo()) ctx.toast.info('Nothing left to redo.');
       },
@@ -384,7 +394,7 @@ export function buildCommands(): Command[] {
       label: 'Split Blob',
       group: 'Edit',
       shortcut: 'S',
-      enabled: (ctx) => splitTarget(ctx.store.state) !== null,
+      enabled: (ctx) => editable(ctx) && splitTarget(ctx.store.state) !== null,
       run: (ctx) => {
         const target = splitTarget(ctx.store.state);
         if (!target) {
@@ -403,7 +413,7 @@ export function buildCommands(): Command[] {
       label: 'Join Blobs',
       group: 'Edit',
       shortcut: 'J',
-      enabled: (ctx) => joinPair(ctx.store.state) !== null,
+      enabled: (ctx) => editable(ctx) && joinPair(ctx.store.state) !== null,
       run: (ctx) => {
         const pair = joinPair(ctx.store.state);
         if (!pair) {
@@ -418,7 +428,7 @@ export function buildCommands(): Command[] {
       label: 'Reset Blob',
       group: 'Edit',
       shortcut: 'Ctrl+R',
-      enabled: (ctx) => targetBlob(ctx.store.state) !== undefined,
+      enabled: (ctx) => editable(ctx) && targetBlob(ctx.store.state) !== undefined,
       run: (ctx) => {
         const state = ctx.store.state;
         const blobs = selectedBlobs(state);
@@ -433,7 +443,7 @@ export function buildCommands(): Command[] {
       label: 'Reset Span',
       group: 'Edit',
       shortcut: 'Ctrl+Shift+R',
-      enabled: (ctx) => targetSpan(ctx.store.state) !== null,
+      enabled: (ctx) => editable(ctx) && targetSpan(ctx.store.state) !== null,
       run: (ctx) => {
         const span = targetSpan(ctx.store.state);
         if (!span) {
@@ -453,7 +463,7 @@ export function buildCommands(): Command[] {
       label: 'Smooth Span',
       group: 'Edit',
       shortcut: 'Ctrl+H',
-      enabled: (ctx) => targetSpan(ctx.store.state) !== null,
+      enabled: (ctx) => editable(ctx) && targetSpan(ctx.store.state) !== null,
       run: (ctx) => {
         const span = targetSpan(ctx.store.state);
         if (!span) {
@@ -474,7 +484,7 @@ export function buildCommands(): Command[] {
       label: 'Bypass Blob',
       group: 'Edit',
       shortcut: 'B',
-      enabled: (ctx) => targetBlob(ctx.store.state) !== undefined,
+      enabled: (ctx) => editable(ctx) && targetBlob(ctx.store.state) !== undefined,
       run: (ctx) => {
         const blob = targetBlob(ctx.store.state);
         if (!blob) return;
@@ -486,7 +496,7 @@ export function buildCommands(): Command[] {
       label: 'Exclude Blob',
       group: 'Edit',
       shortcut: 'X',
-      enabled: (ctx) => targetBlob(ctx.store.state) !== undefined,
+      enabled: (ctx) => editable(ctx) && targetBlob(ctx.store.state) !== undefined,
       run: (ctx) => {
         const blob = targetBlob(ctx.store.state);
         if (!blob) return;
@@ -498,7 +508,7 @@ export function buildCommands(): Command[] {
       label: 'Bypass Edits',
       group: 'Edit',
       shortcut: 'Ctrl+B',
-      enabled: ready,
+      enabled: editable,
       run: (ctx) => {
         const bypassed = ctx.store.state.edits?.globalBypass ?? false;
         ctx.workspace.apply({ type: 'setGlobalBypass', bypassed: !bypassed });
