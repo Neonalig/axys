@@ -118,6 +118,25 @@ export function field(labelText: string, control: HTMLElement, guide: string): H
   return row;
 }
 
+/** Marks the page as being dragged, so nothing under the pointer is selected while it moves. */
+const ADJUSTING_CLASS = 'is-adjusting';
+
+/**
+ * Takes the field over for a drag: focused, unselected and with nothing else selectable.
+ *
+ * @remarks A press inside a field starts selecting its text, and the drag that press turns into
+ * would otherwise leave the number highlighted behind it. The selection is dropped as the drag
+ * begins, and the page stops selecting for as long as it lasts, so what the hand is doing and
+ * what the field shows agree. Focus is taken at the same time, which is what keeps the panel
+ * from rewriting the field under the hand.
+ */
+function startDrag(control: HTMLInputElement): void {
+  document.body.classList.add(ADJUSTING_CLASS);
+  control.blur();
+  window.getSelection()?.removeAllRanges();
+  control.focus();
+}
+
 /** Pixels a press has to travel before it counts as a drag rather than a click. */
 const DRAG_THRESHOLD = 3;
 
@@ -170,7 +189,7 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
       if (!dragging) {
         if (Math.abs(event.clientX - origin) < DRAG_THRESHOLD) return;
         dragging = true;
-        control.focus();
+        startDrag(control);
       }
       event.preventDefault();
       const scale = event.shiftKey ? DRAG_COARSE : event.altKey ? DRAG_FINE : 1;
@@ -186,6 +205,7 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
       handle.releasePointerCapture(event.pointerId);
       if (!dragging) return;
       dragging = false;
+      document.body.classList.remove(ADJUSTING_CLASS);
       dragged = true;
       // Focus was taken to keep the panel from rewriting the field mid-drag, and is given back
       // before the edit, so the field it leaves behind is the one the session settled on rather

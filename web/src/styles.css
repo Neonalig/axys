@@ -648,6 +648,12 @@ input[type='checkbox'] {
   touch-action: none;
 }
 
+/* While one is being dragged nothing is selectable, so the number is not highlighted behind it */
+
+body.is-adjusting * {
+  user-select: none;
+}
+
 /* A field's explainer hangs off its label, so the tip never covers the control */
 
 .axys-label {

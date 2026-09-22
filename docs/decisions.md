@@ -1059,10 +1059,13 @@ a native editor has, and is wrong in a browser twice over: the page takes the cu
 notice about controlling it, and taking the lock releases the pointer capture the drag is tracked
 by, so the field stops following the hand the moment the lock engages.
 
-Two details make it behave. The drag takes focus so the panel does not rewrite the field under the
+Three details make it behave. The drag takes focus so the panel does not rewrite the field under the
 hand, and gives it back before committing, or the field goes on showing the number the drag wrote
-while the project holds another. And the click that ends a drag is swallowed, because a label's
-click puts the keyboard back in the field it names.
+while the project holds another. The click that ends a drag is swallowed, because a label's click
+puts the keyboard back in the field it names. And a press inside a field starts selecting its text,
+so the drag drops that selection as it begins and the page stops selecting until it ends, rather
+than leaving the number highlighted behind the hand. A press that never becomes a drag is untouched,
+so clicking a field still puts the caret where it was clicked.
 
 ### Pressing a menu button again closes its menu
 
