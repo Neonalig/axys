@@ -29,3 +29,12 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# The dev profile builds the wasm the dev server serves, so an unoptimised analysis pass is
+# what a contributor measures import against. Optimising the crates keeps a take's analysis in
+# the seconds it takes in release while leaving debug assertions and incremental builds on.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
