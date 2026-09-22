@@ -117,8 +117,12 @@ export function targetMidiAt(blob: Blob, seconds: number, detected: number): num
   return drawn ?? detected + blob.pitchOffset;
 }
 
-/** Lowest and highest detected pitch inside a blob, in fractional MIDI. */
-export function blobPitchExtent(
+/**
+ * Lowest and highest pitch inside a blob as sung, in fractional MIDI.
+ *
+ * @remarks Carries no pitch edit, so this is where the blob sat before it was moved.
+ */
+export function blobDetectedExtent(
   blob: Blob,
   track: PitchTrackArrays | null,
 ): { low: number; high: number } {
@@ -145,10 +149,19 @@ export function blobPitchExtent(
     low = blob.detectedCenter - MIN_HALF_SEMITONES;
     high = blob.detectedCenter + MIN_HALF_SEMITONES;
   }
-  const shift = blob.bypassed ? 0 : blob.pitchOffset;
-  const centre = (low + high) / 2 + shift;
+  const centre = (low + high) / 2;
   const half = Math.max(MIN_HALF_SEMITONES, (high - low) / 2 + BODY_PADDING);
   return { low: centre - half, high: centre + half };
+}
+
+/** Lowest and highest pitch a blob is drawn at, with its pitch edit applied. */
+export function blobPitchExtent(
+  blob: Blob,
+  track: PitchTrackArrays | null,
+): { low: number; high: number } {
+  const extent = blobDetectedExtent(blob, track);
+  const shift = blob.bypassed ? 0 : blob.pitchOffset;
+  return { low: extent.low + shift, high: extent.high + shift };
 }
 
 /**
@@ -164,10 +177,27 @@ export function drawBlobs(
   theme: Theme,
 ): void {
   const selected = new Set(state.selection.blobs);
+  // What is being heard is drawn solid and what is not is drawn transient, so the picture and
+  // the monitoring choice never disagree. Split plays both, so both go transient.
+  const hearingOriginal = state.compare === 'original';
+  const editedAlpha = state.compare === 'processed' ? 1 : hearingOriginal ? 0.28 : 0.55;
+  const originalAlpha = hearingOriginal ? 1 : 0.55;
+  // Only the Time tool acts on a blob's edges, so the grips appear only while it is armed.
+  const showHandles = state.tool === 'time';
+
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
+
+  if (state.compare !== 'processed') {
+    for (const blob of state.blobs) {
+      if (blob.end < viewport.view.visibleStart || blob.start > viewport.view.visibleEnd) {
+        continue;
+      }
+      drawOriginalBlob(ctx, state, viewport, theme, blob, originalAlpha);
+    }
+  }
 
   for (const blob of state.blobs) {
     const start = blobOutputStart(blob);
@@ -175,12 +205,50 @@ export function drawBlobs(
     if (end < viewport.view.visibleStart || start > viewport.view.visibleEnd) {
       continue;
     }
-    drawBlob(ctx, state, viewport, theme, blob, selected.has(blob.id));
+    drawBlob(ctx, state, viewport, theme, blob, selected.has(blob.id), editedAlpha, showHandles);
   }
 
   for (const conflict of state.conflicts) {
     drawConflict(ctx, viewport, theme, conflict);
   }
+  ctx.restore();
+}
+
+/**
+ * Draws where a blob sat before it was edited.
+ *
+ * @remarks Its own colour, and always at the detected pitch and the unedited span, so the
+ * distance an edit moved a blob is legible while the original is the thing being heard.
+ */
+function drawOriginalBlob(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  blob: Blob,
+  alpha: number,
+): void {
+  const x0 = viewport.timeToX(blob.start);
+  const x1 = viewport.timeToX(blob.end);
+  const extent = blobDetectedExtent(blob, state.track);
+  const top = viewport.midiToY(extent.high);
+  const bottom = viewport.midiToY(extent.low);
+  const width = Math.max(2, x1 - x0);
+  const height = Math.max(4, bottom - top);
+
+  ctx.save();
+  ctx.globalAlpha = alpha * 0.25;
+  ctx.fillStyle = theme.blobOriginal;
+  ctx.fillRect(x0, top, width, height);
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = theme.blobOriginal;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(
+    Math.round(x0) + 0.5,
+    Math.round(top) + 0.5,
+    Math.round(width),
+    Math.round(height),
+  );
   ctx.restore();
 }
 
@@ -191,6 +259,8 @@ function drawBlob(
   theme: Theme,
   blob: Blob,
   isSelected: boolean,
+  alpha: number,
+  showHandles: boolean,
 ): void {
   const x0 = viewport.timeToX(blobOutputStart(blob));
   const x1 = viewport.timeToX(blobOutputEnd(blob));
@@ -201,7 +271,7 @@ function drawBlob(
   const height = Math.max(4, bottom - top);
 
   ctx.save();
-  ctx.globalAlpha = blob.bypassed ? 0.4 : 1;
+  ctx.globalAlpha = alpha * (blob.bypassed ? 0.4 : 1);
   ctx.fillStyle = isSelected ? theme.blobFillSelected : theme.blobFill;
   ctx.fillRect(x0, top, width, height);
 
@@ -211,12 +281,12 @@ function drawBlob(
     }
     const rx0 = viewport.timeToX(sourceToOutput(blob, region.start));
     const rx1 = viewport.timeToX(sourceToOutput(blob, region.end));
-    ctx.globalAlpha = region.voicing === 'silence' ? 0.18 : 0.3;
+    ctx.globalAlpha = alpha * (region.voicing === 'silence' ? 0.18 : 0.3);
     ctx.fillStyle = theme.unvoiced;
     ctx.fillRect(rx0, top, Math.max(1, rx1 - rx0), height);
   }
 
-  ctx.globalAlpha = blob.bypassed ? 0.5 : 1;
+  ctx.globalAlpha = alpha * (blob.bypassed ? 0.5 : 1);
   ctx.lineWidth = isSelected ? 2 : 1;
   ctx.strokeStyle = isSelected ? theme.selection : theme.blobBounds;
   if (blob.excluded) {
@@ -239,15 +309,17 @@ function drawBlob(
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const handleY = top + height / 2 - HANDLE_HEIGHT / 2;
-  ctx.fillStyle = isSelected ? theme.handleActive : theme.handle;
-  ctx.fillRect(x0 - HANDLE_WIDTH / 2, handleY, HANDLE_WIDTH, Math.min(HANDLE_HEIGHT, height));
-  ctx.fillRect(
-    x0 + width - HANDLE_WIDTH / 2,
-    handleY,
-    HANDLE_WIDTH,
-    Math.min(HANDLE_HEIGHT, height),
-  );
+  if (showHandles) {
+    const handleY = top + height / 2 - HANDLE_HEIGHT / 2;
+    ctx.fillStyle = isSelected ? theme.handleActive : theme.handle;
+    ctx.fillRect(x0 - HANDLE_WIDTH / 2, handleY, HANDLE_WIDTH, Math.min(HANDLE_HEIGHT, height));
+    ctx.fillRect(
+      x0 + width - HANDLE_WIDTH / 2,
+      handleY,
+      HANDLE_WIDTH,
+      Math.min(HANDLE_HEIGHT, height),
+    );
+  }
 
   if (isSelected) {
     ctx.beginPath();
