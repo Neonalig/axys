@@ -13,6 +13,8 @@
     "dev": "npm-run-all --parallel wasm:watch dev:web",
     "dev:web": "vite",
     "wasm:build": "node scripts/build-wasm.mjs",
+    "icons:build": "node scripts/build-icons.mjs",
+    "music:build": "node scripts/build-music-font.mjs",
     "wasm:watch": "node scripts/build-wasm.mjs --watch",
     "build": "npm run wasm:build && tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",
@@ -25,7 +27,7 @@
     "format": "prettier --write . && cargo fmt --all",
     "check": "npm run check:rust && npm run check:web && npm run test",
     "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
-    "check:web": "tsc --noEmit -p tsconfig.json && eslint . && prettier --check .",
+    "check:web": "tsc --noEmit -p tsconfig.json && eslint . && prettier --check . && node scripts/build-icons.mjs --check && node scripts/build-music-font.mjs --check",
     "doctor": "node scripts/doctor.mjs"
   },
   "devDependencies": {

@@ -6,8 +6,43 @@ import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
 
-const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
-const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'] as const;
+/*
+ * The Unicode musical symbols rather than an ASCII hash and a letter b, and rather than SMuFL:
+ * a note name is running text, and pulling a 16 KB music font in behind every grid label would
+ * be absurd. Neither shipped face carries them, so the browser falls back per character to a
+ * system face that does, which every target platform has.
+ */
+const SHARP = '♯';
+const FLAT = '♭';
+
+export const SHARP_NAMES = [
+  'C',
+  `C${SHARP}`,
+  'D',
+  `D${SHARP}`,
+  'E',
+  'F',
+  `F${SHARP}`,
+  'G',
+  `G${SHARP}`,
+  'A',
+  `A${SHARP}`,
+  'B',
+] as const;
+export const FLAT_NAMES = [
+  'C',
+  `D${FLAT}`,
+  'D',
+  `E${FLAT}`,
+  'E',
+  'F',
+  `G${FLAT}`,
+  'G',
+  `A${FLAT}`,
+  'A',
+  `B${FLAT}`,
+  'B',
+] as const;
 const BLACK_KEYS = [false, true, false, true, false, false, true, false, true, false, true, false];
 
 /** Pitch-class index of a MIDI note, 0 is C. */
@@ -20,7 +55,7 @@ export function isBlackKey(midi: number): boolean {
   return BLACK_KEYS[pitchClass(midi)] ?? false;
 }
 
-/** Note name with octave, such as `C#4`, in the project's accidental convention. */
+/** Note name with octave, such as `C♯4`, in the project's accidental convention. */
 export function noteName(midi: number, style: AccidentalStyle = 'sharps'): string {
   const rounded = Math.round(midi);
   const names = style === 'flats' ? FLAT_NAMES : SHARP_NAMES;

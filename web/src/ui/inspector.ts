@@ -7,6 +7,7 @@
  * built once and refreshed from state, and a control the user is editing is left alone.
  */
 
+import { FLAT_NAMES, SHARP_NAMES } from '../editor/layers/grid.js';
 import { ICONS, stateIcon } from './icons.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
@@ -41,10 +42,15 @@ export interface InspectorHooks {
   setCollapsed(on: boolean): void;
 }
 
-/** Pitch-class names in each accidental spelling. */
+/**
+ * Pitch-class names in each accidental spelling.
+ *
+ * @remarks The one spelling for the whole application; {@link noteName} here and the editor's own
+ * label both read from it.
+ */
 const NOTE_NAMES: Readonly<Record<AccidentalStyle, readonly string[]>> = {
-  sharps: ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'],
-  flats: ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'],
+  sharps: SHARP_NAMES,
+  flats: FLAT_NAMES,
 };
 
 const SNAP_DIVISIONS: readonly { value: number; label: string }[] = [
@@ -323,7 +329,7 @@ export function checkboxInput(): HTMLInputElement {
   return input;
 }
 
-/** Note name of a fractional MIDI number, such as `A#3`. */
+/** Note name of a fractional MIDI number, such as `A♯3`. */
 export function noteName(midi: number, style: AccidentalStyle): string {
   if (!Number.isFinite(midi)) {
     return '--';

@@ -26,6 +26,19 @@
 }
 
 /*
+ * Bravura, subset to the accidentals, note durations, rests, dotted values, time signature digits
+ * and metronome marks. No general icon pack carries these.
+ */
+
+@font-face {
+  font-family: Bravura;
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('./fonts/bravura-subset.woff2') format('woff2');
+}
+
+/*
  * App shell layout and control styling. Every colour comes from a custom property written by
  * ui/theme.ts; this file declares no palette of its own.
  */
@@ -519,6 +532,21 @@ body {
 
 .axys-spacer {
   flex: 1 1 auto;
+}
+
+/*
+ * A music glyph is set in its own run at its own size, never inheriting the body text's. SMuFL
+ * draws to a staff rather than to a text baseline, so an accidental left to inherit sits low and
+ * small. The size is a multiple of the em and the shift comes from the glyph's own extents in
+ * Bravura's metadata, which `ui/music.ts` writes onto the element.
+ */
+
+.axys-smufl {
+  display: inline-block;
+  font-family: Bravura, serif;
+  font-size: 1.6em;
+  line-height: 0;
+  transform: translateY(var(--axys-smufl-shift, 0));
 }
 
 /* Controls */

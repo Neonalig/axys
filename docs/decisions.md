@@ -1194,3 +1194,25 @@ pairs is immediately visible.
 Four pairs in the table have no control yet: loop-one-range, monitoring, blob excluded and
 diagnostics. They are in `STATE_ICONS` so the control that grows them has the pair already settled
 rather than picking a glyph on the day.
+
+### Bravura, subset by codepoint
+
+No general icon pack carries accidentals, note durations, rests, dotted values or metronome marks,
+so Axys ships the SMuFL reference font for them. SMuFL puts every glyph in the private use area, so
+the subset is specified by codepoint like any other font: full Bravura is 316 KB, the six ranges
+Axys sets come to 16 KB, and accidentals alone would be 4.7 KB.
+
+`scripts/build-music-font.mjs` runs `pyftsubset` and, from the same metadata, generates
+`web/src/ui/music.ts` holding each glyph's name, character and extents. Both outputs are committed,
+so a build and a test run need neither the network nor a Python toolchain, and the script's
+`--check` mode says whether the module still matches the published metadata.
+
+A music glyph is set in its own run at its own size, never inheriting the body text's. SMuFL draws
+to a staff rather than to a text baseline, so an accidental left to inherit sits low and small. The
+vertical shift comes from the glyph's own bounding box in Bravura's metadata rather than from a
+number somebody nudged until it looked right.
+
+Note letters and octave numbers stay in the UI face; Bravura sets the accidental glyph only. In
+running text a note name uses U+266F, U+266D and U+266E rather than SMuFL, so an ordinary label
+does not pull a 16 KB font in behind it. Neither shipped face carries those three, so the browser
+falls back per character to a system face that does, which every target platform has.

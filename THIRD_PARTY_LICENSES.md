@@ -48,11 +48,17 @@ handful, and a runtime icon dependency would break `currentColor` theming.
 | ----------------------------------- | ------- | ------------------------------------------------------------------ |
 | Atkinson Hyperlegible Next Variable | OFL 1.1 | `web/src/fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2` |
 | Atkinson Hyperlegible Mono Variable | OFL 1.1 | `web/src/fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2` |
+| Bravura, subset                     | OFL 1.1 | `web/src/fonts/bravura-subset.woff2`                               |
 
 Both are from the Braille Institute of America and carry the SIL Open Font License 1.1, which the
 AGPL permits shipping alongside. The licence reserves the names "ATKINSON" and "HYPERLEGIBLE": a
 modified font may not use them. Neither restricts embedding or subsetting, and Axys ships the
 upstream Latin upright files unmodified.
+
+Bravura is Steinberg's SMuFL reference font, also OFL 1.1. `scripts/build-music-font.mjs` subsets
+it to the six codepoint ranges Axys sets, 316 KB down to 16 KB. The licence reserves the name
+"Bravura" and requires a derivative to stay OFL; a subset is a derivative, so the shipped file
+remains under OFL 1.1 and is named `bravura-subset.woff2` rather than `Bravura`.
 
 Run `cargo tree --workspace -e normal` for the exact resolved versions of the above, and
 `cargo metadata --format-version 1` for their licence fields as declared upstream.
