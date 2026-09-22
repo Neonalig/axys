@@ -72,9 +72,9 @@ means.
 YIN's cumulative mean normalised difference function with parabolic lag interpolation gives cheap,
 accurate F0 on monophonic voice. A Viterbi pass over a bounded candidate set per frame, with a
 transition cost in log-frequency, removes most octave errors and isolated dropouts, which raw YIN
-produces freely on breathy material. References: de Cheveigne and Kawahara, *YIN, a fundamental
-frequency estimator for speech and music*, JASA 2002; Mauch and Dixon, *pYIN: a fundamental
-frequency estimator using probabilistic threshold distributions*, ICASSP 2014. Rejected: plain
+produces freely on breathy material. References: de Cheveigne and Kawahara, _YIN, a fundamental
+frequency estimator for speech and music_, JASA 2002; Mauch and Dixon, _pYIN: a fundamental
+frequency estimator using probabilistic threshold distributions_, ICASSP 2014. Rejected: plain
 autocorrelation (octave-prone), cepstral F0 (poor at low F0 with short windows), CREPE and other
 learned estimators (a model download and a licence question, against a local-first product).
 
@@ -82,24 +82,27 @@ learned estimators (a model download and a licence question, against a local-fir
 
 Time-domain pitch-synchronous overlap-add transforms pitch and time independently, preserves
 consonants better than a plain phase vocoder, is cheap enough for the realtime path, and degrades
-predictably. Reference: Moulines and Charpentier, *Pitch-synchronous waveform processing techniques
-for text-to-speech synthesis using diphones*, Speech Communication 1990. Rejected for now: phase
+predictably. Reference: Moulines and Charpentier, _Pitch-synchronous waveform processing techniques
+for text-to-speech synthesis using diphones_, Speech Communication 1990. Rejected for now: phase
 vocoder (transient smearing on plosives), sinusoidal modelling (heavier and harder to make
 deterministic per output block). The DSP sits behind `dsp::psola` and `render::Renderer`, so a
 second method can be compared without touching the UI or the project model.
 
 ### Formants are preserved by default
 
-`FormantMode::Preserve` holds the spectral envelope while pitch moves, estimated by cepstral
-liftering. Below roughly three semitones the difference is subtle; above that, following formants
-is audibly wrong on voice, so preserve is the default and `Follow` is offered for the cases where a
-user wants the resampled character. `Shift` exposes an independent adjustment.
+`FormantMode::Preserve` holds the spectral envelope while pitch moves. TD-PSOLA does that
+inherently when grain content is copied untouched, so Preserve is the cheap path the realtime
+renderer uses; export adds a cepstral envelope correction on top to tidy what the grain
+approximation leaves. Below roughly three semitones the difference is subtle; above that, following
+formants is audibly wrong on voice, so Preserve is the default and `Follow` is offered for the
+cases where a user wants the resampled character. `Shift` exposes an independent adjustment.
 
 ### Modulation is split by a zero-phase low-pass
 
-Drift and vibrato are separated at a configurable boundary, 3 Hz by default, using a
-forward-backward one-pole so the split introduces no phase error and the two parts sum back to the
-original contour exactly. That is what lets correction strength and vibrato depth be independent
+Drift and vibrato are separated at a configurable boundary, 3 Hz by default, using a 2nd-order
+Butterworth biquad run forward and backward, so the split introduces no phase error and the two
+parts sum back to the original contour exactly. A one-pole pair was tried first and rejected: at
+only -8 dB one octave above the split it left audible vibrato in the drift band. That is what lets correction strength and vibrato depth be independent
 controls rather than one blunt amount.
 
 ## Edit model
@@ -198,3 +201,125 @@ an opaque browser cache. Autosave writes the document, not the media.
 - Time stretching beyond roughly 1.5x or below 0.7x begins to show granularity.
 - Scrubbing plays short grains from the rendered stream rather than a continuously varying-rate
   render.
+- Rendering an output range costs a grain-phase integration from output sample 0, because
+  determinism forbids carrying phase in state. `render::Renderer` memoises phase checkpoints so
+  sequential playback and seeking stay bounded, but a cold seek deep into a very long file does
+  measurable work before the first block.
+- PSOLA snaps each output mark to the nearest source epoch, which leaves up to half a period of
+  phase error where the mark grid drifts against the epoch grid. Inaudible as a constant sub-period
+  delay on steady material; it is the main residual artefact on unstable pitch.
+- Cepstral liftering at order 40 smooths the log spectrum over roughly 500 to 600 Hz, so closely
+  spaced formants merge and an estimated peak can sit up to 200 Hz from the true formant. Good
+  enough to hold timbre under moderate pitch movement, not an accurate formant tracker.
+- Repitching material with little harmonic content, a near-pure sine for instance, produces quiet
+  output at the new pitch. This is inherent to TD-PSOLA; real vocal material is unaffected.
+- A slow glissando through more than the segmentation step threshold is split where the two-scale
+  test first fires, which may not be where a musician would put the boundary.
+- Blob ids are stable within one segmentation run only, so a re-analysis renumbers them.
+- A project document written by a newer build is refused rather than parsed best-effort.
+- Format 2 MIDI files are read as if their tracks were parallel, and SMPTE timecode divisions are
+  rejected outright.
+- WAV import does not support RF64/BW64, ADPCM, A-law or mu-law; export writes 16-bit, 24-bit and
+  32-bit float only, with no dither or normalisation.
+
+## Implementation decisions recorded during the core build
+
+These were resolved while implementing `crates/axys-core`. Each names the module that owns it.
+
+### Analysis
+
+- **`analysis/f0.rs`** computes YIN's difference function through an FFT autocorrelation rather than
+  a direct double loop, packing the two real inputs into one complex transform. Frame centres sit on
+  exact multiples of the realised hop so the pitch and energy grids line up. At the buffer edges the
+  window slides inside the buffer instead of zero-padding, so no frame is analysed against half
+  silence. Viterbi costs are 0.08 per semitone of transition, 0.15 per voicing switch and an
+  unvoiced observation cost of twice the YIN threshold; these are tuned against the fixture battery,
+  not taken from the paper.
+- **NaN crosses JSON as null.** `serde_json` cannot represent NaN, and an unvoiced frame's MIDI
+  value is NaN. `PitchFrame` and `PitchTrackArrays` carry serde shims mapping it to and from `null`,
+  so a project containing any unvoiced frame reopens. Without this the round trip silently failed.
+- **`analysis/energy.rs`** normalises spectral flux by the track maximum, so an onset threshold is
+  relative to the loudest transient in the clip rather than an absolute level. Crowded onset peaks
+  resolve strongest-first, so a weak precursor cannot mask the real attack.
+- **`analysis/segment.rs`** confirms a sustained pitch step at two window scales, because one
+  hold-length window cannot tell a real step from the steep part of a 5 to 6 Hz vibrato. Leading
+  consonant attachment is capped at 250 ms and never crosses the previous blob's end.
+
+### Transformation
+
+- **Formant modes are acoustic, not literal.** Plain TD-PSOLA already preserves the spectral
+  envelope when grain content is copied untouched, so `Preserve` copies 1:1, `Follow` resamples
+  grain content by the pitch ratio so the envelope rides pitch the way plain resampling would, and
+  `Shift(s)` resamples by `2^(s/12)`. Resampling under the name Preserve would have moved formants,
+  which design bible 7.3 forbids.
+- **Overlap-add is normalised by accumulated window weight**, not by a fixed gain. The weight sums
+  to roughly the pitch ratio, so this doubles as gain compensation and keeps level constant under a
+  varying ratio without clicks. Below a weight of 0.05 the sample is left un-normalised rather than
+  amplified.
+- **The mark phase seed is epoch 0 mapped into output time**, not output sample 0. It stays a pure
+  function of the closures and the epoch map, so determinism holds, and it is what makes a unit
+  ratio render reproduce the source rather than delaying it by a fraction of a period.
+- **Clamps that keep a bad plan controlled**: pitch ratio 0.25 to 4.0, grain content resampling 0.5
+  to 2.0, grain half-width 50 ms, output magnitude 4.0, formant shift one octave either way.
+- **`dsp/window.rs::hann_symmetric` uses the half-sample grid**, `0.5 - 0.5 cos(2 pi (n + 0.5) / N)`.
+  The textbook symmetric Hann is symmetric but fails constant overlap-add; the periodic Hann
+  satisfies overlap-add but is not symmetric. The half-sample form is the only one that is both.
+- **`dsp/resample.rs`** normalises kernel weights per output sample rather than using an analytic
+  gain, which makes an identity-ratio conversion exact. The anti-alias cutoff sits at 0.97 of the
+  target Nyquist, trading a sliver of top end for real stopband rejection at practical kernel widths.
+- **`render.rs` Quality tiers differ in fidelity, never in intent.** `Offline` adds a short-time
+  cepstral envelope pass on top of PSOLA, gain-matched so it moves spectral shape only. Its frame
+  grid is anchored at absolute output sample 0, which keeps block-split offline rendering bit-exact.
+  `Preview` relies on the PSOLA approximation alone and caps each synthesiser call at 4096 frames to
+  bound per-block work.
+- **Rendering past the end of the source is silence, not a repeated grain.** PSOLA clamps a grain to
+  the nearest pitch mark, so `render_range` masks any output sample whose mapped source position
+  lies outside the buffer.
+
+### Edit model
+
+- **`target.rs` splits modulation with a 2nd-order Butterworth biquad run forward and backward.** A
+  compensated one-pole pair only reaches about -8 dB one octave above the split and left audible
+  vibrato in the drift band; the biquad reaches about -24 dB there and still sums back exactly.
+- **Scale correction and MIDI pitch guidance apply a constant semitone offset per blob**, computed
+  from its detected centre, rather than per analysis frame. That preserves the contour's deviations
+  inside the blob and makes "strength 0.5 moves halfway" exactly observable.
+- **A drawn curve replaces the corrected target rather than adding to it**, but the blob's own pitch
+  offset still translates it, so moving a blob moves its drawn contour with it.
+- **The time map stretches the gaps between blobs** to absorb blob moves, keeps bypassed blobs at
+  their source position, and forces each point strictly past the previous one, so the map stays
+  monotone and invertible.
+- **Undo is re-derivation, not an inverse patch.** `History` stores operations; the session replays
+  them over fresh analysis. That is what guarantees an edit can never corrupt the evidence it was
+  made against. The applied stack is capped at 10,000 operations to bound browser memory.
+- **`blob.rs` split and join preserve audible continuity** by writing a boundary anchor at the
+  evaluated curve value on each side of a cut, rather than snapping to the nearest surviving anchor.
+  A join keeps the earlier blob's id and turns any gap into a `Silence` subregion.
+- **`timing_conflicts` reports a gap only when the edited gap exceeds the gap the detected
+  segmentation already had**, so ordinary silence between notes is not reported as an edit conflict.
+
+### Import and persistence
+
+- **`midi.rs` validates the SMF chunk layout itself before calling `midly`**, because `midly` is
+  lenient about truncated trailing chunks and would return a partial file instead of an error.
+  Tempo and meter events are collected from every track, so format 0 and sloppy format 1 both work.
+  Percussion is detected from channel 10 or a General MIDI percussive program.
+- **Mapping score is 0.7 temporal intersection-over-union plus 0.3 pitch proximity**, requiring real
+  overlap, with ties broken by index so proposals are deterministic. Nothing is deleted to force a
+  one-to-one result; leftovers go in the report.
+- **`timeline.rs` accepts 60,000 to 16,777,215 microseconds per quarter**, the upper bound being the
+  24-bit maximum a Standard MIDI File can carry. A meter change lands a bar line even mid-bar, so
+  the interrupted bar is short.
+- **`audio/wav.rs` never fails an export over one bad sample**: NaN writes as zero, infinities clamp
+  to full scale, and both are counted in the clipping report. `peak` reports the largest pre-clamp
+  magnitude, so a caller can see how far over full scale a render went.
+- **`project.rs` fingerprints sample bit patterns and then the sample count**, so two buffers
+  differing only in trailing silence cannot collide. `matches_source` compares fingerprint, rate,
+  channels and frames and deliberately ignores the file name, so a renamed identical file relinks
+  and a different file with the same name is refused.
+
+### Limitations found during implementation
+
+Added to the list at the end of this document rather than repeated here: the PSOLA seek cost, the
+half-period phase error on unstable pitch, cepstral formant estimation accuracy, segmentation of
+slow glissandi, and the base64 and schema-migration leniencies. See Known limitations.
