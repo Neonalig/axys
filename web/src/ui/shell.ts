@@ -18,6 +18,7 @@ import { ICONS, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
 import { THEME_LABELS, THEME_NAMES, type ThemeName } from './theme.js';
 import { ToastHost } from './toast.js';
+import { setTooltip, TooltipHost } from './tooltip.js';
 
 /** Toolbar section a command belongs to. */
 export type CommandGroup = 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
@@ -184,6 +185,7 @@ export class AppShell {
   readonly #canvas: HTMLCanvasElement;
   readonly #live: HTMLElement;
   readonly #toasts: ToastHost;
+  readonly #tooltips: TooltipHost;
   readonly #inspector: Inspector;
 
   readonly #commandButtons = new Map<string, HTMLButtonElement>();
@@ -274,8 +276,9 @@ export class AppShell {
     canvas.className = 'axys-canvas';
     canvas.tabIndex = 0;
     canvas.setAttribute('role', 'application');
+    // No `title`: the renderer draws its own readout, and a host tooltip over the canvas would
+    // be a second one that disagrees about when to appear. `aria-label` names it instead.
     canvas.setAttribute('aria-label', 'Pitch Editor');
-    canvas.title = 'Pitch Editor';
     main.append(canvas);
     this.#canvas = canvas;
 
@@ -313,13 +316,14 @@ export class AppShell {
     progress.max = 1;
     progress.value = 0;
     progress.hidden = true;
-    progress.title = 'Analysis Progress';
+    setTooltip(progress, 'Analysis Progress');
     progress.setAttribute('aria-label', 'Analysis Progress');
     footer.append(progress);
     this.#progress = progress;
 
     this.#root.append(header, main, this.#inspector.element, footer);
     this.#toasts = new ToastHost(document.body);
+    this.#tooltips = TooltipHost.install(this.#root);
   }
 
   /** Builds the chrome inside `root` and returns it. */
@@ -378,7 +382,7 @@ export class AppShell {
       const command = this.#commandLabels.get(play.id);
       play.button.innerHTML = playing ? ICONS.pause : ICONS.play;
       play.button.setAttribute('aria-label', playing ? 'Pause' : 'Play');
-      play.button.title = playing ? 'Pause' : command ? tooltipFor(command) : 'Play';
+      setTooltip(play.button, playing ? 'Pause' : command ? tooltipFor(command) : 'Play');
       play.button.setAttribute('aria-pressed', String(playing));
     }
 
@@ -402,7 +406,10 @@ export class AppShell {
 
     this.#progress.hidden = !state.analysis.running;
     this.#progress.value = state.analysis.progress;
-    this.#progress.title = state.analysis.stage === '' ? 'Analysis Progress' : state.analysis.stage;
+    setTooltip(
+      this.#progress,
+      state.analysis.stage === '' ? 'Analysis Progress' : state.analysis.stage,
+    );
 
     this.#canvas.setAttribute(
       'aria-label',
@@ -415,6 +422,7 @@ export class AppShell {
 
   /** Removes the chrome and its notification layer. */
   dispose(): void {
+    this.#tooltips.dispose();
     this.#toasts.dispose();
     this.#root.replaceChildren();
   }
@@ -467,7 +475,7 @@ export class AppShell {
     button.className = 'axys-icon';
     button.innerHTML = ICONS[iconFor(command)];
     button.setAttribute('aria-label', command.label);
-    button.title = tooltipFor(command);
+    setTooltip(button, tooltipFor(command));
     button.addEventListener('click', () => {
       this.#hooks.runCommand(command.id);
     });
@@ -485,7 +493,7 @@ export class AppShell {
       button.innerHTML = ICONS[tool.icon];
       button.setAttribute('aria-label', tool.label);
       button.setAttribute('aria-pressed', 'false');
-      button.title = `${tool.label}: ${tool.tooltip}`;
+      setTooltip(button, `${tool.label}: ${tool.tooltip}`);
       button.addEventListener('click', () => {
         this.#hooks.setTool(tool.id);
         this.announce(`${tool.label} active.`);
@@ -507,7 +515,7 @@ export class AppShell {
       element.textContent = option.label;
       select.append(element);
     }
-    select.title = 'Which audio the transport plays.';
+    setTooltip(select, 'Which audio the transport plays.');
     const label = document.createElement('label');
     label.htmlFor = select.id;
     label.textContent = 'Compare';
@@ -533,7 +541,7 @@ export class AppShell {
       select.append(element);
     }
     select.value = current;
-    select.title = 'Colour scheme used by the chrome and the canvas.';
+    setTooltip(select, 'Colour scheme used by the chrome and the canvas.');
     const label = document.createElement('label');
     label.htmlFor = select.id;
     label.textContent = 'Theme';

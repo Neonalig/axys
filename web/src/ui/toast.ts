@@ -7,6 +7,7 @@
  */
 
 import { ICONS } from './icons.js';
+import { setTooltip } from './tooltip.js';
 
 /** Severity of a notification. */
 export type ToastKind = 'info' | 'warn' | 'error';
@@ -95,7 +96,7 @@ export class ToastHost {
     close.className = 'axys-icon';
     close.innerHTML = ICONS.close;
     close.setAttribute('aria-label', 'Dismiss Message');
-    close.title = 'Dismiss Message';
+    setTooltip(close, 'Dismiss Message');
     close.addEventListener('click', () => {
       this.#remove(toast);
     });

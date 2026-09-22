@@ -48,7 +48,7 @@ export interface EditorControllerOptions {
   apply(op: EditOp): void;
   /** Draws gesture previews. Attach one here or later with {@link EditorController.setRenderer}. */
   renderer?: EditorRenderer;
-  /** Plays a region once, for the audition tool. */
+  /** Plays a region once, for an Alt-click snippet. */
   audition?(start: number, end: number): void;
   /** Moves the transport to a position, for ruler scrubbing. */
   seek?(seconds: number): void;
@@ -97,7 +97,6 @@ export class EditorController {
   #moved = false;
   #gesture: Gesture | null = null;
   #hover: Hit | null = null;
-  #tooltip = '';
 
   constructor(options: EditorControllerOptions) {
     this.#options = options;
@@ -161,6 +160,7 @@ export class EditorController {
       blob: null,
       edge: null,
       anchor: null,
+      conflict: null,
       time,
       sourceTime: time,
       midi,
@@ -220,6 +220,14 @@ export class EditorController {
         return { ...base, kind: 'blobEdge', blob: blob.id, edge: 'end', sourceTime };
       }
       return { ...base, kind: 'blob', blob: blob.id, sourceTime };
+    }
+
+    // Reported only where no blob covers the position, so the red band explains itself without
+    // taking a hover away from the blobs whose timing produced it.
+    for (const conflict of state.conflicts) {
+      if (time >= conflict.start && time <= conflict.end) {
+        return { ...base, kind: 'conflict', conflict };
+      }
     }
     return base;
   }
@@ -1213,14 +1221,16 @@ export class EditorController {
     );
   }
 
+  /**
+   * Shapes the cursor for what is under it.
+   *
+   * @remarks The canvas carries no `title`. The renderer draws its own readout immediately,
+   * while the host tooltip appears only after a delay and only while the window holds focus,
+   * so setting both showed two tooltips that disagreed about when to appear.
+   */
   #applyCursor(hit: Hit | null): void {
     const tool = this.#store.state.tool;
     this.#canvas.style.cursor = hit === null ? 'default' : cursorFor(tool, hit);
-    const tooltip = hit === null ? '' : describeHit(hit, this.#store.state);
-    if (tooltip !== this.#tooltip) {
-      this.#tooltip = tooltip;
-      this.#canvas.title = tooltip;
-    }
   }
 
   #releasePointer(pointerId: number): void {

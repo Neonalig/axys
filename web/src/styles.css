@@ -376,6 +376,27 @@ input[type='checkbox'] {
   color: var(--axys-danger);
 }
 
+/* Tooltips: drawn by the page, so they appear on our delay and without window focus */
+
+.axys-tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: 280px;
+  padding: 4px 8px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-raised);
+  box-shadow: 0 4px 12px var(--axys-shadow);
+  color: var(--axys-text);
+  font-size: var(--axys-size-sm);
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.axys-tooltip[hidden] {
+  display: none;
+}
+
 /* Toasts: fixed layer, so stacking never reflows the shell */
 
 .axys-toast-host {

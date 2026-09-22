@@ -11,6 +11,7 @@ import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import { probeCapabilities } from '../capabilities.js';
 import { Dialog } from './dialog.js';
+import { setTooltip } from './tooltip.js';
 
 declare const __AXYS_VERSION__: string;
 declare const __AXYS_REVISION__: string;
@@ -162,7 +163,7 @@ export function renderSourceCode(): HTMLElement {
   link.textContent = info.sourceUrl;
   link.rel = 'noreferrer';
   link.target = '_blank';
-  link.title = 'Corresponding Source';
+  setTooltip(link, 'Corresponding Source');
   section.append(link);
 
   if (info.revision === 'unknown') {

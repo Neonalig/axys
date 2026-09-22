@@ -13,7 +13,7 @@ import {
 } from './layers/blobs.js';
 import { drawGrid } from './layers/grid.js';
 import { drawMidi } from './layers/midi.js';
-import { drawOverlay } from './layers/overlay.js';
+import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
 import { drawRuler } from './layers/ruler.js';
 import { drawWaveform } from './layers/waveform.js';
@@ -152,6 +152,7 @@ export class EditorRenderer {
     drawPitch(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
     drawOverlay(ctx, state, viewport, theme);
+    this.#drawHoverGuides(ctx, state, viewport, theme);
     this.#drawPreview(ctx, state, viewport, theme);
     this.#drawHover(ctx, viewport, theme);
     ctx.restore();
@@ -243,6 +244,19 @@ export class EditorRenderer {
         break;
     }
     ctx.restore();
+  }
+
+  #drawHoverGuides(
+    ctx: CanvasRenderingContext2D,
+    state: AppState,
+    viewport: Viewport,
+    theme: Theme,
+  ): void {
+    const hover = this.#hover;
+    if (hover === null) {
+      return;
+    }
+    drawHoverGuides(ctx, state, viewport, theme, hover);
   }
 
   #drawHover(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: Theme): void {

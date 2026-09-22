@@ -7,6 +7,7 @@
  * built once and refreshed from state, and a control the user is editing is left alone.
  */
 
+import { setTooltip } from './tooltip.js';
 import type { AppState } from '../app/store.js';
 import type {
   AccidentalStyle,
@@ -96,7 +97,7 @@ export function field(labelText: string, control: HTMLElement, tooltip: string):
   }
   label.htmlFor = control.id;
   label.textContent = labelText;
-  control.title = tooltip;
+  setTooltip(control, tooltip);
   row.append(label, control);
   return row;
 }
@@ -374,7 +375,7 @@ export class Inspector {
       const wrapper = document.createElement('label');
       wrapper.className = 'axys-note-toggle';
       const box = checkboxInput();
-      box.title = 'Leaves this note out of automatic correction.';
+      setTooltip(box, 'Leaves this note out of automatic correction.');
       const caption = document.createElement('span');
       caption.textContent = NOTE_NAMES.sharps[pitchClass] ?? '?';
       wrapper.htmlFor = box.id;
@@ -670,7 +671,7 @@ export class Inspector {
     const label = document.createElement('label');
     label.htmlFor = control.id;
     label.textContent = labelText;
-    control.title = tooltip;
+    setTooltip(control, tooltip);
     const pair = document.createElement('div');
     pair.className = 'axys-control-pair';
     pair.append(control, readout);
@@ -682,7 +683,7 @@ export class Inspector {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
-    button.title = tooltip;
+    setTooltip(button, tooltip);
     return button;
   }
 

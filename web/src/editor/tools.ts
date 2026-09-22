@@ -9,6 +9,7 @@ import type {
   Interp,
   ScaleSettings,
   TimelineMap,
+  TimingConflict,
 } from '../core/types.js';
 import { noteNameWithCents } from './layers/grid.js';
 import { formatClock } from './layers/ruler.js';
@@ -102,7 +103,7 @@ export function toolDefinition(id: ToolId): ToolDefinition {
 }
 
 /** What kind of object a pointer position lands on. */
-export type HitKind = 'empty' | 'ruler' | 'loopEdge' | 'blob' | 'blobEdge' | 'anchor';
+export type HitKind = 'empty' | 'ruler' | 'loopEdge' | 'blob' | 'blobEdge' | 'anchor' | 'conflict';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -112,6 +113,8 @@ export interface Hit {
   edge: Edge | null;
   /** Index into the blob's anchors. */
   anchor: number | null;
+  /** The timing conflict the position falls in, when it is not over a blob. */
+  conflict: TimingConflict | null;
   /** Output seconds under the cursor. */
   time: number;
   /** Source seconds under the cursor; equal to `time` outside any blob. */
@@ -126,6 +129,9 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   }
   if (hit.kind === 'loopEdge' || hit.kind === 'blobEdge') {
     return 'ew-resize';
+  }
+  if (hit.kind === 'conflict') {
+    return 'help';
   }
   if (hit.kind === 'anchor') {
     return 'grab';
@@ -151,6 +157,16 @@ export function describeHit(hit: Hit, state: AppState): string {
       return hit.edge === 'start' ? `Blob Start ${clock}` : `Blob End ${clock}`;
     case 'blob':
       return `Blob ${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
+    case 'conflict': {
+      const conflict = hit.conflict;
+      if (conflict === null) {
+        return clock;
+      }
+      const pair = `blobs ${String(conflict.first)} and ${String(conflict.second)}`;
+      return conflict.kind === 'gap'
+        ? `Gap  Nothing sounds between ${pair}`
+        : `Overlap  ${pair.charAt(0).toUpperCase()}${pair.slice(1)} both sound here`;
+    }
     default:
       return `${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
   }

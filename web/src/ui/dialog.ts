@@ -8,6 +8,7 @@
  */
 
 import { ICONS } from './icons.js';
+import { setTooltip } from './tooltip.js';
 
 /** A button in a dialog's footer. */
 export interface DialogAction {
@@ -77,7 +78,7 @@ export class Dialog {
     close.className = 'axys-icon';
     close.innerHTML = ICONS.close;
     close.setAttribute('aria-label', 'Close Dialog');
-    close.title = 'Close Dialog';
+    setTooltip(close, 'Close Dialog');
     close.addEventListener('click', () => {
       this.close();
     });
@@ -98,7 +99,7 @@ export class Dialog {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = action.label;
-        button.title = action.label;
+        setTooltip(button, action.label);
         if (action.kind === 'primary') {
           button.classList.add('is-active');
         } else if (action.kind === 'danger') {
