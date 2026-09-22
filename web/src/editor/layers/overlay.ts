@@ -4,7 +4,7 @@ import type { AppState } from '../../app/store.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER, RULER_HEIGHT } from '../view.js';
-import { noteName, noteNameWithCents } from './grid.js';
+import { noteName, noteNameWithCents } from '../../core/notes.js';
 import { detectedAt } from './pitch.js';
 import { chipWidth, drawChip, READOUT_FONT } from './readout.js';
 import { formatBarBeat, formatClock } from './ruler.js';

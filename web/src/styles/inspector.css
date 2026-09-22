@@ -1,0 +1,226 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The inspector column, its fields and their drag affordances. */
+
+/* Inspector */
+
+.axys-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: var(--axys-space-3);
+  padding: 2px;
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-sunken);
+}
+
+.axys-tab {
+  display: flex;
+  transition:
+    background var(--axys-duration-fast) var(--axys-ease-standard),
+    color var(--axys-duration-fast) var(--axys-ease-standard);
+  flex: 1 1 0;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--axys-radius-sm);
+  background: transparent;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-tab-icon {
+  display: flex;
+}
+
+.axys-tab[aria-selected='true'] {
+  background: var(--axys-surface-raised);
+  color: var(--axys-text);
+}
+
+.axys-tab:disabled {
+  opacity: 0.4;
+}
+
+.axys-tab-pane[hidden] {
+  display: none;
+}
+
+.axys-panel + .axys-panel {
+  margin-top: var(--axys-space-3);
+  padding-top: var(--axys-space-3);
+  border-top: 1px solid var(--axys-border);
+}
+
+.axys-panel > h2 {
+  margin: 0 0 var(--axys-space-2);
+  font-size: var(--axys-size-md);
+  font-weight: var(--axys-weight-strong);
+  letter-spacing: 0.02em;
+  color: var(--axys-text);
+}
+
+.axys-field {
+  display: grid;
+  /* Wide enough for the longest label plus its info icon on one line */
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--axys-space-2);
+  margin-bottom: 6px;
+}
+
+.axys-field > label,
+.axys-readout-label {
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+}
+
+/* A number field is dragged sideways to set it, so the label says so with its cursor */
+
+.is-adjustable {
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+/* While one is being dragged nothing is selectable, so the label is not highlighted behind it */
+
+body.is-adjusting * {
+  user-select: none;
+}
+
+/* The field is dragged and typed, so the two-pixel arrows it would otherwise carry are not drawn */
+
+input.is-adjustable::-webkit-inner-spin-button,
+input.is-adjustable::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+input.is-adjustable {
+  appearance: textfield;
+}
+
+/* A field's explainer hangs off its label, so the tip never covers the control */
+
+.axys-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.axys-info {
+  display: inline-flex;
+  opacity: 0.55;
+}
+
+.axys-label:hover > .axys-info,
+.axys-label:focus-visible > .axys-info {
+  opacity: 1;
+}
+
+.axys-info {
+  --axys-icon: 12px;
+}
+
+.axys-readout {
+  font-family: var(--axys-font-mono);
+}
+
+.axys-control-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--axys-space-2);
+  min-width: 0;
+}
+
+.axys-note-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 2px;
+  margin: var(--axys-space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.axys-note-grid > legend {
+  grid-column: 1 / -1;
+  padding: 0 0 4px;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+}
+
+.axys-note-toggle {
+  position: relative;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 0;
+  padding: 0 8px;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+  background: var(--axys-surface-sunken);
+  border: 1px solid var(--axys-border);
+  border-radius: var(--axys-radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--axys-duration-fast) var(--axys-ease-standard),
+    color var(--axys-duration-fast) var(--axys-ease-standard);
+}
+
+.axys-note-toggle > input[type='checkbox'],
+.axys-note-toggle > input[type='radio'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.axys-note-toggle:hover {
+  border-color: var(--axys-border-strong);
+  color: var(--axys-text);
+}
+
+.axys-note-toggle:has(> input:disabled) {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.axys-note-toggle:has(> input:checked) {
+  color: var(--axys-accent-text);
+  background: var(--axys-accent);
+  border-color: var(--axys-accent);
+  font-weight: var(--axys-weight-strong);
+}
+
+.axys-note-toggle:has(> input:focus-visible) {
+  box-shadow:
+    0 0 0 1px var(--axys-bg),
+    0 0 0 3px var(--axys-focus);
+}
+
+.axys-hint {
+  margin: 4px 0 0;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+}
+
+/* The selection count is a subheading, so the fields start below it rather than against it */
+
+.axys-selection-count {
+  margin-bottom: var(--axys-space-3);
+}
+
+.axys-warning {
+  color: var(--axys-warning);
+}
+
+.axys-error {
+  color: var(--axys-danger);
+}

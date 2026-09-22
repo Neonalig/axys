@@ -193,21 +193,6 @@ impl PitchCurve {
             }
         }
     }
-
-    /// Samples the curve on a uniform grid of `count` points from `start` to `end`.
-    pub fn sample_uniform(&self, start: f64, end: f64, count: usize) -> Vec<f64> {
-        if count == 0 {
-            return Vec::new();
-        }
-        let step = if count > 1 {
-            (end - start) / (count - 1) as f64
-        } else {
-            0.0
-        };
-        (0..count)
-            .map(|i| self.eval(start + step * i as f64).unwrap_or(f64::NAN))
-            .collect()
-    }
 }
 
 /// Monotone cubic Hermite between `a` and `b` using neighbour-aware tangents.

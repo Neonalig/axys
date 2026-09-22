@@ -18,8 +18,6 @@ import initWasm, {
 } from '../wasm/axys_wasm.js';
 import {
   arrayOf,
-  isBarBeat,
-  isBeatGridPoint,
   isBlob,
   isDriftReport,
   isEditState,
@@ -42,8 +40,6 @@ import {
 import type { Guard, HistoryLabels } from './json';
 import { wasmModuleUrl } from './wasm-url';
 import type {
-  BarBeat,
-  BeatGridPoint,
   BitDepth,
   Blob,
   DriftReport,
@@ -483,21 +479,6 @@ export class Session {
       nullable(isDriftReport),
       'drift report',
     );
-  }
-
-  /** Bar lines and beats in a time window, for the ruler and snapping. */
-  beatGrid(from: number, to: number, division: number): BeatGridPoint[] {
-    return this.#read(
-      'Read Grid',
-      () => this.#alive().beatGridJson(from, to, division),
-      arrayOf(isBeatGridPoint),
-      'beat grid',
-    );
-  }
-
-  /** Bar and beat reading at a source time. */
-  barBeat(seconds: number): BarBeat {
-    return this.#read('Read Grid', () => this.#alive().barBeatJson(seconds), isBarBeat, 'bar beat');
   }
 
   /** Snaps a source time to the musical grid at `division`. */

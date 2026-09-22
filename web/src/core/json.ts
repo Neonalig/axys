@@ -17,7 +17,6 @@ import type {
   DriftReport,
   EditOp,
   EditState,
-  EnergyTrack,
   ExportPreview,
   ExportReport,
   F0Params,
@@ -39,7 +38,6 @@ import type {
   PitchFrame,
   PitchTrack,
   PitchTrackArrays,
-  PitchTrackArraysJson,
   Project,
   RenderPlan,
   SampledCurve,
@@ -122,10 +120,6 @@ function isNullableString(value: unknown): value is string | null {
 
 function isNumberArray(value: unknown): value is number[] {
   return Array.isArray(value) && value.every(isNumber);
-}
-
-function isNullableNumberArray(value: unknown): value is (number | null)[] {
-  return Array.isArray(value) && value.every(isNullableNumber);
 }
 
 function isLiteral<T extends string>(allowed: readonly T[], value: unknown): value is T {
@@ -230,30 +224,6 @@ export function isPitchTrack(value: unknown): value is PitchTrack {
   );
 }
 
-/** Accepts the serde form of the flat pitch arrays, in which unvoiced MIDI is null. */
-export function isPitchTrackArraysJson(value: unknown): value is PitchTrackArraysJson {
-  return (
-    isRecord(value) &&
-    isNumberArray(value.times) &&
-    isNullableNumberArray(value.midi) &&
-    isNumberArray(value.confidence) &&
-    isNumberArray(value.rms)
-  );
-}
-
-/**
- * Converts the serde form of the flat pitch arrays into typed arrays, with NaN where the
- * frame is unvoiced.
- */
-export function toPitchTrackArrays(json: PitchTrackArraysJson): PitchTrackArrays {
-  return {
-    times: Float32Array.from(json.times),
-    midi: Float32Array.from(json.midi, (value) => value ?? Number.NaN),
-    confidence: Float32Array.from(json.confidence),
-    rms: Float32Array.from(json.rms),
-  };
-}
-
 /** Flattens a pitch track into parallel arrays, with NaN where the frame is unvoiced. */
 export function pitchTrackToArrays(track: PitchTrack): PitchTrackArrays {
   const frames = track.frames;
@@ -263,19 +233,6 @@ export function pitchTrackToArrays(track: PitchTrack): PitchTrackArrays {
     confidence: Float32Array.from(frames, (frame) => frame.confidence),
     rms: Float32Array.from(frames, (frame) => frame.rms),
   };
-}
-
-/** Accepts an energy track. */
-export function isEnergyTrack(value: unknown): value is EnergyTrack {
-  return (
-    isRecord(value) &&
-    isNumber(value.hopSeconds) &&
-    isNumberArray(value.times) &&
-    isNumberArray(value.rms) &&
-    isNumberArray(value.rmsDb) &&
-    isNumberArray(value.spectralFlux) &&
-    isNumberArray(value.zeroCrossingRate)
-  );
 }
 
 function isF0Params(value: unknown): value is F0Params {

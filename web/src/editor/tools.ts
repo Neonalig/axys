@@ -12,9 +12,9 @@ import type {
   TimelineMap,
   TimingConflict,
 } from '../core/types.js';
-import { noteNameWithCents } from './layers/grid.js';
+import { noteNameWithCents } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
-import { beatGrid } from './view.js';
+import { beatGrid } from '../core/timeline.js';
 
 /** Pointer travel in pixels below which a gesture counts as a click. */
 export const CLICK_SLOP = 3;

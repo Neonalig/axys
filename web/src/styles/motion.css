@@ -1,0 +1,80 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Theme-change easing, every keyframe, and what reduced motion turns off. */
+
+/*
+ * Theme and accent change: the class is on for the length of the change only, because a standing
+ * colour transition on every element would also ease a control's own hover and pressed states.
+ */
+
+html.is-theme-changing,
+html.is-theme-changing * {
+  transition:
+    background-color var(--axys-duration-slow) var(--axys-ease-standard),
+    border-color var(--axys-duration-slow) var(--axys-ease-standard),
+    color var(--axys-duration-slow) var(--axys-ease-standard) !important;
+}
+
+/* Shared enter and exit keyframes, referenced by the chrome that is added and removed */
+
+@keyframes axys-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes axys-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes axys-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes axys-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes axys-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes axys-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes axys-dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}

@@ -7,7 +7,7 @@
  * built once and refreshed from state, and a control the user is editing is left alone.
  */
 
-import { FLAT_NAMES, SHARP_NAMES } from '../editor/layers/grid.js';
+import { noteName } from '../core/notes.js';
 import {
   bindDragAdjust,
   checkboxInput,
@@ -58,24 +58,13 @@ export interface InspectorHooks {
   setCollapsed(on: boolean): void;
 }
 
-/**
- * Pitch-class names in each accidental spelling.
- *
- * @remarks The one spelling for the whole application; {@link noteName} here and the editor's own
- * label both read from it.
- */
-const NOTE_NAMES: Readonly<Record<AccidentalStyle, readonly string[]>> = {
-  sharps: SHARP_NAMES,
-  flats: FLAT_NAMES,
-};
+/** Longest a project name may be, matching the limit the core enforces. */
+const MAX_PROJECT_NAME = 120;
 
 /*
  * Each division carries the note it divides by, set in Bravura. A triplet has no glyph of its own,
  * so it borrows the note it is three of, which is how a score writes one.
  */
-/** Longest a project name may be, matching the limit the core enforces. */
-const MAX_PROJECT_NAME = 120;
-
 const SNAP_DIVISIONS: readonly { value: number; label: string; glyph: MusicGlyph }[] = [
   { value: 1, label: 'Bar', glyph: 'noteWhole' },
   { value: 2, label: 'Minim (Half Note)', glyph: 'noteHalfUp' },
@@ -120,18 +109,6 @@ export function scopeLine(state: AppState): HTMLElement {
       ? 'No selection. Affects whole project'
       : `Affects ${String(count)} selected ${count === 1 ? 'blob' : 'blobs'}.`;
   return line;
-}
-
-/** Note name of a fractional MIDI number, such as `A♯3`. */
-export function noteName(midi: number, style: AccidentalStyle): string {
-  if (!Number.isFinite(midi)) {
-    return '--';
-  }
-  const rounded = Math.round(midi);
-  const pitchClass = ((rounded % 12) + 12) % 12;
-  const octave = Math.floor(rounded / 12) - 1;
-  const name = NOTE_NAMES[style][pitchClass] ?? '?';
-  return `${name}${String(octave)}`;
 }
 
 function readNumber(input: HTMLInputElement, fallback: number): number {

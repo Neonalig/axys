@@ -115,9 +115,7 @@ const DRAG_FINE = 0.1;
  * same modifiers the canvas uses.
  *
  * The pointer is captured for the length of the drag and the cursor is left visible, which is
- * what every design tool does. Pointer lock was tried first and is wrong here: the browser takes
- * the cursor away behind a notice about the page controlling it, and locking releases the pointer
- * capture the drag is tracked by, so the field stops following the hand entirely.
+ * what every design tool does.
  *
  * The drag commits once, on release, so a field dragged across half its range is one undo step.
  */

@@ -24,23 +24,8 @@ import {
 } from './controls/index.js';
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
+import { SHARP_NAMES } from '../core/notes.js';
 import type { EditOp, FormantMode, ScaleSettings } from '../core/types.js';
-
-/** Pitch-class names, in the spelling the toggles are labelled with. */
-const PITCH_CLASSES: readonly string[] = [
-  'C',
-  'C#',
-  'D',
-  'D#',
-  'E',
-  'F',
-  'F#',
-  'G',
-  'G#',
-  'A',
-  'A#',
-  'B',
-];
 
 interface ScalePreset {
   id: string;
@@ -163,7 +148,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
   content.className = 'axys-panel';
 
   const key = selectInput(
-    PITCH_CLASSES.map((name, index) => ({ value: String(index), label: name })),
+    SHARP_NAMES.map((name, index) => ({ value: String(index), label: name })),
   );
   key.value = String(current.root);
   const scale = selectInput([
@@ -201,7 +186,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
     const box = checkboxInput();
     box.checked = current.excluded.includes(pitchClass);
     const caption = document.createElement('span');
-    caption.textContent = PITCH_CLASSES[pitchClass] ?? '?';
+    caption.textContent = SHARP_NAMES[pitchClass] ?? '?';
     wrapper.htmlFor = box.id;
     wrapper.append(box, caption);
     excluded.append(wrapper);

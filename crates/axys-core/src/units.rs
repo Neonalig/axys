@@ -65,16 +65,6 @@ pub fn cents_between(from_hz: f64, to_hz: f64) -> Option<f64> {
     Some(1200.0 * (to_hz / from_hz).log2())
 }
 
-/// Converts a semitone offset to cents.
-pub fn semitones_to_cents(semitones: f64) -> f64 {
-    semitones * 100.0
-}
-
-/// Converts cents to a semitone offset.
-pub fn cents_to_semitones(cents: f64) -> f64 {
-    cents / 100.0
-}
-
 /// Names the nearest chromatic note to a fractional MIDI number.
 ///
 /// Uses scientific pitch notation, so MIDI 60 is `C4`.

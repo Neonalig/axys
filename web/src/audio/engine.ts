@@ -11,6 +11,7 @@
 import workletUrl from './worklet/renderer-worklet.ts?worker&url';
 import type { AppStore } from '../app/store.js';
 import type { MixerSettings, RenderPlan, TimelineMap } from '../core/types.js';
+import { meterAt, ppqOf, tickToSeconds } from '../core/timeline.js';
 import { wasmModuleUrl } from '../core/wasm-url.js';
 import type { EngineMessage, OutputRange, RendererMessage } from './worklet/renderer-worklet.js';
 
@@ -471,7 +472,7 @@ export class AudioEngine {
     if (!timeline) return;
     const grid =
       this.#metronome && this.#duration > 0
-        ? beatGrid(timeline, this.#plan, this.#duration)
+        ? clickTimes(timeline, this.#plan, this.#duration)
         : { times: new Float64Array(0), accents: new Uint8Array(0) };
     this.#send({
       type: 'metronome',
@@ -555,12 +556,12 @@ export function passthroughPlan(sampleRate: number, duration: number): RenderPla
  * moves the click with the audio. The grid is bounded, so a pathological tempo map cannot make
  * an unbounded list.
  */
-export function beatGrid(
+function clickTimes(
   timeline: TimelineMap,
   plan: RenderPlan | null,
   untilSeconds: number,
 ): { times: Float64Array; accents: Uint8Array } {
-  const ppq = Math.min(Math.max(Math.round(timeline.ppq), 1), 32768);
+  const ppq = ppqOf(timeline);
   const times: number[] = [];
   const accents: number[] = [];
 
@@ -569,7 +570,7 @@ export function beatGrid(
   let meter = meterAt(timeline, 0);
   while (times.length < MAX_CLICKS) {
     if (beatInBar === 0) meter = meterAt(timeline, tick);
-    const seconds = tickToSeconds(timeline, ppq, tick);
+    const seconds = tickToSeconds(timeline, tick);
     if (seconds > untilSeconds) break;
     if (seconds >= 0) {
       times.push(toOutputSeconds(plan, seconds));
@@ -583,29 +584,6 @@ export function beatGrid(
   }
 
   return { times: Float64Array.from(times), accents: Uint8Array.from(accents) };
-}
-
-function meterAt(timeline: TimelineMap, tick: number): { numerator: number; denominator: number } {
-  let current = { numerator: 4, denominator: 4 };
-  for (const event of timeline.meter) {
-    if (event.tick > tick) break;
-    current = { numerator: event.numerator, denominator: event.denominator };
-  }
-  return current;
-}
-
-function tickToSeconds(timeline: TimelineMap, ppq: number, tick: number): number {
-  let seconds = timeline.originSeconds;
-  const tempo = timeline.tempo;
-  for (let i = 0; i < tempo.length; i += 1) {
-    const event = tempo[i];
-    if (!event || event.tick >= tick) break;
-    const next = tempo[i + 1];
-    const end = Math.min(next?.tick ?? tick, tick);
-    const micros = Math.min(Math.max(event.microsPerQuarter, 1), 60_000_000);
-    seconds += ((end - event.tick) / ppq) * (micros / 1_000_000);
-  }
-  return seconds;
 }
 
 function toOutputSeconds(plan: RenderPlan | null, source: number): number {

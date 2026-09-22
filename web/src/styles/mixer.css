@@ -1,0 +1,243 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The mixer: a bottom panel of desk strips, opened from the footer. */
+
+/* The mixer: a bottom panel of desk strips, opened from the footer */
+
+.axys-mixer {
+  grid-area: mixer;
+  display: flex;
+  gap: var(--axys-space-2);
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+  padding: var(--axys-space-2) var(--axys-space-3);
+  overflow: hidden auto;
+  border-top: 1px solid var(--axys-border);
+  background: var(--axys-veil);
+  backdrop-filter: var(--axys-blur);
+}
+
+/* Folded to nothing by its row, so the border and the padding go with it */
+
+.axys-mixer.is-collapsed {
+  padding-block: 0;
+  border-top-width: 0;
+}
+
+.axys-mixer-strip {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  width: 92px;
+  padding: 6px;
+  border: 1px solid var(--axys-border);
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-sunken);
+}
+
+/* Only the fader grows; everything else keeps the height it asks for */
+
+.axys-mixer-name,
+.axys-mixer-pan,
+.axys-mixer-pan-readout,
+.axys-mixer-level,
+.axys-mixer-switches {
+  flex: 0 0 auto;
+}
+
+.axys-mixer-name {
+  overflow: hidden;
+  max-width: 100%;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-mixer-pan {
+  width: 100%;
+  min-width: 0;
+}
+
+/* The fader is vertical, which is what a desk looks like and how a level is read at a glance */
+
+.axys-mixer-fader-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: stretch;
+  justify-content: center;
+  min-height: 0;
+}
+
+.axys-mixer-fader {
+  width: 24px;
+  height: 100%;
+  /* The modern spelling, and the one older WebKit and Blink answer to */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  appearance: slider-vertical;
+}
+
+.axys-mixer-switches {
+  display: flex;
+  gap: 4px;
+}
+
+.axys-mixer-switch {
+  width: 26px;
+  min-width: 26px;
+  height: 22px;
+}
+
+.axys-mixer-switch[aria-pressed='true'].is-mute {
+  color: var(--axys-bg);
+  background: var(--axys-warning);
+}
+
+.axys-mixer-switch[aria-pressed='true'].is-solo {
+  color: var(--axys-bg);
+  background: var(--axys-accent);
+}
+
+/*
+ * Tabular figures wherever a number is read or dragged. The sans defaults to proportional lining
+ * figures, so a readout jitters in width while its value changes.
+ */
+
+.axys-status,
+.axys-mixer,
+.axys-readout,
+.axys-zoom-readout,
+.axys-field input[type='number'],
+.axys-note-toggle {
+  font-variant-numeric: tabular-nums;
+}
+
+#app > footer,
+.axys-status {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--axys-space-2);
+  /* Spans every column, so it needs the same leave to be narrower than its content as the bar */
+  min-width: 0;
+  min-height: var(--axys-status-height);
+  padding: var(--axys-space-1) var(--axys-space-3);
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+  background: var(--axys-surface);
+  border-top: 1px solid var(--axys-border);
+}
+
+/*
+ * Compact: one column, so the inspector stacks under the canvas rather than beside it. Every area
+ * the shell places has to be named here, or the grid puts the unnamed ones in implicit tracks of
+ * their own, which is what left a gap under the canvas with the mixer in the corner.
+ */
+
+@media (width <= 900px) {
+  #app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'toolbar'
+      'canvas'
+      'resizer'
+      'inspector'
+      'mixer'
+      'status';
+    grid-template-rows: auto minmax(0, 1fr) auto auto 0 auto;
+  }
+
+  /* There is no column to drag when the panel is a row under the canvas */
+
+  .axys-resizer {
+    display: none;
+  }
+
+  /*
+   * The panels are stacked with the canvas rather than beside it, so between them they may take
+   * at most half the window. The editor is what the window is for.
+   */
+
+  #app > aside,
+  .axys-inspector {
+    max-height: 30dvh;
+    border-left: 0;
+    border-top: 1px solid var(--axys-border);
+  }
+
+  /* The rail is a narrow column; folded in one column the panel keeps its head and loses its body */
+
+  #app.is-inspector-collapsed {
+    --axys-inspector-width: auto;
+  }
+
+  .axys-inspector.is-collapsed {
+    padding: var(--axys-space-2) var(--axys-space-3);
+  }
+
+  .axys-inspector.is-collapsed .axys-inspector-head {
+    justify-content: flex-end;
+  }
+
+  /* Clamped rather than a plain fraction, so a fader stays long enough to be worth dragging */
+
+  #app.is-mixer-open {
+    grid-template-rows:
+      auto minmax(0, 1fr) auto auto
+      clamp(180px, 26dvh, var(--axys-mixer-height)) auto;
+  }
+}
+
+/*
+ * The installed app draws its own titlebar: the toolbar rises into the window controls overlay
+ * and carries the project name. Every browser tab, and any host that does not grant the overlay,
+ * reports a zero-height title area and keeps the ordinary toolbar.
+ */
+
+@media (display-mode: window-controls-overlay) {
+  #app > header,
+  .axys-toolbar {
+    padding-left: max(var(--axys-space-3), env(titlebar-area-x, 0));
+    padding-right: var(--axys-space-3);
+    min-height: max(var(--axys-toolbar-height), env(titlebar-area-height, 0));
+    /* The bar is the drag handle; every control on it opts back out below. */
+    app-region: drag;
+  }
+
+  .axys-toolbar button,
+  .axys-toolbar input,
+  .axys-toolbar .axys-select,
+  .axys-toolbar .axys-title {
+    app-region: no-drag;
+  }
+}
+
+/*
+ * The project's name at the end of the toolbar, and in the titlebar of the installed app. It is
+ * a button, because the name is editable and this is where someone looks for it, but it is drawn
+ * as the title it is until it is reached for.
+ */
+
+.axys-title {
+  justify-content: flex-end;
+  overflow: hidden;
+  max-width: 28ch;
+  padding: 0 var(--axys-space-2);
+  background: transparent;
+  border-color: transparent;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+  font-weight: var(--axys-weight-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-title:hover:not(:disabled) {
+  color: var(--axys-text);
+  background: var(--axys-surface-sunken);
+}

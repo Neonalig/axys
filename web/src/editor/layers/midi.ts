@@ -4,7 +4,7 @@ import type { AppState } from '../../app/store.js';
 import type { Blob, GuideSelection, MidiNote } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
-import { tickToSeconds } from '../view.js';
+import { tickToSeconds } from '../../core/timeline.js';
 import { blobOutputEnd, blobOutputStart } from './blobs.js';
 
 /** Half-height in semitones of a guide note body. */

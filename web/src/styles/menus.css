@@ -1,0 +1,253 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Chrome layered over the editor: the import cover, context menus, the accent swatches and the command palette. */
+
+/* Import: covers the editor while a project is being opened */
+
+.axys-busy {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-2);
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--axys-bg) 82%, transparent);
+}
+
+.axys-busy[hidden] {
+  display: none;
+}
+
+.axys-busy-stage {
+  margin: 0;
+  font-size: var(--axys-size-lg);
+}
+
+.axys-busy-progress {
+  width: min(320px, 60%);
+}
+
+.axys-drop {
+  position: absolute;
+  inset: var(--axys-space-3);
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--axys-accent);
+  border-radius: var(--axys-radius-lg);
+  background: color-mix(in srgb, var(--axys-accent) 10%, transparent);
+  color: var(--axys-text);
+  font-size: var(--axys-size-lg);
+  pointer-events: none;
+}
+
+.axys-drop[hidden] {
+  display: none;
+}
+
+/* Context menus */
+
+.axys-menu {
+  position: fixed;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
+  box-shadow: var(--axys-elevation-2);
+  animation: axys-pop-in var(--axys-duration-fast) var(--axys-ease-enter);
+  /* Placed by its top left corner, so that is the corner it grows out of */
+  transform-origin: top left;
+}
+
+.axys-menu.is-leaving {
+  animation: axys-pop-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
+}
+
+.axys-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--axys-space-2);
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--axys-radius-sm);
+  background: transparent;
+  font-size: var(--axys-size-md);
+  text-align: left;
+}
+
+/* The column is kept even for an entry without an icon, so every label starts at one place */
+
+.axys-menu-icon {
+  display: flex;
+  flex: none;
+  width: 16px;
+  color: var(--axys-text-muted);
+}
+
+.axys-menu-label {
+  flex: 1 1 auto;
+}
+
+.axys-menu-item:hover:not(:disabled) .axys-menu-icon,
+.axys-menu-item:focus-visible .axys-menu-icon {
+  color: inherit;
+}
+
+.axys-menu-item:hover:not(:disabled),
+.axys-menu-item:focus-visible {
+  background: var(--axys-accent);
+  color: var(--axys-accent-text);
+  outline: none;
+}
+
+.axys-menu-key {
+  padding: 0 4px;
+  border: 1px solid var(--axys-border);
+  border-radius: var(--axys-radius-sm);
+  color: var(--axys-text-muted);
+  font-family: var(--axys-font-mono);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-menu-item:hover:not(:disabled) .axys-menu-key,
+.axys-menu-item:focus-visible .axys-menu-key {
+  color: inherit;
+  border-color: currentcolor;
+}
+
+.axys-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--axys-border);
+}
+
+/* The accent swatches, a radio group inside the theme menu */
+
+.axys-accent-row {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: var(--axys-space-1);
+  padding: var(--axys-space-1) var(--axys-space-2) var(--axys-space-2);
+}
+
+.axys-accent {
+  width: 20px;
+  min-width: 0;
+  height: 20px;
+  padding: 0;
+  background: var(--axys-swatch);
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius-pill);
+}
+
+.axys-accent:hover:not(:disabled) {
+  background: var(--axys-swatch);
+  border-color: var(--axys-text);
+}
+
+/* The chosen one carries a ring in the surface it sits on, so it reads without a tick over it */
+
+.axys-accent[aria-checked='true'] {
+  box-shadow:
+    0 0 0 2px var(--axys-surface-raised),
+    0 0 0 3px var(--axys-text);
+}
+
+/* The command palette, and the keyboard cheatsheet beside it */
+
+.axys-palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-2);
+  width: min(560px, 90vw);
+}
+
+.axys-palette-search {
+  width: 100%;
+}
+
+.axys-palette-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 44vh;
+  overflow-y: auto;
+}
+
+.axys-palette-item {
+  display: flex;
+  gap: var(--axys-space-2);
+  align-items: center;
+  justify-content: flex-start;
+  height: 30px;
+  padding: 0 var(--axys-space-2);
+  border: 0;
+  border-radius: var(--axys-radius-sm);
+  background: transparent;
+  text-align: left;
+}
+
+/* The row Enter would run, which is not the focused element: the caret stays in the field */
+
+.axys-palette-item.is-active:not(:disabled) {
+  color: var(--axys-accent-text);
+  background: var(--axys-accent);
+}
+
+.axys-palette-item.is-active:not(:disabled) .axys-menu-icon,
+.axys-palette-item.is-active:not(:disabled) .axys-palette-group,
+.axys-palette-item.is-active:not(:disabled) .axys-menu-key {
+  color: inherit;
+  border-color: currentcolor;
+}
+
+.axys-palette-group {
+  margin-left: auto;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-cheatsheet {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--axys-space-4);
+  width: min(720px, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.axys-cheatsheet-group > h3 {
+  margin: 0 0 var(--axys-space-2);
+  font-size: var(--axys-size-md);
+  font-weight: var(--axys-weight-strong);
+}
+
+.axys-cheatsheet dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--axys-space-1) var(--axys-space-2);
+  margin: 0;
+  align-items: center;
+}
+
+.axys-cheatsheet dt {
+  overflow: hidden;
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-cheatsheet dd {
+  margin: 0;
+  text-align: right;
+}

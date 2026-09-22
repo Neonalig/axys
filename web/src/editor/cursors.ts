@@ -50,13 +50,5 @@ function glyphCursor(icon: IconName, hotspot: Hotspot, fallback: string): string
  */
 export const PEN_CURSOR = glyphCursor('pen', { x: 2, y: 22 }, 'crosshair');
 
-/**
- * The smoothing brush's cursor, centred on what it will smooth.
- *
- * @remarks Smoothing is a command over the selection today rather than a tool, so nothing arms
- * this yet. It is here so the cursor lands with the tool rather than being chosen on the day.
- */
-export const SMOOTH_CURSOR = glyphCursor('smooth', { x: 12, y: 12 }, 'cell');
-
 /** The band a marquee drag draws, while it is being dragged. */
 export const MARQUEE_CURSOR = 'crosshair';

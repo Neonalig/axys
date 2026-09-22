@@ -1,0 +1,87 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The progress bar, the diagnostics list and the unsupported-browser notice. */
+
+/* The one progress bar, determinate and indeterminate */
+
+.axys-progress {
+  overflow: hidden;
+  height: 4px;
+  border-radius: var(--axys-radius-sm);
+  background: var(--axys-border);
+}
+
+.axys-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--axys-accent);
+}
+
+/*
+ * A stage that reports no figure marches a short fill from one edge to the other and starts
+ * again, the way the platform draws work of unknown length. A fill that bounces back reads as
+ * something going wrong and being retried.
+ */
+
+.axys-progress.is-indeterminate > .axys-progress-fill {
+  width: 25%;
+  animation: axys-march 1.1s linear infinite;
+}
+
+@keyframes axys-march {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(400%);
+  }
+}
+
+/* Diagnostics and capability lists */
+
+/* The licence offer reads as its own section, so it is spaced like one */
+
+.axys-blurb {
+  margin-top: var(--axys-space-3);
+}
+
+.axys-caps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--axys-font-mono);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-caps > li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--axys-space-2);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--axys-border);
+}
+
+.axys-caps .is-ok {
+  color: var(--axys-success);
+}
+
+.axys-caps .is-missing {
+  color: var(--axys-warning);
+}
+
+.axys-caps .is-blocking {
+  color: var(--axys-danger);
+}
+
+/* Unsupported-browser state, shown before the shell exists */
+
+.axys-blocker {
+  display: grid;
+  place-content: center;
+  gap: var(--axys-space-3);
+  height: 100dvh;
+  padding: 24px;
+  text-align: left;
+}

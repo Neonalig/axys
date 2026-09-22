@@ -13,12 +13,11 @@ import { selectionSpan } from './selection.js';
 import type { AppState, AppStore } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
 import type { Blob, EditOp, ExportPreview, MappingProposal, TimelineMap } from '../core/types.js';
-import { probeCapabilities } from '../capabilities.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
 import { showAlignGuide } from '../ui/align-guide.js';
-import { showDiagnostics } from '../ui/diagnostics.js';
+import { openDiagnostics } from '../ui/diagnostics.js';
 import { showCorrection, showVoiceCharacter } from '../ui/operations.js';
 import { showExportDialog } from '../ui/export-dialog.js';
 import type { ExportChoice, ExportRange } from '../ui/export-dialog.js';
@@ -841,8 +840,8 @@ export function buildCommands(): Command[] {
       group: 'Help',
       shortcut: 'F1',
       enabled: () => true,
-      run: async (ctx) => {
-        showDiagnostics({ capabilities: await probeCapabilities(), engine: ctx.audio.report });
+      run: async () => {
+        await openDiagnostics();
       },
     },
   ];

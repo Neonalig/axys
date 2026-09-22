@@ -19,7 +19,7 @@ import {
   sourceToOutput,
 } from './layers/blobs.js';
 import { MARQUEE_CURSOR } from './cursors.js';
-import { noteNameWithCents } from './layers/grid.js';
+import { noteNameWithCents } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
 import type { EditorRenderer } from './renderer.js';
 import type {
@@ -591,12 +591,6 @@ export class EditorController {
     }
   };
 
-  /**
-   * Opens the context menu for whatever was right-clicked.
-   *
-   * @remarks A right-click on a blob outside the selection selects it first, so the menu always
-   * acts on what was clicked rather than on an earlier selection the user has moved past.
-   */
   /**
    * Clears the loop when the ruler is double-clicked.
    *

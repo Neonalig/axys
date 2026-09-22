@@ -10,6 +10,7 @@
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import { probeCapabilities } from '../capabilities.js';
+import { coreLoadReport } from '../core/wasm.js';
 import { Dialog } from './dialog.js';
 import { setTooltip } from './tooltip.js';
 
@@ -177,6 +178,30 @@ export function renderSourceCode(): HTMLElement {
   return section;
 }
 
+/**
+ * How the WebAssembly core was compiled.
+ *
+ * @remarks A host that serves the module as anything but `application/wasm` rejects streaming
+ * compilation, and the fallback reason names that so the host can be corrected.
+ */
+function renderCoreLoad(): HTMLElement {
+  const list = document.createElement('ul');
+  list.className = 'axys-caps';
+  const report = coreLoadReport();
+  if (!report) {
+    definition(list, 'Core Module', 'Not loaded');
+    return list;
+  }
+  definition(list, 'Core Version', report.version);
+  definition(list, 'Compilation', report.path === 'streaming' ? 'Streaming' : 'Array buffer');
+  definition(list, 'Served As', report.contentType === '' ? 'No content type' : report.contentType);
+  definition(list, 'Load Time', `${String(Math.round(report.milliseconds))} ms`);
+  if (report.fallbackReason !== null) {
+    definition(list, 'Fallback Reason', report.fallbackReason);
+  }
+  return list;
+}
+
 /** The whole diagnostics report as one element. */
 export function renderDiagnostics(input: DiagnosticsInput): HTMLElement {
   const container = document.createElement('div');
@@ -186,6 +211,8 @@ export function renderDiagnostics(input: DiagnosticsInput): HTMLElement {
     renderCapabilities(input.capabilities),
     heading('Playback'),
     renderEngineReport(input.engine),
+    heading('Core Module'),
+    renderCoreLoad(),
     heading('Source Code'),
     renderSourceCode(),
   );
@@ -221,9 +248,4 @@ export function noteEngineReport(report: EngineReport | null): void {
 /** Records the capability probe, so the diagnostics dialog need not probe again. */
 export function noteCapabilities(capabilities: readonly Capability[]): void {
   latestCapabilities = capabilities;
-}
-
-/** Opens the Source Code entry in its own panel. */
-export function showSourceCode(): Dialog {
-  return Dialog.open({ title: 'Source Code', icon: 'sourceCode', content: renderSourceCode() });
 }

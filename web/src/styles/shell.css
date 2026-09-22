@@ -1,0 +1,250 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The shell grid, the inspector divider, the canvas area, the scrollbars and the footer. */
+
+/* Shell */
+
+/*
+ * Both panels fold by their own grid track: the inspector narrows its column, the mixer collapses
+ * its row. The track owns the size and the panel fills it, so the two folds are one idea and
+ * neither panel has to know it is in a grid.
+ */
+
+#app {
+  display: grid;
+  transition:
+    grid-template-columns var(--axys-duration-base) var(--axys-ease-standard),
+    grid-template-rows var(--axys-duration-base) var(--axys-ease-standard);
+  grid-template-columns: minmax(0, 1fr) auto var(--axys-inspector-width);
+  grid-template-rows: auto minmax(0, 1fr) 0 auto;
+  grid-template-areas:
+    'toolbar toolbar toolbar'
+    'canvas resizer inspector'
+    'mixer mixer mixer'
+    'status status status';
+  height: 100dvh;
+  width: 100%;
+}
+
+/* The divider between the canvas and the inspector, dragged to set the column width */
+
+.axys-resizer {
+  grid-area: resizer;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--axys-surface);
+  border-left: 1px solid var(--axys-border);
+  touch-action: none;
+}
+
+.axys-resizer[hidden] {
+  display: none;
+}
+
+.axys-resizer:hover,
+.axys-resizer:focus-visible,
+.axys-resizer.is-dragging {
+  background: var(--axys-accent);
+  outline: none;
+}
+
+#app > header,
+.axys-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: var(--axys-space-2);
+  /* Wraps by whole group, because a group split across a line break reads as two sets. Past the
+     shell's line budget the groups that do not fit fold into the overflow menu instead. */
+  flex-wrap: wrap;
+  align-content: center;
+  /* A grid item spanning every column sizes the grid to its own content unless it is told it may
+     be narrower, which is what pushed the bar off the window rather than wrapping it. */
+  min-width: 0;
+  min-height: var(--axys-toolbar-height);
+  transition: min-height var(--axys-duration-base) var(--axys-ease-standard);
+  padding: var(--axys-space-1) var(--axys-space-3);
+  background: var(--axys-surface);
+  border-bottom: 1px solid var(--axys-border);
+}
+
+/*
+ * A ground behind the canvas, so translucent chrome has something to sample past the end of a
+ * project. Over a flat sunken surface a blurred panel is only a slightly different flat surface,
+ * which reads as a mistake rather than as a material.
+ */
+
+.axys-canvas-area::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      120% 80% at 50% 0%,
+      color-mix(in srgb, var(--axys-accent) 7%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      90% 70% at 15% 100%,
+      color-mix(in srgb, var(--axys-surface-raised) 60%, transparent),
+      transparent 65%
+    );
+  pointer-events: none;
+}
+
+:root[data-theme='contrast'] .axys-canvas-area::before {
+  display: none;
+}
+
+#app > main,
+.axys-canvas-area {
+  grid-area: canvas;
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) var(--axys-scrollbar);
+  grid-template-columns: minmax(0, 1fr) var(--axys-scrollbar);
+  min-width: 0;
+  min-height: 0;
+  background: var(--axys-surface-sunken);
+  overflow: hidden;
+}
+
+#app > main > canvas,
+.axys-canvas {
+  display: block;
+  grid-row: 1;
+  grid-column: 1;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+/* Scrollbars: the canvas has no scroll box of its own, so these are drawn and driven by hand */
+
+.axys-scrollbar {
+  position: relative;
+  background: var(--axys-surface-sunken);
+  touch-action: none;
+}
+
+.axys-scrollbar[hidden] {
+  visibility: hidden;
+}
+
+.axys-scrollbar-horizontal {
+  grid-row: 2;
+  grid-column: 1;
+  border-top: 1px solid var(--axys-border);
+}
+
+.axys-scrollbar-vertical {
+  grid-row: 1;
+  grid-column: 2;
+  border-left: 1px solid var(--axys-border);
+}
+
+.axys-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: var(--axys-radius-pill);
+  background: var(--axys-border-strong);
+}
+
+.axys-scrollbar-horizontal .axys-scrollbar-thumb {
+  top: 3px;
+  height: calc(var(--axys-scrollbar) - 7px);
+}
+
+.axys-scrollbar-vertical .axys-scrollbar-thumb {
+  left: 3px;
+  width: calc(var(--axys-scrollbar) - 7px);
+}
+
+.axys-scrollbar:hover .axys-scrollbar-thumb {
+  background: var(--axys-text-muted);
+}
+
+/* Zoom: lives in the footer, where it is out of the way of the editing controls */
+
+.axys-zoom {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--axys-space-1);
+}
+
+.axys-zoom-slider {
+  width: 110px;
+  accent-color: var(--axys-accent);
+}
+
+.axys-zoom-readout {
+  width: 68px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--axys-border);
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-sunken);
+  color: var(--axys-text);
+  font-family: var(--axys-font-mono);
+  font-size: var(--axys-size-sm);
+  text-align: right;
+}
+
+/* The footer's controls are shorter than the toolbar's, but they take their names the same way */
+
+.axys-zoom .axys-icon {
+  width: var(--axys-control-height);
+  height: 22px;
+  min-height: 0;
+}
+
+#app > aside,
+.axys-inspector {
+  grid-area: inspector;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--axys-space-3);
+  background: var(--axys-veil);
+  backdrop-filter: var(--axys-blur);
+}
+
+#app.is-mixer-open {
+  grid-template-rows: auto minmax(0, 1fr) var(--axys-mixer-height) auto;
+}
+
+/* Folding the inspector away: the column narrows to a rail carrying the control that opens it */
+
+#app.is-inspector-collapsed {
+  --axys-inspector-width: var(--axys-inspector-rail);
+}
+
+.axys-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: var(--axys-space-2);
+  margin-bottom: var(--axys-space-3);
+}
+
+.axys-inspector-head > .axys-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.axys-inspector.is-collapsed {
+  padding: var(--axys-space-3) 0;
+  overflow: hidden;
+}
+
+.axys-inspector.is-collapsed .axys-tabs,
+.axys-inspector.is-collapsed .axys-tab-pane {
+  display: none;
+}
+
+.axys-inspector.is-collapsed .axys-inspector-head {
+  justify-content: center;
+  margin-bottom: 0;
+}

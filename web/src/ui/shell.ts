@@ -17,7 +17,7 @@ import {
 } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition } from '../editor/tools.js';
-import { barBeatAt, bpmAt, secondsToTick } from '../editor/view.js';
+import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
 import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';

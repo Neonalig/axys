@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { FollowMode } from '../app/store.js';
-import type {
-  BarBeat,
-  BeatGridPoint,
-  MeterEvent,
-  TempoEvent,
-  TimelineMap,
-  ViewState,
-} from '../core/types.js';
+import type { ViewState } from '../core/types.js';
 
 /** Height in CSS pixels of the timeline ruler band across the top of the canvas. */
 export const RULER_HEIGHT = 28;
@@ -30,11 +23,14 @@ export const MAX_PITCH_RANGE = 96;
 
 const MIN_MIDI = 0;
 const MAX_MIDI = 127;
-const DEFAULT_MICROS_PER_QUARTER = 500_000;
-const MAX_GRID_POINTS = 4096;
 
 function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
+}
+
+/** Device pixels per CSS pixel, or 1 where there is no display to ask. */
+export function displayRatio(): number {
+  return Math.max(1, globalThis.devicePixelRatio || 1);
 }
 
 /**
@@ -44,11 +40,6 @@ function clamp(value: number, low: number, high: number): number {
  * adopt rather than mutating this instance. Time occupies the full canvas width; pitch occupies
  * the canvas below the ruler band.
  */
-/** Device pixels per CSS pixel, or 1 where there is no display to ask. */
-export function displayRatio(): number {
-  return Math.max(1, globalThis.devicePixelRatio || 1);
-}
-
 export class Viewport {
   readonly width: number;
   readonly height: number;
@@ -261,212 +252,4 @@ export function fitView(
     visibleEnd: centre + span / 2,
   };
   return withPitchWindow(framed, (lowMidi + highMidi) / 2 - range / 2, range);
-}
-
-/** Tempo in force at a tick. */
-export function tempoAt(timeline: TimelineMap, tick: number): TempoEvent {
-  let current: TempoEvent = { tick: 0, microsPerQuarter: DEFAULT_MICROS_PER_QUARTER };
-  for (const event of timeline.tempo) {
-    if (event.tick > tick && event.tick > 0) {
-      break;
-    }
-    current = event;
-  }
-  return current;
-}
-
-/** Meter in force at a tick. */
-export function meterAt(timeline: TimelineMap, tick: number): MeterEvent {
-  let current: MeterEvent = { tick: 0, numerator: 4, denominator: 4 };
-  for (const event of timeline.meter) {
-    if (event.tick > tick && event.tick > 0) {
-      break;
-    }
-    current = event;
-  }
-  return current;
-}
-
-/** Tempo in beats per minute at a tick. */
-export function bpmAt(timeline: TimelineMap, tick: number): number {
-  return 60_000_000 / Math.max(1, tempoAt(timeline, tick).microsPerQuarter);
-}
-
-function musicalSeconds(timeline: TimelineMap, tick: number): number {
-  const ppq = timeline.ppq > 0 ? timeline.ppq : 480;
-  let seconds = 0;
-  let cursor = 0;
-  let micros = DEFAULT_MICROS_PER_QUARTER;
-  for (const event of timeline.tempo) {
-    if (event.tick >= tick && event.tick > 0) {
-      break;
-    }
-    const at = Math.max(event.tick, 0);
-    if (at > cursor) {
-      seconds += ((at - cursor) / ppq) * (micros / 1e6);
-      cursor = at;
-    }
-    micros = event.microsPerQuarter;
-  }
-  return seconds + ((tick - cursor) / ppq) * (micros / 1e6);
-}
-
-function musicalTick(timeline: TimelineMap, seconds: number): number {
-  const ppq = timeline.ppq > 0 ? timeline.ppq : 480;
-  let elapsed = 0;
-  let cursor = 0;
-  let micros = DEFAULT_MICROS_PER_QUARTER;
-  for (const event of timeline.tempo) {
-    if (event.tick > cursor) {
-      const span = ((event.tick - cursor) / ppq) * (micros / 1e6);
-      if (elapsed + span > seconds) {
-        return cursor + (((seconds - elapsed) * 1e6) / micros) * ppq;
-      }
-      elapsed += span;
-      cursor = event.tick;
-    }
-    micros = event.microsPerQuarter;
-  }
-  return cursor + (((seconds - elapsed) * 1e6) / micros) * ppq;
-}
-
-/** Source seconds of a musical tick, including the timeline origin. */
-export function tickToSeconds(timeline: TimelineMap, tick: number): number {
-  return timeline.originSeconds + musicalSeconds(timeline, tick);
-}
-
-/** Musical tick at a source time. */
-export function secondsToTick(timeline: TimelineMap, seconds: number): number {
-  return musicalTick(timeline, seconds - timeline.originSeconds);
-}
-
-interface MeterSegment {
-  anchorTick: number;
-  endTick: number;
-  bar: number;
-  barTicks: number;
-  beatTicks: number;
-  numerator: number;
-  denominator: number;
-}
-
-function meterSegments(timeline: TimelineMap): MeterSegment[] {
-  const ppq = timeline.ppq > 0 ? timeline.ppq : 480;
-  const events =
-    timeline.meter.length > 0 ? timeline.meter : [{ tick: 0, numerator: 4, denominator: 4 }];
-  const segments: MeterSegment[] = [];
-  let bar = 1;
-  for (let i = 0; i < events.length; i += 1) {
-    const event = events[i];
-    if (event === undefined) {
-      continue;
-    }
-    const numerator = Math.max(1, event.numerator);
-    const denominator = Math.max(1, event.denominator);
-    const beatTicks = (ppq * 4) / denominator;
-    const barTicks = beatTicks * numerator;
-    const anchorTick = Math.max(0, event.tick);
-    const next = events[i + 1];
-    const endTick = next === undefined ? Number.POSITIVE_INFINITY : Math.max(anchorTick, next.tick);
-    segments.push({ anchorTick, endTick, bar, barTicks, beatTicks, numerator, denominator });
-    if (Number.isFinite(endTick)) {
-      bar += Math.ceil((endTick - anchorTick) / barTicks);
-    }
-  }
-  return segments;
-}
-
-function segmentAt(segments: MeterSegment[], tick: number): MeterSegment {
-  let current = segments[0] ?? {
-    anchorTick: 0,
-    endTick: Number.POSITIVE_INFINITY,
-    bar: 1,
-    barTicks: 1920,
-    beatTicks: 480,
-    numerator: 4,
-    denominator: 4,
-  };
-  for (const segment of segments) {
-    if (segment.anchorTick > tick) {
-      break;
-    }
-    current = segment;
-  }
-  return current;
-}
-
-/** Bar and beat reading at a source time. */
-export function barBeatAt(timeline: TimelineMap, seconds: number): BarBeat {
-  const segments = meterSegments(timeline);
-  const tick = secondsToTick(timeline, seconds);
-  const segment = segmentAt(segments, tick);
-  const local = tick - segment.anchorTick;
-  const bars = Math.floor(local / segment.barTicks);
-  const withinBar = local - bars * segment.barTicks;
-  return {
-    bar: segment.bar + bars,
-    beat: withinBar / segment.beatTicks + 1,
-    beatsInBar: segment.numerator,
-    beatUnit: segment.denominator,
-  };
-}
-
-/**
- * Bar lines and beat subdivisions covering a time window.
- *
- * @remarks `division` counts subdivisions per beat, so 1 yields beats and 2 yields eighths of a
- * quarter-note beat. The result is capped so an extreme zoom-out cannot stall a frame.
- */
-export function beatGrid(
-  timeline: TimelineMap,
-  from: number,
-  to: number,
-  division: number,
-): BeatGridPoint[] {
-  const points: BeatGridPoint[] = [];
-  if (!(to > from)) {
-    return points;
-  }
-  const steps = Math.max(1, Math.floor(division));
-  const segments = meterSegments(timeline);
-  const fromTick = secondsToTick(timeline, from);
-  const toTick = secondsToTick(timeline, to);
-  for (let i = 0; i < segments.length; i += 1) {
-    const segment = segments[i];
-    if (segment === undefined) {
-      continue;
-    }
-    const lower = i === 0 ? Number.NEGATIVE_INFINITY : segment.anchorTick;
-    const upper = segment.endTick;
-    if (upper <= fromTick || lower >= toTick) {
-      continue;
-    }
-    const step = segment.beatTicks / steps;
-    const first = Math.ceil((Math.max(fromTick, lower) - segment.anchorTick) / step);
-    const bound = Number.isFinite(upper) ? Math.min(toTick, upper - 1e-9) : toTick;
-    const last = Math.floor((bound - segment.anchorTick) / step);
-    for (let k = first; k <= last; k += 1) {
-      const tick = segment.anchorTick + k * step;
-      const local = tick - segment.anchorTick;
-      const bars = Math.floor(local / segment.barTicks);
-      const withinBar = local - bars * segment.barTicks;
-      points.push({
-        seconds: tickToSeconds(timeline, tick),
-        tick,
-        bar: segment.bar + bars,
-        beat: withinBar / segment.beatTicks + 1,
-        isBarLine: Math.abs(withinBar) < 1e-6,
-        isBeat: Math.abs(withinBar % segment.beatTicks) < 1e-6,
-      });
-      if (points.length >= MAX_GRID_POINTS) {
-        return points;
-      }
-    }
-  }
-  return points;
-}
-
-/** Whether a timeline carries more than the default single tempo and meter. */
-export function hasMusicalDetail(timeline: TimelineMap): boolean {
-  return timeline.tempo.length > 1 || timeline.meter.length > 1;
 }

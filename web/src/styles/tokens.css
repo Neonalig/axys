@@ -1,0 +1,198 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Shipped faces, the design tokens every other file reads, and the reset. */
+
+/*
+ * The two shipped faces, Latin upright only, one variable file each across the whole weight axis.
+ * A variable file is smaller here than the three static weights it replaces and gives the axis
+ * in between for free. No italics and no `latin-ext` until localisation lands.
+ *
+ * `swap` rather than `block`: the shell paints before the WebAssembly core is ready, and holding
+ * the text back for a font would put a blank toolbar in front of that.
+ */
+
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Atkinson Hyperlegible Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2') format('woff2');
+}
+
+/*
+ * Bravura, subset to the accidentals, note durations, rests, dotted values, time signature digits
+ * and metronome marks. No general icon pack carries these.
+ */
+
+@font-face {
+  font-family: Bravura;
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('../fonts/bravura-subset.woff2') format('woff2');
+}
+
+/*
+ * App shell layout and control styling. Every colour comes from a custom property written by
+ * ui/theme.ts; this file declares no palette of its own.
+ */
+
+:root {
+  /* Typeface: the two shipped faces first, the platform's own as the fallback */
+  --axys-font: 'Atkinson Hyperlegible Next', system-ui, 'Segoe UI', roboto, sans-serif;
+  --axys-font-mono:
+    'Atkinson Hyperlegible Mono', ui-monospace, 'Cascadia Mono', consolas, monospace;
+
+  /* Type size */
+  --axys-size-sm: 12px;
+  --axys-size-md: 13px;
+  --axys-size-lg: 16px;
+
+  /* Weight */
+  --axys-weight-body: 400;
+  --axys-weight-control: 500;
+  --axys-weight-strong: 600;
+
+  /* Spacing, 4px base */
+  --axys-space-1: 4px;
+  --axys-space-2: 8px;
+  --axys-space-3: 12px;
+  --axys-space-4: 16px;
+  --axys-space-6: 24px;
+
+  /* Radius */
+  --axys-radius-sm: 4px;
+  --axys-radius: 6px;
+  --axys-radius-lg: 10px;
+  --axys-radius-pill: 999px;
+
+  /* Elevation, drawn in the theme's own shadow colour */
+  --axys-elevation-1: 0 1px 2px var(--axys-shadow);
+  --axys-elevation-2: 0 4px 12px var(--axys-shadow);
+  --axys-elevation-3: 0 12px 32px var(--axys-shadow);
+
+  /* Motion */
+  --axys-duration-fast: 90ms;
+  --axys-duration-base: 150ms;
+  --axys-duration-slow: 240ms;
+  --axys-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --axys-ease-enter: cubic-bezier(0, 0, 0, 1);
+  --axys-ease-exit: cubic-bezier(0.3, 0, 1, 1);
+
+  /* Chrome metrics */
+  --axys-control-height: 28px;
+  --axys-inspector-width: 344px;
+  --axys-inspector-rail: 34px;
+  --axys-toolbar-height: 44px;
+  --axys-status-height: 26px;
+  --axys-mixer-height: 248px;
+  --axys-scrollbar: 12px;
+
+  /*
+   * Translucency of chrome floating over the canvas. Real Mica is a DWM system backdrop for
+   * native windows: it is not exposed to web apps, and `backdrop-filter` samples only what is
+   * inside the page, never the desktop behind it. This is the part of Mica Alt that is actually
+   * available, which is panels that take colour from the editor underneath them.
+   */
+  --axys-surface-alpha: 72%;
+  --axys-blur: blur(20px) saturate(1.4);
+  --axys-veil: color-mix(in srgb, var(--axys-surface) var(--axys-surface-alpha), transparent);
+  --axys-veil-raised: color-mix(
+    in srgb,
+    var(--axys-surface-raised) var(--axys-surface-alpha),
+    transparent
+  );
+}
+
+/* Light paints on a brighter ground, so it needs a little more of the surface to stay legible */
+
+:root[data-theme='light'] {
+  --axys-surface-alpha: 78%;
+}
+
+/*
+ * High Contrast opts out: its promise is a fixed contrast floor, and anything showing through
+ * would break it. So does a browser with no `backdrop-filter`, where the blur would simply be a
+ * thinner panel.
+ */
+
+:root[data-theme='contrast'] {
+  --axys-veil: var(--axys-surface);
+  --axys-veil-raised: var(--axys-surface-raised);
+  --axys-blur: none;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --axys-veil: var(--axys-surface);
+    --axys-veil-raised: var(--axys-surface-raised);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/*
+ * `hidden` means hidden. Every `display` this file sets would otherwise outrank the user agent's
+ * own `[hidden]` rule, which is what left an empty overflow button on the toolbar.
+ */
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--axys-bg, #0e1116);
+  color: var(--axys-text, #e6edf3);
+  font-family: var(--axys-font);
+  font-size: var(--axys-size-md);
+  line-height: 1.4;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * A ring rather than an outline: `box-shadow` follows whatever radius the element already has,
+ * so no rule has to force one radius onto everything that can take focus. The inner band of `bg`
+ * keeps the ring legible against a control of any colour.
+ */
+
+:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--axys-bg),
+    0 0 0 3px var(--axys-focus);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.axys-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

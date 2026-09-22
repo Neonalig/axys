@@ -1,0 +1,246 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The empty canvas, tooltips, toasts and draggable panels. */
+
+/* The empty canvas: how to start, before anything has been imported */
+
+.axys-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-3);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.axys-empty[hidden] {
+  display: none;
+}
+
+.axys-empty > h2 {
+  margin: 0;
+  font-size: var(--axys-size-lg);
+  font-weight: var(--axys-weight-strong);
+}
+
+.axys-empty > .axys-hint {
+  margin: 0;
+}
+
+/* The heading and the hint are read, not pressed, so only the buttons take the pointer back */
+
+.axys-empty .axys-group {
+  pointer-events: auto;
+}
+
+/* Tooltips: drawn by the page, so they appear on our delay and without window focus */
+
+.axys-tooltip {
+  position: fixed;
+  z-index: 50;
+  max-width: 280px;
+  /* A rich tooltip is a title line and one supplementary line, so its newline is honoured */
+  white-space: pre-line;
+  padding: 4px 8px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
+  box-shadow: var(--axys-elevation-2);
+  color: var(--axys-text);
+  font-size: var(--axys-size-sm);
+  line-height: 1.35;
+  pointer-events: none;
+  animation: axys-fade-in var(--axys-duration-fast) var(--axys-ease-standard);
+}
+
+.axys-tooltip.is-leaving {
+  animation: axys-fade-out var(--axys-duration-fast) var(--axys-ease-standard) forwards;
+}
+
+.axys-tooltip[hidden] {
+  display: none;
+}
+
+/* Toasts: fixed layer, so stacking never reflows the shell */
+
+.axys-toast-host {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--axys-space-2);
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.axys-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--axys-space-2);
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
+  color: var(--axys-text);
+  border: 1px solid var(--axys-border-strong);
+  border-left: 3px solid var(--axys-accent);
+  border-radius: var(--axys-radius);
+  box-shadow: var(--axys-elevation-3);
+  pointer-events: auto;
+  animation: axys-toast-in var(--axys-duration-base) var(--axys-ease-enter);
+}
+
+.axys-toast.is-warn {
+  border-left-color: var(--axys-warning);
+}
+
+.axys-toast.is-error {
+  border-left-color: var(--axys-danger);
+}
+
+.axys-toast > button {
+  margin-left: auto;
+  height: 20px;
+  min-width: 20px;
+  width: 20px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+}
+
+.axys-toast.is-leaving {
+  animation: axys-toast-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
+}
+
+@keyframes axys-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Panels: draggable, and blocking only when what they ask has to be answered first */
+
+.axys-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: rgb(0 0 0 / 50%);
+  animation: axys-fade-in var(--axys-duration-base) var(--axys-ease-enter);
+}
+
+.axys-backdrop.is-leaving {
+  /* Dismissed the moment it is asked to go, whatever its fade still has left to play */
+  pointer-events: none;
+  animation: axys-fade-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
+}
+
+/*
+ * Positioned in pixels rather than centred with a translate. A panel is dragged, and a transform
+ * that carries half the positioning cannot be animated without fighting the drag: the entry
+ * keyframe would throw a dragged panel back to the middle before easing it home again.
+ */
+
+.axys-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: min(480px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: 80dvh;
+  padding: var(--axys-space-4);
+  color: var(--axys-text);
+  background: var(--axys-veil-raised);
+  backdrop-filter: var(--axys-blur);
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius-lg);
+  box-shadow: var(--axys-elevation-3);
+}
+
+/*
+ * The entry runs from its own class, removed once it has played, so nothing else the panel does
+ * can restart it. Growing from the panel's own centre, which is where it appears, rather than
+ * from a corner.
+ */
+
+.axys-dialog.is-entering {
+  transform-origin: center;
+  animation: axys-dialog-in var(--axys-duration-base) var(--axys-ease-enter);
+}
+
+/* Leaving the way it arrived, shrinking back into its own centre rather than blinking away */
+
+.axys-dialog.is-leaving {
+  pointer-events: none;
+  transform-origin: center;
+  animation: axys-dialog-out var(--axys-duration-fast) var(--axys-ease-exit) forwards;
+}
+
+.axys-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.axys-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: var(--axys-space-2);
+  margin-bottom: var(--axys-space-3);
+  cursor: grab;
+  user-select: none;
+}
+
+/* The grip: dots in the gap beside the title, saying the panel is a thing you can move */
+
+.axys-dialog-grip {
+  align-self: center;
+  min-width: 32px;
+  height: 12px;
+  margin: 0 var(--axys-space-2);
+  cursor: grab;
+  background-image: radial-gradient(var(--axys-border-strong) 1px, transparent 1px);
+  background-size: 4px 4px;
+  opacity: 0.85;
+}
+
+.axys-dialog:hover .axys-dialog-grip,
+.axys-dialog.is-dragging .axys-dialog-grip {
+  opacity: 1;
+}
+
+.axys-dialog.is-dragging .axys-dialog-head {
+  cursor: grabbing;
+}
+
+.axys-dialog-icon {
+  display: flex;
+  color: var(--axys-text-muted);
+}
+
+.axys-dialog-head > h2 {
+  margin: 0;
+  font-size: var(--axys-size-lg);
+}
+
+.axys-dialog-actions {
+  justify-content: flex-end;
+  margin-top: var(--axys-space-3);
+  padding-top: var(--axys-space-3);
+  border-top: 1px solid var(--axys-border);
+}

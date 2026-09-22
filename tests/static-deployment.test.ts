@@ -178,9 +178,13 @@ describe('static deployment', () => {
     const listed = JSON.parse(worker.match(/=\s*(\[[^\]]*\])/)?.[1] ?? '[]') as string[];
     expect(listed.length).toBeGreaterThan(0);
     // One list in one cache filled by one addAll. A cache holding new bindings and an old core
-    // is a broken editor, so neither may be precached without the other.
+    // is a broken editor, so neither may be precached without the other. The bindings are a static
+    // import of the entry and of each worker, so they ride in those chunks rather than in one of
+    // their own.
     expect(listed.some((file) => file.endsWith('.wasm'))).toBe(true);
-    expect(listed.some((file) => /axys_wasm-.*\.js$/.test(file))).toBe(true);
+    expect(listed.some((file) => /assets\/index-.*\.js$/.test(file))).toBe(true);
+    expect(listed.some((file) => /assets\/analysis\.worker-.*\.js$/.test(file))).toBe(true);
+    expect(listed.some((file) => /assets\/render\.worker-.*\.js$/.test(file))).toBe(true);
     expect(listed).toContain('index.html');
     expect(listed).toContain('manifest.webmanifest');
     expect(listed).not.toContain('_headers');

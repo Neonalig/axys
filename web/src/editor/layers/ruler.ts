@@ -4,14 +4,8 @@ import type { AppState } from '../../app/store.js';
 import type { TimelineMap } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
-import {
-  barBeatAt,
-  beatGrid,
-  bpmAt,
-  PITCH_LABEL_GUTTER,
-  RULER_HEIGHT,
-  tickToSeconds,
-} from '../view.js';
+import { barBeatAt, beatGrid, bpmAt, tickToSeconds } from '../../core/timeline.js';
+import { PITCH_LABEL_GUTTER, RULER_HEIGHT } from '../view.js';
 
 const SECOND_STEPS = [
   0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600,

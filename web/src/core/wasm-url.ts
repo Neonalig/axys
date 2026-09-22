@@ -9,12 +9,3 @@
 export function wasmModuleUrl(): URL {
   return new URL('../wasm/axys_wasm_bg.wasm', import.meta.url);
 }
-
-/**
- * Absolute URL of the generated JavaScript bindings beside the core module.
- *
- * @remarks For contexts that import the bindings dynamically rather than statically.
- */
-export function wasmBindingsUrl(): URL {
-  return new URL('../wasm/axys_wasm.js', import.meta.url);
-}

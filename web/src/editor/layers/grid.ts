@@ -1,74 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../../app/store.js';
+import { isBlackKey, noteName, pitchClass } from '../../core/notes.js';
 import type { AccidentalStyle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
-
-/*
- * The Unicode musical symbols rather than an ASCII hash and a letter b, and rather than SMuFL:
- * a note name is running text, and pulling a 16 KB music font in behind every grid label would
- * be absurd. Neither shipped face carries them, so the browser falls back per character to a
- * system face that does, which every target platform has.
- */
-const SHARP = '♯';
-const FLAT = '♭';
-
-export const SHARP_NAMES = [
-  'C',
-  `C${SHARP}`,
-  'D',
-  `D${SHARP}`,
-  'E',
-  'F',
-  `F${SHARP}`,
-  'G',
-  `G${SHARP}`,
-  'A',
-  `A${SHARP}`,
-  'B',
-] as const;
-export const FLAT_NAMES = [
-  'C',
-  `D${FLAT}`,
-  'D',
-  `E${FLAT}`,
-  'E',
-  'F',
-  `G${FLAT}`,
-  'G',
-  `A${FLAT}`,
-  'A',
-  `B${FLAT}`,
-  'B',
-] as const;
-const BLACK_KEYS = [false, true, false, true, false, false, true, false, true, false, true, false];
-
-/** Pitch-class index of a MIDI note, 0 is C. */
-export function pitchClass(midi: number): number {
-  return ((Math.round(midi) % 12) + 12) % 12;
-}
-
-/** Whether a note sits on a black piano key. */
-export function isBlackKey(midi: number): boolean {
-  return BLACK_KEYS[pitchClass(midi)] ?? false;
-}
-
-/** Note name with octave, such as `C♯4`, in the project's accidental convention. */
-export function noteName(midi: number, style: AccidentalStyle = 'sharps'): string {
-  const rounded = Math.round(midi);
-  const names = style === 'flats' ? FLAT_NAMES : SHARP_NAMES;
-  const name = names[pitchClass(rounded)] ?? 'C';
-  return `${name}${Math.floor(rounded / 12) - 1}`;
-}
-
-/** Note name plus the signed cents deviation, such as `A3 -12c`. */
-export function noteNameWithCents(midi: number, style: AccidentalStyle = 'sharps'): string {
-  const cents = Math.round((midi - Math.round(midi)) * 100);
-  const sign = cents > 0 ? '+' : '';
-  return `${noteName(midi, style)} ${sign}${cents}c`;
-}
 
 /**
  * Draws the pitch rows, octave emphasis, note labels and cents guides.

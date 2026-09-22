@@ -429,11 +429,11 @@ that method is dead by construction rather than by accident.
 
 ### Bars and beats are computed in TypeScript for drawing
 
-The ruler and grid layers derive bar lines from `state.edits.timeline` rather than calling
-`Session.beatGridJson` per frame, so layers stay pure draw functions with no WebAssembly call
-inside the render loop. The arithmetic mirrors the Rust contract and is capped at 4096 grid points.
-The core remains the authority for snapping and for the playhead readout, where exactness matters
-more than frame cost.
+The ruler, the grid and the metronome derive bar lines from `state.edits.timeline` rather than
+calling `Session.beatGridJson` per frame, so layers stay pure draw functions with no WebAssembly
+call inside the render loop. `core/timeline.ts` is the one copy of that arithmetic: it mirrors the
+Rust contract and is capped at 4096 grid points. The core remains the authority for snapping, where
+exactness matters more than frame cost.
 
 ### Time domains
 
@@ -587,7 +587,7 @@ folded into the operation and restored by Discard, but Apply cannot tell the two
 ### The compiled plan reaches the store
 
 `AppState.plan` existed and was never written, so the editor drew the pitch target from the blob
-edits alone and everything the plan carried — scale correction, guidance, modulation — moved
+edits alone and everything the plan carried, scale correction, guidance and modulation, moved
 nothing on screen. The plan is published with every edit, and the target line is drawn from it.
 
 ### Readouts are drawn in whole columns
