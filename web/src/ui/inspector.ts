@@ -16,6 +16,7 @@ import {
   numberInput,
   rangeInput,
   selectInput,
+  swapGlyph,
   textInput,
 } from './controls/index.js';
 import type { SelectElement } from './controls/index.js';
@@ -534,7 +535,7 @@ export class Inspector {
     this.#collapsed = on;
     this.#element.classList.toggle('is-collapsed', on);
     const label = on ? 'Show Inspector' : 'Hide Inspector';
-    this.#fold.innerHTML = stateIcon('inspectorFold', !on);
+    swapGlyph(this.#fold, stateIcon('inspectorFold', !on));
     this.#fold.setAttribute('aria-label', label);
     this.#fold.setAttribute('aria-expanded', String(!on));
     setTooltip(this.#fold, label);

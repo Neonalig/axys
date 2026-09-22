@@ -12,8 +12,8 @@ import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
 import type { EditOp, MixerSettings, MixerStrip } from '../core/types.js';
 import { DEFAULT_MIXER, STRIP_IDS, STRIP_NAMES } from '../audio/mixer.js';
 import type { StripId } from '../audio/mixer.js';
+import { rangeInput, swapGlyph } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
-import { rangeInput } from './controls/index.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState } from '../app/store.js';
 
@@ -86,9 +86,16 @@ export class MixerPanel {
     return this.#element;
   }
 
-  /** Refreshes every control from application state. */
+  /**
+   * Refreshes every control from application state.
+   *
+   * @remarks Folded away by height rather than by `hidden`, so the panel can be seen to open and
+   * close. `inert` takes it out of the tab order and away from assistive technology while it is
+   * folded, which is what `hidden` was doing.
+   */
   update(state: AppState): void {
-    this.#element.hidden = state.mixerCollapsed;
+    this.#element.classList.toggle('is-collapsed', state.mixerCollapsed);
+    this.#element.inert = state.mixerCollapsed;
     if (state.mixerCollapsed) return;
     this.#mixer = state.edits?.mixer ?? DEFAULT_MIXER;
     const ready = state.edits !== null;
@@ -111,7 +118,7 @@ export class MixerPanel {
         controls.panReadout.textContent = panText(strip.pan);
       }
       // A toggle's tooltip names what pressing it will do, and follows the state icon.
-      controls.mute.innerHTML = stateIcon('mute', !strip.mute);
+      swapGlyph(controls.mute, stateIcon('mute', !strip.mute));
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
       setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', STRIP_NAMES[id]));
       controls.solo.setAttribute('aria-pressed', String(strip.solo));

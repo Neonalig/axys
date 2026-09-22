@@ -11,6 +11,7 @@
 
 import { ICONS, STATE_ICONS, stateIcon } from '../icons.js';
 import type { IconName, StateIconName } from '../icons.js';
+import { prefersReducedMotion } from '../motion.js';
 import { setTooltip } from '../tooltip.js';
 
 /** What a button shows and does. */
@@ -52,6 +53,34 @@ export function button(options: ButtonOptions): HTMLButtonElement {
     element.addEventListener('click', options.onPress);
   }
   return element;
+}
+
+/**
+ * Replaces a glyph, fading the new one in.
+ *
+ * @remarks A swapped glyph is a different control saying a different thing, and swapping the
+ * markup outright reads as a flicker. The class is removed once the fade has played, so the next
+ * swap can replay it. Under reduced motion the markup is simply replaced.
+ */
+export function swapGlyph(host: HTMLElement, markup: string): void {
+  if (host.innerHTML === markup) {
+    return;
+  }
+  host.innerHTML = markup;
+  if (prefersReducedMotion()) {
+    return;
+  }
+  host.classList.remove('is-swapping');
+  // Read back, so removing and adding the class in one frame still restarts the animation.
+  void host.offsetWidth;
+  host.classList.add('is-swapping');
+  host.addEventListener(
+    'animationend',
+    () => {
+      host.classList.remove('is-swapping');
+    },
+    { once: true },
+  );
 }
 
 /** A button whose state the caller drives. */
@@ -99,7 +128,7 @@ export function toggle(options: ToggleOptions): Toggle {
     on = next;
     element.setAttribute('aria-pressed', String(next));
     if (paired && glyph !== null) {
-      glyph.innerHTML = stateIcon(pair, next);
+      swapGlyph(glyph, stateIcon(pair, next));
     }
     setTooltip(element, options.tooltip(next));
   };

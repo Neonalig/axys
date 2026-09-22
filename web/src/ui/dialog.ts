@@ -259,7 +259,17 @@ export class Dialog {
   }
 
   #show(): void {
-    this.#restorePosition();
+    this.#place();
+    // One shot: the class goes once the animation has played, so nothing the panel does later,
+    // such as releasing a drag, can restart it.
+    this.#element.classList.add('is-entering');
+    this.#element.addEventListener(
+      'animationend',
+      () => {
+        this.#element.classList.remove('is-entering');
+      },
+      { once: true },
+    );
     const first = focusableIn(this.#element)[0];
     (first ?? this.#element).focus();
     if (!this.#blocking) {
@@ -269,15 +279,25 @@ export class Dialog {
     }
   }
 
-  /** Opens the panel where it was last left, or centred when that would be off screen. */
-  #restorePosition(): void {
-    const stored = storedPositions()[this.#title];
-    if (stored === undefined) return;
+  /**
+   * Puts the panel where it was last left, or in the middle.
+   *
+   * @remarks In pixels either way, so a panel that has been dragged and one that has not are
+   * positioned the same way and the entry animation has only itself to do.
+   */
+  #place(): void {
     const bounds = this.#element.getBoundingClientRect();
-    if (!onScreen(stored.x, stored.y, bounds.width, bounds.height)) return;
-    this.#element.style.left = `${String(stored.x)}px`;
-    this.#element.style.top = `${String(stored.y)}px`;
-    this.#element.style.transform = 'none';
+    const stored = storedPositions()[this.#title];
+    const centred = {
+      x: Math.round((window.innerWidth - bounds.width) / 2),
+      y: Math.round((window.innerHeight - bounds.height) / 2),
+    };
+    const at =
+      stored !== undefined && onScreen(stored.x, stored.y, bounds.width, bounds.height)
+        ? stored
+        : centred;
+    this.#element.style.left = `${String(Math.max(MARGIN, at.x))}px`;
+    this.#element.style.top = `${String(Math.max(MARGIN, at.y))}px`;
   }
 
   #onOutside = (event: Event): void => {
@@ -349,7 +369,6 @@ export class Dialog {
     );
     this.#element.style.left = `${String(Math.round(left))}px`;
     this.#element.style.top = `${String(Math.round(top))}px`;
-    this.#element.style.transform = 'none';
   };
 
   #onDragEnd = (): void => {

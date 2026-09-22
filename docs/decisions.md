@@ -1266,8 +1266,12 @@ toolbar, so there is one layout with one extra rule rather than two.
 
 Renaming has to be undoable like any other edit, and the history replays `EditOp`s over the base
 state, so the name is a field of `EditState` and `SetName` is an ordinary operation. `Project.name`
-stays at the top of the saved file, written from `edits.name` on save and read back into it on open,
-so a file carries the name where a reader expects to find it while the editor keeps one copy.
+stays at the top of the saved file, written from `edits.name` on save, so a reader of the file finds
+the name where it expects to while the editor keeps one copy of it.
+
+Nothing reads the top-level field back. Axys has not shipped, so there are no files carrying a name
+in the old place and no migration to write for them. `schemaVersion` and `migrate()` are already in
+the format for when there is.
 
 It opens as the imported audio's file name with the extension stripped, and it is edited in the
 inspector's Project panel. The tab title, the window titlebar, the save file name and the export
@@ -1457,3 +1461,32 @@ The name sits at the end of the toolbar, which is the window's titlebar once the
 It is a button: pressing it unfolds the inspector, shows the project tab and puts the caret in the
 name with the whole of it offered. A label there would have been the one place someone looks for
 the name and the one place they could not change it.
+
+### A panel is positioned in pixels, and its entry plays once
+
+The dialog was centred with `top: 50%; left: 50%; transform: translate(-50%, -50%)` and animated
+with a keyframe that carried the same translate. Two faults came out of that. Releasing a drag
+removed the `is-dragging` class, which re-enabled the animation and replayed it, so the panel
+jumped to the middle and eased back to where it was dropped. And once a panel had been dragged its
+transform was `none`, so the keyframe's `translate(-50%, -50%)` threw the entry out to a corner.
+
+Positioning is now pixels only, computed on open, and the entry runs from an `is-entering` class
+that is removed when it has played, so nothing the panel does afterwards can restart it. The
+keyframe carries only opacity, a small rise and a scale about the panel's own centre, which is
+where it appears. A menu grows from its top left, because that is the corner it is placed by.
+
+### Both panels fold by their own grid track
+
+The mixer folded with `hidden`, which cannot be animated. It now collapses its grid row, the way
+the inspector narrows its column, so the two folds are one idea and neither panel has to know it is
+in a grid. `inert` takes the folded panel out of the tab order and away from assistive technology,
+which is what `hidden` was doing.
+
+Tabs ease between their states, and a glyph swapped for its other state fades in through
+`swapGlyph` rather than being replaced outright, which read as a flicker.
+
+### Time zero is a landmark, not a measurement
+
+Every other line on the timeline says where something is; zero says where the take starts. It is
+drawn in `gridLineOctave` at twice the weight of the grid, the same emphasis an octave boundary
+gets against the semitone lines, and after the rest of the grid so nothing is written over it.

@@ -197,11 +197,19 @@ body {
 
 /* Shell */
 
+/*
+ * Both panels fold by their own grid track: the inspector narrows its column, the mixer collapses
+ * its row. The track owns the size and the panel fills it, so the two folds are one idea and
+ * neither panel has to know it is in a grid.
+ */
+
 #app {
   display: grid;
-  transition: grid-template-columns var(--axys-duration-base) var(--axys-ease-standard);
+  transition:
+    grid-template-columns var(--axys-duration-base) var(--axys-ease-standard),
+    grid-template-rows var(--axys-duration-base) var(--axys-ease-standard);
   grid-template-columns: minmax(0, 1fr) auto var(--axys-inspector-width);
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) 0 auto;
   grid-template-areas:
     'toolbar toolbar toolbar'
     'canvas resizer inspector'
@@ -396,6 +404,10 @@ body {
   backdrop-filter: var(--axys-blur);
 }
 
+#app.is-mixer-open {
+  grid-template-rows: auto minmax(0, 1fr) var(--axys-mixer-height) auto;
+}
+
 /* Folding the inspector away: the column narrows to a rail carrying the control that opens it */
 
 #app.is-inspector-collapsed {
@@ -437,17 +449,20 @@ body {
   display: flex;
   gap: var(--axys-space-2);
   align-items: stretch;
-  height: var(--axys-mixer-height);
+  height: 100%;
+  min-height: 0;
   padding: var(--axys-space-2) var(--axys-space-3);
-  overflow-x: auto;
+  overflow: hidden auto;
   border-top: 1px solid var(--axys-border);
   background: var(--axys-veil);
   backdrop-filter: var(--axys-blur);
-  transition: height var(--axys-duration-base) var(--axys-ease-standard);
 }
 
-.axys-mixer[hidden] {
-  display: none;
+/* Folded to nothing by its row, so the border and the padding go with it */
+
+.axys-mixer.is-collapsed {
+  padding-block: 0;
+  border-top-width: 0;
 }
 
 .axys-mixer-strip {
@@ -574,7 +589,7 @@ body {
       'inspector'
       'mixer'
       'status';
-    grid-template-rows: auto minmax(0, 1fr) auto auto auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto 0 auto;
   }
 
   /* There is no column to drag when the panel is a row under the canvas */
@@ -611,8 +626,10 @@ body {
 
   /* Clamped rather than a plain fraction, so a fader stays long enough to be worth dragging */
 
-  .axys-mixer {
-    height: clamp(180px, 26dvh, var(--axys-mixer-height));
+  #app.is-mixer-open {
+    grid-template-rows:
+      auto minmax(0, 1fr) auto auto
+      clamp(180px, 26dvh, var(--axys-mixer-height)) auto;
   }
 }
 
@@ -790,6 +807,13 @@ button.axys-icon {
   width: var(--axys-control-height);
 }
 
+/* A glyph that has just been swapped for its other state, fading the new one in */
+
+.axys-button-icon.is-swapping,
+.axys-mixer-switch.is-swapping {
+  animation: axys-fade-in var(--axys-duration-fast) var(--axys-ease-standard);
+}
+
 /* Button names: off by default, so the toolbar is icons until someone asks for the words */
 
 .axys-button-icon {
@@ -926,6 +950,9 @@ input[type='checkbox'] {
 
 .axys-tab {
   display: flex;
+  transition:
+    background var(--axys-duration-fast) var(--axys-ease-standard),
+    color var(--axys-duration-fast) var(--axys-ease-standard);
   flex: 1 1 0;
   gap: 6px;
   align-items: center;
@@ -1194,7 +1221,8 @@ input.is-adjustable {
   backdrop-filter: var(--axys-blur);
   box-shadow: var(--axys-elevation-2);
   animation: axys-pop-in var(--axys-duration-fast) var(--axys-ease-enter);
-  transform-origin: top center;
+  /* Placed by its top left corner, so that is the corner it grows out of */
+  transform-origin: top left;
 }
 
 .axys-menu.is-leaving {
@@ -1522,32 +1550,40 @@ input.is-adjustable {
   animation: axys-fade-in var(--axys-duration-base) var(--axys-ease-enter);
 }
 
+/*
+ * Positioned in pixels rather than centred with a translate. A panel is dragged, and a transform
+ * that carries half the positioning cannot be animated without fighting the drag: the entry
+ * keyframe would throw a dragged panel back to the middle before easing it home again.
+ */
+
 .axys-dialog {
   position: fixed;
-  top: 50%;
-  left: 50%;
+  top: 0;
+  left: 0;
   z-index: 60;
   display: flex;
   flex-direction: column;
   min-width: min(480px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   max-height: 80dvh;
-  padding: 16px;
-  transform: translate(-50%, -50%);
+  padding: var(--axys-space-4);
   color: var(--axys-text);
   background: var(--axys-veil-raised);
   backdrop-filter: var(--axys-blur);
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius-lg);
   box-shadow: var(--axys-elevation-3);
-  animation: axys-dialog-in var(--axys-duration-base) var(--axys-ease-enter);
 }
 
-/* A dragged panel keeps the position the drag gave it, so the entry transform must not replay */
+/*
+ * The entry runs from its own class, removed once it has played, so nothing else the panel does
+ * can restart it. Growing from the panel's own centre, which is where it appears, rather than
+ * from a corner.
+ */
 
-.axys-dialog.is-dragging,
-.axys-dialog.is-moved {
-  animation: none;
+.axys-dialog.is-entering {
+  transform-origin: center;
+  animation: axys-dialog-in var(--axys-duration-base) var(--axys-ease-enter);
 }
 
 .axys-dialog-body {
@@ -1738,7 +1774,7 @@ html.is-theme-changing * {
 @keyframes axys-dialog-in {
   from {
     opacity: 0;
-    transform: translate(-50%, calc(-50% + 8px)) scale(0.98);
+    transform: translateY(8px) scale(0.98);
   }
 }
 

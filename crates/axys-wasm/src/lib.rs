@@ -478,16 +478,7 @@ impl Session {
             analysis: project.analysis.clone(),
             track,
             base: project.base.clone(),
-            // A project written before the name moved into the edit state carries it only at the
-            // top level, where it was the imported file's own name, extension and all. It is read
-            // back into the one place the editor keeps it, stripped the same way an import is.
-            state: {
-                let mut edits = project.edits.clone();
-                if edits.name.trim().is_empty() {
-                    edits.name = project_name(&project.name);
-                }
-                edits
-            },
+            state: project.edits.clone(),
             history: project.history.clone(),
             midi,
             midi_bytes,

@@ -7,7 +7,7 @@
  * the dialogs build from these rather than each styling a button or a field its own way.
  */
 
-export { button, toggle } from './button.js';
+export { button, swapGlyph, toggle } from './button.js';
 export type { ButtonOptions, Toggle, ToggleOptions } from './button.js';
 export {
   bindDragAdjust,

@@ -23,7 +23,7 @@ import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
-import { button as control } from './controls/index.js';
+import { button as control, swapGlyph } from './controls/index.js';
 import { ICONS, STATE_ICONS, type IconName } from './icons.js';
 import type { Dialog } from './dialog.js';
 import { Inspector } from './inspector.js';
@@ -965,7 +965,9 @@ export class AppShell {
 
     const mixerOpen = !state.mixerCollapsed;
     // A desk of faders says mixer on its own, so the control keeps one glyph and carries its
-    // state in its pressed styling, the way the metronome does.
+    // state in its pressed styling, the way the metronome does. The panel folds by its grid row,
+    // which the shell owns, so the class goes here rather than on the panel.
+    this.#root.classList.toggle('is-mixer-open', mixerOpen);
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
     setTooltip(this.#mixerToggle, `${mixerOpen ? 'Hide Mixer' : 'Show Mixer'} (K)`);
 
@@ -1101,7 +1103,7 @@ export class AppShell {
       return;
     }
     entry.face = key;
-    entry.icon.innerHTML = ICONS[face.icon];
+    swapGlyph(entry.icon, ICONS[face.icon]);
     entry.text.textContent = face.label;
     entry.button.setAttribute('aria-label', face.label);
     setTooltip(entry.button, face.tooltip);

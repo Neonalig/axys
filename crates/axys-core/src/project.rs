@@ -193,8 +193,9 @@ pub struct Project {
     pub app_version: String,
     /// Project name shown in the editor.
     ///
-    /// Written from `edits.name` on save and read back into it on open, so a file carries the
-    /// name where a reader expects to find it while the editor keeps one copy of it.
+    /// Written from `edits.name` on save, so a reader of the file finds the name where it expects
+    /// to and the editor still keeps one copy of it. A reader that means to change the name
+    /// changes `edits.name`; this field follows it.
     pub name: String,
     /// Immutable facts about the imported source audio.
     pub source: SourceInfo,

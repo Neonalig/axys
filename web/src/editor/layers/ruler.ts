@@ -75,6 +75,32 @@ export function drawRuler(
   ctx.restore();
 }
 
+/**
+ * Draws the line at time zero, where the take starts.
+ *
+ * @remarks Set apart the way an octave boundary is, in the same colour and at twice the weight,
+ * because zero is the one position on the timeline that is a landmark rather than a measurement.
+ * Drawn after the rest of the grid, so it is not written over by it.
+ */
+function drawOrigin(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: Theme): void {
+  if (viewport.view.visibleStart > 0 || viewport.view.visibleEnd < 0) {
+    return;
+  }
+  const width = viewport.crispWidth(ORIGIN_WIDTH);
+  const x = viewport.crisp(viewport.timeToX(0), width);
+  ctx.save();
+  ctx.lineWidth = width;
+  ctx.strokeStyle = theme.gridLineOctave;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, viewport.height);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Weight of the origin line in CSS pixels, against one for every other grid line. */
+const ORIGIN_WIDTH = 2;
+
 function fillBand(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: Theme): void {
   ctx.fillStyle = theme.rulerBg;
   ctx.fillRect(0, 0, viewport.width, RULER_HEIGHT);
@@ -136,6 +162,8 @@ function drawClock(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: The
     }
     ctx.fillText(formatClock(time, step), x + 4, RULER_HEIGHT / 2 - 1);
   }
+
+  drawOrigin(ctx, viewport, theme);
 }
 
 function drawMusical(
@@ -231,6 +259,7 @@ function drawMusical(
     ctx.fillText(String(point.bar), x + 4, RULER_HEIGHT / 2 - 1);
   }
 
+  drawOrigin(ctx, viewport, theme);
   drawMapMarkers(ctx, viewport, theme, timeline);
 }
 
