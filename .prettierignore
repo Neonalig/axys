@@ -1,0 +1,8 @@
+dist/
+target/
+node_modules/
+web/src/wasm/
+LICENSE
+package-lock.json
+Cargo.lock
+docs/design_bible.md

@@ -1,17 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 [package]
-name = "axys-core"
+name = "axys-wasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Analysis, editing, timeline and DSP core for Axys"
+description = "WebAssembly boundary for the Axys core"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+axys-core = { path = "../axys-core" }
 serde.workspace = true
 serde_json.workspace = true
-midly.workspace = true
-rustfft.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+console_error_panic_hook.workspace = true
