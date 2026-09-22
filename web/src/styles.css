@@ -316,6 +316,12 @@ button:hover:not(:disabled) {
   background: var(--axys-surface-sunken);
 }
 
+button[aria-pressed='true']:hover:not(:disabled),
+button.is-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--axys-accent) 80%, var(--axys-text));
+  color: var(--axys-accent-text);
+}
+
 button:active:not(:disabled) {
   transform: translateY(1px);
 }
@@ -357,21 +363,14 @@ button.axys-icon {
   display: inline;
 }
 
-/* The metronome pulses its ground while it is clicking, and still reads as on while it is not */
-
-@keyframes axys-metronome-pulse {
-  0%,
-  100% {
-    background: var(--axys-accent);
-  }
-
-  50% {
-    background: color-mix(in srgb, var(--axys-accent) 45%, var(--axys-surface-raised));
-  }
-}
+/* The metronome flashes on the beat, from the playhead rather than from a timer of its own */
 
 button.is-pulsing[aria-pressed='true'] {
-  animation: axys-metronome-pulse 500ms ease-in-out infinite;
+  background: color-mix(
+    in srgb,
+    var(--axys-accent) calc(28% + var(--axys-pulse, 0) * 72%),
+    var(--axys-surface-raised)
+  );
 }
 
 button.axys-danger {

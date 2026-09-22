@@ -11,6 +11,7 @@ import '../styles.css';
 
 import type { ThemeChoice } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
+import { barBeatAt, bpmAt, secondsToTick } from '../editor/view.js';
 import type { AppState, CompareMode, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
@@ -93,6 +94,9 @@ const TOOLS: readonly ToolEntry[] = [
   { id: 'smooth', label: 'Smooth Tool', icon: 'smooth', tooltip: 'Reduces jitter over a span.' },
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time.' },
 ];
+
+/** How long the metronome flash takes to fade, in seconds. */
+const PULSE_SECONDS = 0.12;
 
 /** Theme entries the chrome offers, with following the operating system first and default. */
 const THEME_CHOICES: readonly ThemeChoice[] = ['system', ...THEME_NAMES];
@@ -705,16 +709,13 @@ export class AppShell {
       pressed: looping,
     });
     const metronome = state.transport.metronome;
+    this.#pulse(state, metronome && playing);
     this.#setFace('transport.toggleMetronome', {
       icon: 'metronome',
       label: 'Metronome',
       tooltip: metronome ? 'Metronome On (M)' : 'Metronome Off (M)',
       pressed: metronome,
     });
-    // The pulse is the beat, so it runs only while there is a beat to keep.
-    this.#commandButtons
-      .get('transport.toggleMetronome')
-      ?.button.classList.toggle('is-pulsing', metronome && playing);
 
     // A readout earns its place only while it has something to say. A working editor reporting
     // "ready", "0 conflicts" and "nothing selected" is a row of noise to read past.
@@ -780,6 +781,33 @@ export class AppShell {
     this.#tooltips.dispose();
     this.#toasts.dispose();
     this.#root.replaceChildren();
+  }
+
+  /**
+   * Flashes the metronome button on each beat.
+   *
+   * @remarks Read from the playhead rather than from a timer of its own, so the flash lands
+   * where the click lands and follows a tempo change with it. The attack is the beat itself and
+   * the tail fades over {@link PULSE_SECONDS}, because what a click reports is its start.
+   */
+  #pulse(state: AppState, running: boolean): void {
+    const entry = this.#commandButtons.get('transport.toggleMetronome');
+    if (entry === undefined) {
+      return;
+    }
+    entry.button.classList.toggle('is-pulsing', running);
+    const timeline = state.edits?.timeline ?? null;
+    if (!running || timeline === null) {
+      entry.button.style.removeProperty('--axys-pulse');
+      return;
+    }
+    const position = state.view.playhead;
+    const beat = barBeatAt(timeline, position);
+    const beatSeconds =
+      (60 / bpmAt(timeline, secondsToTick(timeline, position))) * (4 / beat.beatUnit);
+    const sinceBeat = (beat.beat - Math.floor(beat.beat)) * beatSeconds;
+    const level = Math.max(0, 1 - sinceBeat / PULSE_SECONDS);
+    entry.button.style.setProperty('--axys-pulse', level.toFixed(2));
   }
 
   /** Shows or hides the names beside the toolbar icons. */

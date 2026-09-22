@@ -210,9 +210,7 @@ export class Inspector {
   readonly #semitones: HTMLInputElement;
   readonly #cents: HTMLInputElement;
   readonly #excluded: HTMLInputElement;
-  readonly #splitButton: HTMLButtonElement;
-  readonly #resetButton: HTMLButtonElement;
-  readonly #joinButton: HTMLButtonElement;
+  readonly #blobHeading: HTMLElement;
 
   readonly #tuning: HTMLInputElement;
   readonly #accidentals: HTMLSelectElement;
@@ -252,8 +250,10 @@ export class Inspector {
     const properties = this.#buildTab(tabs, 'properties', 'Properties', 'properties');
     element.append(tabs, project, properties);
 
-    // Blob panel.
+    // Blob panel. Its heading names what is selected, so the fields under it need not repeat
+    // the word blob, and the actions on a blob stay on the blob, in its own menu.
     const blobPanel = panel('Selected Blob');
+    this.#blobHeading = blobPanel.querySelector('h2') ?? blobPanel;
     this.#selectionCount = document.createElement('p');
     this.#selectionCount.className = 'axys-hint';
     blobPanel.append(this.#selectionCount);
@@ -273,8 +273,8 @@ export class Inspector {
     this.#excluded = checkboxInput();
 
     blobPanel.append(
-      field('Blob Start', this.#start, 'Start of the blob in source seconds.'),
-      field('Blob End', this.#end, 'End of the blob in source seconds.'),
+      field('Start', this.#start, 'Start of the blob in source seconds.'),
+      field('End', this.#end, 'End of the blob in source seconds.'),
       field('Duration', this.#duration, 'Output duration of the blob in seconds.'),
       field('Time Offset', this.#timeOffset, 'Seconds the blob is moved along the timeline.'),
       this.#readoutField(
@@ -291,26 +291,8 @@ export class Inspector {
       ),
       field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch.'),
       field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents.'),
-      field(
-        'Exclude Blob',
-        this.#excluded,
-        'Leaves this blob out of scale correction and guidance.',
-      ),
+      field('Exclude', this.#excluded, 'Leaves this blob out of scale correction and guidance.'),
     );
-
-    const blobActions = document.createElement('div');
-    blobActions.className = 'axys-group';
-    this.#splitButton = this.#actionButton('Split Blob', 'Splits the blob at the playhead.');
-    this.#joinButton = this.#actionButton(
-      'Join Blobs',
-      'Joins the two selected neighbouring blobs.',
-    );
-    this.#resetButton = this.#actionButton(
-      'Reset Blob',
-      'Restores the detected pitch and timing of the blob.',
-    );
-    blobActions.append(this.#splitButton, this.#joinButton, this.#resetButton);
-    blobPanel.append(blobActions);
     properties.append(blobPanel);
 
     // Correction and voice character are operations rather than settings, so neither is
@@ -472,11 +454,8 @@ export class Inspector {
     for (const control of controls) {
       control.disabled = blob === null;
     }
-    this.#splitButton.disabled = blob === null;
-    this.#resetButton.disabled = blob === null;
-    this.#joinButton.disabled = selectedCount !== 2;
-
     if (!blob) {
+      this.#blobHeading.textContent = 'Selected Blob';
       this.#selectionCount.textContent = 'No blob selected.';
       for (const control of controls) {
         if (control.type === 'checkbox') {
@@ -491,8 +470,9 @@ export class Inspector {
       return;
     }
 
+    this.#blobHeading.textContent = `Selected Blob (#${String(blob.id)})`;
     this.#selectionCount.textContent =
-      selectedCount > 1 ? `${String(selectedCount)} blobs selected.` : `Blob ${String(blob.id)}.`;
+      selectedCount > 1 ? `${String(selectedCount)} blobs selected.` : 'One blob selected.';
 
     const start = blob.start + blob.timeOffset;
     const end = start + (blob.end - blob.start) * blob.timeScale;
@@ -566,14 +546,6 @@ export class Inspector {
     pair.append(control, readout);
     row.append(label, pair);
     return row;
-  }
-
-  #actionButton(label: string, tooltip: string): HTMLButtonElement {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = label;
-    setTooltip(button, tooltip);
-    return button;
   }
 
   #bind(): void {
@@ -662,27 +634,6 @@ export class Inspector {
         blob: blob.id,
         excluded: this.#excluded.checked,
       });
-    });
-
-    this.#splitButton.addEventListener('click', () => {
-      const blob = this.#blob;
-      const state = this.#state;
-      if (!blob || !state) return;
-      this.#hooks.applyEdit({ type: 'splitBlob', blob: blob.id, time: state.view.playhead });
-    });
-
-    this.#joinButton.addEventListener('click', () => {
-      const state = this.#state;
-      if (!state) return;
-      const [first, second] = [...state.selection.blobs].sort((a, b) => a - b);
-      if (first === undefined || second === undefined) return;
-      this.#hooks.applyEdit({ type: 'joinBlobs', first, second });
-    });
-
-    this.#resetButton.addEventListener('click', () => {
-      const blob = this.#blob;
-      if (!blob) return;
-      this.#hooks.applyEdit({ type: 'resetBlob', blob: blob.id });
     });
 
     this.#tuning.addEventListener('change', () => {

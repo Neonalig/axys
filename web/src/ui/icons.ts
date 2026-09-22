@@ -97,7 +97,7 @@ export const ICONS: Readonly<Record<IconName, string>> = {
     `<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11"/><path fill="currentColor" stroke="none" d="M8 2.5a5.5 5.5 0 0 0 0 11Z"/>`,
   ),
   split: stroked(
-    `<path d="M2.4 8.6h11.2l-1.3 4.1a.8.8 0 0 1-.8.6H4.5a.8.8 0 0 1-.8-.6Z"/><path d="M4.4 8.6V4a.8.8 0 0 1 .8-.8h5.6a.8.8 0 0 1 .8.8v4.6"/><path d="M6.3 5.6h3.4"/>`,
+    `<path d="M2.2 4.9h11.6l-1.6 5.2H3.8Z"/><path d="M5.5 6.7h5"/><path stroke-width="2" d="M3.8 10.1h8.4"/>`,
   ),
   join: stroked(
     `<path d="M6.6 9.4a2.6 2.6 0 0 1 0-3.7l1.6-1.6a2.6 2.6 0 0 1 3.7 3.7l-.8.8"/><path d="M9.4 6.6a2.6 2.6 0 0 1 0 3.7l-1.6 1.6a2.6 2.6 0 0 1-3.7-3.7l.8-.8"/>`,
@@ -113,7 +113,9 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   time: stroked(
     `<path d="M3 3.6v8.8M13 3.6v8.8"/><path d="M5.2 8h5.6"/><path d="m6.8 6.4-1.6 1.6 1.6 1.6"/><path d="m9.2 6.4 1.6 1.6-1.6 1.6"/>`,
   ),
-  reset: stroked(`<path d="M8 3.2a4.8 4.8 0 1 0 4.8 4.8"/><path d="m11.4 9.4 1.4-1.4 1.4 1.4"/>`),
+  reset: stroked(
+    `<g transform="rotate(-125 8 8)"><path d="M8 3.2a4.8 4.8 0 1 0 4.8 4.8"/><path d="m11.4 9.4 1.4-1.4 1.4 1.4"/></g>`,
+  ),
   follow: stroked(
     `<path d="M2 11.4h4.8"/><path stroke-dasharray="1.6 1.8" d="M9.2 11.4H14"/><path d="M8 5.2v7.4"/><path fill="currentColor" stroke="none" d="M5.5 2.8h5L8 6.2Z"/>`,
   ),
