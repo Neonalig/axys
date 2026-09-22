@@ -11,14 +11,8 @@
  */
 
 import { Dialog } from './dialog.js';
-import {
-  describeLeftovers,
-  field,
-  guidedLabel,
-  rangeInput,
-  scopeLine,
-  selectInput,
-} from './inspector.js';
+import { describeLeftovers, scopeLine } from './inspector.js';
+import { field, guidedLabel, rangeInput, selectInput } from './controls/index.js';
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
 import type { EditOp, GuideMode, GuideSelection, NoteMapping } from '../core/types.js';

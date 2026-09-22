@@ -15,6 +15,13 @@ export interface MenuItem {
   /** Icon drawn ahead of the label, the same one the command's button carries. */
   icon?: IconName;
   /**
+   * Markup drawn in the icon column instead of `icon`.
+   *
+   * @remarks For a music glyph, which is a run of text in another font rather than an icon. The
+   * markup is author-controlled; never pass anything a person typed.
+   */
+  glyph?: string;
+  /**
    * The shortcut this item's command carries, shown beside the label.
    *
    * @remarks A plain single key also runs the item while the menu is open. A chord is shown but
@@ -113,7 +120,7 @@ export function showContextMenu(
     // in either place. An entry without one keeps the column, so the labels stay aligned.
     const mark = document.createElement('span');
     mark.className = 'axys-menu-icon';
-    mark.innerHTML = entry.icon === undefined ? '' : ICONS[entry.icon];
+    mark.innerHTML = entry.glyph ?? (entry.icon === undefined ? '' : ICONS[entry.icon]);
     const label = document.createElement('span');
     label.className = 'axys-menu-label';
     label.textContent = entry.checked === true ? `${entry.label} ✓` : entry.label;

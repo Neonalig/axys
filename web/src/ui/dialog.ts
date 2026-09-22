@@ -9,6 +9,7 @@
  * not blocking, because the editor is where its result appears.
  */
 
+import { button as iconButton } from './controls/index.js';
 import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
@@ -170,16 +171,15 @@ export class Dialog {
     grip.setAttribute('aria-hidden', 'true');
     head.append(grip);
 
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'axys-icon';
-    close.innerHTML = ICONS.close;
-    close.setAttribute('aria-label', 'Close Dialog');
-    setTooltip(close, 'Close Dialog');
-    close.addEventListener('click', () => {
-      this.close();
-    });
-    head.append(close);
+    head.append(
+      iconButton({
+        icon: 'close',
+        label: 'Close Dialog',
+        onPress: () => {
+          this.close();
+        },
+      }),
+    );
     head.addEventListener('pointerdown', this.#onDragStart);
     element.append(head);
 

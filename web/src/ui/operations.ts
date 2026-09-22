@@ -13,15 +13,15 @@
  */
 
 import { Dialog } from './dialog.js';
+import { scopeLine } from './inspector.js';
 import {
   checkboxInput,
   field,
   guidedLabel,
   numberInput,
   rangeInput,
-  scopeLine,
   selectInput,
-} from './inspector.js';
+} from './controls/index.js';
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
 import type { EditOp, FormantMode, ScaleSettings } from '../core/types.js';

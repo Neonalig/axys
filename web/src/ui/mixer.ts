@@ -13,7 +13,7 @@ import type { EditOp, MixerSettings, MixerStrip } from '../core/types.js';
 import { DEFAULT_MIXER, STRIP_IDS, STRIP_NAMES } from '../audio/mixer.js';
 import type { StripId } from '../audio/mixer.js';
 import { ICONS, stateIcon } from './icons.js';
-import { rangeInput } from './inspector.js';
+import { rangeInput } from './controls/index.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState } from '../app/store.js';
 

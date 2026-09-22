@@ -552,7 +552,6 @@ body {
 /* Controls */
 
 button,
-select,
 input,
 label {
   font: inherit;
@@ -663,7 +662,6 @@ svg {
   --axys-icon: 20px;
 }
 
-select,
 input[type='text'],
 input[type='number'],
 input[type='search'] {
@@ -683,6 +681,51 @@ input[type='checkbox'] {
   accent-color: var(--axys-accent);
   width: 15px;
   height: 15px;
+}
+
+/*
+ * The select: a button wearing the chosen option's face, with the list drawn by the context menu.
+ * A native `option` holds text and nothing else, which is what stopped an accidental style
+ * offering its own accidental.
+ */
+
+.axys-select {
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  padding: 0 var(--axys-space-2);
+  background: var(--axys-surface-sunken);
+  font-weight: var(--axys-weight-body);
+}
+
+.axys-select-face {
+  display: flex;
+  gap: var(--axys-space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.axys-select-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-select-mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--axys-text-muted);
+}
+
+.axys-select-caret {
+  display: flex;
+  flex: none;
+  color: var(--axys-text-muted);
+}
+
+.axys-select[aria-expanded='true'] {
+  border-color: var(--axys-accent);
 }
 
 /* Inspector */

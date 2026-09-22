@@ -55,6 +55,7 @@
     "sourceCode": "code",
     "warning": "triangle-alert",
     "info": "info",
+    "caret": "chevron-down",
     "close": "x"
   },
   "states": {

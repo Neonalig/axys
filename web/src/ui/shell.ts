@@ -23,6 +23,7 @@ import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
+import { button as control } from './controls/index.js';
 import { ICONS, STATE_ICONS, stateIcon, type IconName } from './icons.js';
 import { Inspector } from './inspector.js';
 import { MixerPanel } from './mixer.js';
@@ -917,21 +918,15 @@ export class AppShell {
    * already where the controls that say how the editor is laid out live.
    */
   #buildMixerToggle(): HTMLButtonElement {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'axys-icon';
-    const icon = document.createElement('span');
-    icon.className = 'axys-button-icon';
-    icon.innerHTML = stateIcon('mixerFold', false);
-    this.#mixerIcon = icon;
-    const text = document.createElement('span');
-    text.className = 'axys-button-label';
-    text.textContent = 'Mixer';
-    button.append(icon, text);
-    button.addEventListener('click', () => {
-      this.#hooks.runCommand('view.toggleMixer');
+    const element = control({
+      icon: 'mixerClosed',
+      label: 'Show Mixer',
+      onPress: () => {
+        this.#hooks.runCommand('view.toggleMixer');
+      },
     });
-    return button;
+    this.#mixerIcon = element.querySelector<HTMLElement>('.axys-button-icon') as HTMLElement;
+    return element;
   }
 
   /** Shows a theme as the chosen one, without applying it. */
@@ -1000,18 +995,16 @@ export class AppShell {
   }
 
   #buildCommandButton(command: ShellCommand): HTMLButtonElement {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'axys-icon';
-    const icon = document.createElement('span');
-    icon.className = 'axys-button-icon';
-    icon.innerHTML = ICONS[iconFor(command)];
-    const text = document.createElement('span');
-    text.className = 'axys-button-label';
+    const button = control({
+      icon: iconFor(command),
+      label: command.label,
+      tooltip: tooltipFor(command),
+    });
+    const icon = button.querySelector<HTMLElement>('.axys-button-icon') as HTMLElement;
+    const text = button.querySelector<HTMLElement>('.axys-button-label') as HTMLElement;
+    // The toolbar's own shorter name where the command has one, while the accessible name stays
+    // the command's, so a screen reader and the menus never disagree about what it is called.
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
-    button.append(icon, text);
-    button.setAttribute('aria-label', command.label);
-    setTooltip(button, tooltipFor(command));
     button.addEventListener('click', () => {
       this.#hooks.runCommand(command.id);
     });
@@ -1147,15 +1140,14 @@ export class AppShell {
     // Segmented, so it reads as one control with one answer rather than eight loose buttons.
     section.classList.add('axys-segmented');
     for (const tool of TOOLS) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'axys-icon';
-      button.innerHTML = ICONS[tool.icon];
-      button.setAttribute('aria-label', tool.label);
-      button.setAttribute('aria-pressed', 'false');
       const key = toolDefinition(tool.id).key;
       const named = key === '' ? tool.label : `${tool.label} (${key})`;
-      setTooltip(button, `${named}: ${tool.tooltip}`);
+      const button = control({
+        icon: tool.icon,
+        label: tool.label,
+        tooltip: `${named}: ${tool.tooltip}`,
+      });
+      button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
         this.#hooks.setTool(tool.id);
         this.announce(`${tool.label} active.`);
@@ -1174,19 +1166,13 @@ export class AppShell {
    * the toolbar as one more control.
    */
   #buildTheme(): HTMLButtonElement {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'axys-icon';
-    const icon = document.createElement('span');
-    icon.className = 'axys-button-icon';
-    icon.innerHTML = ICONS.theme;
-    const text = document.createElement('span');
-    text.className = 'axys-button-label';
-    text.textContent = 'Theme';
-    button.append(icon, text);
+    const button = control({
+      icon: 'theme',
+      label: 'Theme',
+      tooltip: themeTip(this.#themeChoice),
+    });
     button.setAttribute('aria-label', 'Choose A Theme');
     button.setAttribute('aria-haspopup', 'menu');
-    setTooltip(button, themeTip(this.#themeChoice));
     button.addEventListener('click', () => {
       this.#openButtonMenu(button, (shell) =>
         // No icon per entry: four copies of the same palette would say nothing, and the mark

@@ -8,6 +8,7 @@
  * discovered in the file.
  */
 
+import { selectInput } from './controls/index.js';
 import { Dialog } from './dialog.js';
 import type { BitDepth, ExportPreview } from '../core/types.js';
 
@@ -72,24 +73,16 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
   rangeGroup.append(whole.label, selected.label);
   settings.append(labelled('Range', rangeGroup));
 
-  const rates = document.createElement('select');
-  for (const rate of rateChoices(options.sourceRate)) {
-    const option = document.createElement('option');
-    option.value = String(rate);
-    option.textContent =
-      rate === options.sourceRate ? `${String(rate)} Hz (Source)` : `${String(rate)} Hz`;
-    rates.append(option);
-  }
+  const rates = selectInput(
+    rateChoices(options.sourceRate).map((rate) => ({
+      value: String(rate),
+      label: rate === options.sourceRate ? `${String(rate)} Hz (Source)` : `${String(rate)} Hz`,
+    })),
+  );
   rates.value = String(options.sourceRate);
   settings.append(labelled('Sample Rate', rates));
 
-  const depths = document.createElement('select');
-  for (const depth of DEPTHS) {
-    const option = document.createElement('option');
-    option.value = depth.value;
-    option.textContent = depth.label;
-    depths.append(option);
-  }
+  const depths = selectInput(DEPTHS.map((depth) => ({ ...depth })));
   depths.value = 'pcm24';
   settings.append(labelled('Bit Depth', depths));
 
@@ -248,8 +241,7 @@ function labelled(name: string, control: HTMLElement): HTMLElement {
   field.className = 'axys-field';
   const label = document.createElement('label');
   label.textContent = name;
-  if (control instanceof HTMLSelectElement) {
-    control.id = `axys-export-${name.toLowerCase().replace(/\s+/g, '-')}`;
+  if (control.id !== '') {
     label.htmlFor = control.id;
   }
   field.append(label, control);

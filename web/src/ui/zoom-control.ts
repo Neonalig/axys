@@ -8,7 +8,7 @@
  * lands wherever it lands and the slider simply shows the nearest position to it.
  */
 
-import { ICONS } from './icons.js';
+import { button, rangeInput } from './controls/index.js';
 import { setTooltip } from './tooltip.js';
 
 /** Visible spans the slider steps through, in seconds, widest last. */
@@ -42,15 +42,15 @@ export class ZoomControl {
     element.setAttribute('role', 'group');
     element.setAttribute('aria-label', 'Zoom');
 
-    const out = iconButton('zoomOut', 'Zoom Out', () => {
-      this.#step(1);
+    const out = button({
+      icon: 'zoomOut',
+      label: 'Zoom Out',
+      onPress: () => {
+        this.#step(1);
+      },
     });
-    const slider = document.createElement('input');
-    slider.type = 'range';
+    const slider = rangeInput(0, STEPS.length - 1, 1);
     slider.className = 'axys-zoom-slider';
-    slider.min = '0';
-    slider.max = String(STEPS.length - 1);
-    slider.step = '1';
     slider.setAttribute('aria-label', 'Zoom Level');
     setTooltip(slider, 'Visible span. Ctrl and the wheel zoom freely between these steps.');
     slider.addEventListener('input', () => {
@@ -70,11 +70,19 @@ export class ZoomControl {
       else this.#showSpan(this.#span);
     });
 
-    const inward = iconButton('zoomIn', 'Zoom In', () => {
-      this.#step(-1);
+    const inward = button({
+      icon: 'zoomIn',
+      label: 'Zoom In',
+      onPress: () => {
+        this.#step(-1);
+      },
     });
-    const fit = iconButton('zoomFit', 'Zoom Fit', () => {
-      this.#options.onFit();
+    const fit = button({
+      icon: 'zoomFit',
+      label: 'Zoom Fit',
+      onPress: () => {
+        this.#options.onFit();
+      },
     });
 
     element.append(out, slider, readout, inward, fit);
@@ -108,17 +116,6 @@ export class ZoomControl {
   #showSpan(span: number): void {
     this.#readout.value = span < 1 ? `${span.toFixed(2)} s` : `${span.toFixed(1)} s`;
   }
-}
-
-function iconButton(icon: 'zoomIn' | 'zoomOut' | 'zoomFit', label: string, run: () => void) {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'axys-icon';
-  button.innerHTML = ICONS[icon];
-  button.setAttribute('aria-label', label);
-  setTooltip(button, label);
-  button.addEventListener('click', run);
-  return button;
 }
 
 /** Index of the step closest to a span, on a log scale so each step feels the same size. */

@@ -1216,3 +1216,26 @@ Note letters and octave numbers stay in the UI face; Bravura sets the accidental
 running text a note name uses U+266F, U+266D and U+266E rather than SMuFL, so an ordinary label
 does not pull a 16 KB font in behind it. Neither shipped face carries those three, so the browser
 falls back per character to a system face that does, which every target platform has.
+
+### One definition per control, in `ui/controls/`
+
+Controls that disagree about their own states are the single biggest tell of an immature interface,
+and the toolbar, the inspector, the mixer and the dialogs were each building a button their own
+way. `web/src/ui/controls/` now holds the button, toggle, field, slider and select, and a container
+arranges controls rather than restyling them. Design bible section 16.2 names every control once
+with its rest, hover, active, disabled, focus and checked states.
+
+### The select is the context menu, not a native one
+
+A native `option` holds text and nothing else, which is what stopped the accidental style offering
+its own accidental and the snap division offering its note. `ui/menu.ts` already did per-item
+icons, check marks, disabled state and shortcut hints, so the list is that menu and the closed
+control is a button wearing the chosen option's face.
+
+It keeps `value` and fires `change`, the two things the native element was used for, so a field
+holding one needs to know nothing else about it. Combobox semantics are whole: `role="combobox"`,
+type to select, Home and End, arrows to step without opening, Alt and an arrow to open, Escape to
+dismiss, focus back to the trigger either way.
+
+Every native select went, not only the three in the export dialog and the inspector. A set where
+some are native and some are not is exactly the inconsistency the primitives exist to end.

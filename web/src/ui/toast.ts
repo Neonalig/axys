@@ -6,9 +6,8 @@
  * The host is a fixed layer, so a toast appearing or leaving never reflows the shell.
  */
 
-import { ICONS } from './icons.js';
+import { button } from './controls/index.js';
 import { animateOut } from './motion.js';
-import { setTooltip } from './tooltip.js';
 
 /** Severity of a notification. */
 export type ToastKind = 'info' | 'warn' | 'error';
@@ -92,14 +91,12 @@ export class ToastHost {
     text.textContent = message;
     toast.append(text);
 
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'axys-icon';
-    close.innerHTML = ICONS.close;
-    close.setAttribute('aria-label', 'Dismiss Message');
-    setTooltip(close, 'Dismiss Message');
-    close.addEventListener('click', () => {
-      this.#remove(toast);
+    const close = button({
+      icon: 'close',
+      label: 'Dismiss Message',
+      onPress: () => {
+        this.#remove(toast);
+      },
     });
     toast.append(close);
 
