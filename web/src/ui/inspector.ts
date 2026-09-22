@@ -118,21 +118,6 @@ export function field(labelText: string, control: HTMLElement, guide: string): H
   return row;
 }
 
-/**
- * Locks the pointer to the handle for the length of a drag.
- *
- * @remarks Never throws and never rejects: a browser that refuses the lock drags exactly as
- * well, it simply moves the cursor while it does.
- */
-function lock(handle: HTMLElement): void {
-  try {
-    const request: unknown = handle.requestPointerLock?.();
-    if (request instanceof Promise) void request.catch(() => undefined);
-  } catch {
-    // The drag reads its own movement, so the lock is a convenience rather than a requirement.
-  }
-}
-
 /** Pixels a press has to travel before it counts as a drag rather than a click. */
 const DRAG_THRESHOLD = 3;
 
@@ -145,9 +130,12 @@ const DRAG_FINE = 0.1;
  *
  * @remarks The label is a handle as well as the field, which is what makes the gesture reachable
  * without putting a caret in the way. One pixel is one step, Shift is ten and Alt a tenth, the
- * same modifiers the canvas uses. The pointer is locked while it is dragged, so the cursor stays
- * where the hand left it and the travel never runs out at the edge of the screen; a browser that
- * refuses the lock still drags, it just moves the cursor.
+ * same modifiers the canvas uses.
+ *
+ * The pointer is captured for the length of the drag and the cursor is left visible, which is
+ * what every design tool does. Pointer lock was tried first and is wrong here: the browser takes
+ * the cursor away behind a notice about the page controlling it, and locking releases the pointer
+ * capture the drag is tracked by, so the field stops following the hand entirely.
  *
  * The drag commits once, on release, so a field dragged across half its range is one undo step.
  */
@@ -177,14 +165,12 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
 
     handle.addEventListener('pointermove', (event: PointerEvent) => {
       if (!handle.hasPointerCapture(event.pointerId)) return;
-      const locked = document.pointerLockElement === handle;
-      const travel = locked ? event.movementX : event.clientX - last;
+      const travel = event.clientX - last;
       last = event.clientX;
       if (!dragging) {
         if (Math.abs(event.clientX - origin) < DRAG_THRESHOLD) return;
         dragging = true;
         control.focus();
-        lock(handle);
       }
       event.preventDefault();
       const scale = event.shiftKey ? DRAG_COARSE : event.altKey ? DRAG_FINE : 1;
@@ -198,7 +184,6 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
     const release = (event: PointerEvent): void => {
       if (!handle.hasPointerCapture(event.pointerId)) return;
       handle.releasePointerCapture(event.pointerId);
-      if (document.pointerLockElement === handle) document.exitPointerLock();
       if (!dragging) return;
       dragging = false;
       dragged = true;
@@ -500,7 +485,7 @@ export class Inspector {
     const fold = document.createElement('button');
     fold.type = 'button';
     fold.className = 'axys-icon axys-inspector-fold';
-    fold.innerHTML = ICONS.collapse;
+    fold.innerHTML = ICONS.sidebar;
     fold.addEventListener('click', () => {
       this.#hooks.setCollapsed(!this.#collapsed);
     });

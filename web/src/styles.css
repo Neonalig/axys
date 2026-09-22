@@ -249,10 +249,6 @@ body {
   margin-bottom: 0;
 }
 
-.axys-inspector-fold > svg {
-  transition: transform var(--axys-motion) ease;
-}
-
 .axys-inspector.is-collapsed {
   padding: var(--axys-pad) 0;
   overflow: hidden;
@@ -266,10 +262,6 @@ body {
 .axys-inspector.is-collapsed .axys-inspector-head {
   justify-content: center;
   margin-bottom: 0;
-}
-
-.axys-inspector.is-collapsed .axys-inspector-fold > svg {
-  transform: scaleX(-1);
 }
 
 /* The mixer: a bottom panel of desk strips, opened from the footer */

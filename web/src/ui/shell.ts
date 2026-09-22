@@ -780,7 +780,14 @@ export class AppShell {
     // The column width is the grid's, so the shell carries the folded state and the width rather
     // than the panel that asked for either.
     this.#root.classList.toggle('is-inspector-collapsed', state.inspectorCollapsed);
-    this.#root.style.setProperty('--axys-inspector-width', `${String(state.inspectorWidth)}px`);
+    // The rail width is a rule on the folded class, and an inline custom property outranks any
+    // rule, so the width is written only while the column is open. Writing it either way is what
+    // left the panel its full width with nothing but its rail drawn in it.
+    if (state.inspectorCollapsed) {
+      this.#root.style.removeProperty('--axys-inspector-width');
+    } else {
+      this.#root.style.setProperty('--axys-inspector-width', `${String(state.inspectorWidth)}px`);
+    }
     this.#resizer.setAttribute('aria-valuenow', String(state.inspectorWidth));
     this.#resizer.hidden = state.inspectorCollapsed;
     this.#view = state.view;

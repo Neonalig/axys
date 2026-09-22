@@ -1051,9 +1051,13 @@ project. Not `Ctrl+N`, which the browser answers first with a window of its own.
 
 Typing a figure is exact and slow, and a slider is fast and imprecise. Every number field in the
 inspector is now also a drag, from the field or from its label, one step per pixel with the
-modifiers the canvas already uses: Shift coarse, Alt fine. The pointer is locked for the length of
-the drag where the browser allows it, so the cursor stays put and the travel never runs out at the
-edge of the screen; a browser that refuses the lock drags exactly as well.
+modifiers the canvas already uses: Shift coarse, Alt fine.
+
+The pointer is captured for the length of the drag and the cursor is left where it is, which is
+what the design tools people already use do. Pointer lock was tried first, for the wrapping cursor
+a native editor has, and is wrong in a browser twice over: the page takes the cursor away behind a
+notice about controlling it, and taking the lock releases the pointer capture the drag is tracked
+by, so the field stops following the hand the moment the lock engages.
 
 Two details make it behave. The drag takes focus so the panel does not rewrite the field under the
 hand, and gives it back before committing, or the field goes on showing the number the drag wrote
@@ -1065,3 +1069,13 @@ click puts the keyboard back in the field it names.
 A menu dismisses itself on a press outside it, and that press is the button's own, so the click
 that followed reopened it and the menu never closed. The menu now knows which control it hangs off
 and ignores the click from the press that dismissed it.
+
+### An inline width outranked the rail
+
+Folding the inspector added `is-inspector-collapsed`, which sets the column to the rail width, and
+the shell also wrote the dragged width to the same custom property inline. An inline property beats
+any rule, so the class changed nothing and the panel kept its full width with only its rail drawn
+in it. The width is written while the column is open and removed when it folds, so the rule applies.
+
+The control carries a sidebar icon rather than an arrow, because what it shows and hides is a panel
+beside a pane, and an arrow that flipped said only which way something was about to move.

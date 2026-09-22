@@ -41,7 +41,7 @@ export type IconName =
   | 'sourceCode'
   | 'warning'
   | 'info'
-  | 'collapse'
+  | 'sidebar'
   | 'close';
 
 function stroked(body: string): string {
@@ -160,7 +160,10 @@ export const ICONS: Readonly<Record<IconName, string>> = {
   info: stroked(
     `<circle cx="8" cy="8" r="5.5"/><path d="M8 7.4v3.4"/><path fill="currentColor" stroke="none" d="M8 4.6a.7.7 0 1 1 0 1.4.7.7 0 0 1 0-1.4Z"/>`,
   ),
-  collapse: stroked(`<path d="M6.2 3.4 10.8 8l-4.6 4.6"/>`),
+  // A panel beside a pane, which is the thing the control shows and hides.
+  sidebar: stroked(
+    `<rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4"/><path d="M9.6 3.2v9.6"/><path fill="currentColor" stroke="none" d="M10.4 4h2.2a.8.8 0 0 1 .8.8v6.4a.8.8 0 0 1-.8.8h-2.2Z"/>`,
+  ),
   close: stroked(`<path d="m4.2 4.2 7.6 7.6M11.8 4.2l-7.6 7.6"/>`),
 };
 
