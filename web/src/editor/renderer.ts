@@ -15,6 +15,7 @@ import { drawGrid, drawPitchLabels } from './layers/grid.js';
 import { drawMidi } from './layers/midi.js';
 import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
+import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { drawWaveform } from './layers/waveform.js';
 import type { EditorPreview } from './tools.js';
@@ -28,8 +29,6 @@ export interface HoverReadout {
   text: string;
 }
 
-const TOOLTIP_FONT = '11px system-ui, sans-serif';
-const TOOLTIP_HEIGHT = 18;
 const GHOST_ALPHA = 0.55;
 
 /**
@@ -568,6 +567,12 @@ function labelAt(
   drawTooltip(ctx, viewport, theme, text, at.x, at.y);
 }
 
+/**
+ * Draws a floating readout.
+ *
+ * @remarks Sized in whole character columns by {@link drawChip}, because these follow the cursor
+ * and the transport and would otherwise resize on every frame a digit changed.
+ */
 function drawTooltip(
   ctx: CanvasRenderingContext2D,
   viewport: Viewport,
@@ -576,20 +581,8 @@ function drawTooltip(
   x: number,
   y: number,
 ): void {
-  ctx.save();
-  ctx.font = TOOLTIP_FONT;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  const width = ctx.measureText(text).width + 12;
+  const width = chipWidth(ctx, text);
   const left = Math.min(Math.max(4, x), viewport.width - width - 4);
-  const top = Math.min(Math.max(RULER_HEIGHT + 2, y), viewport.height - TOOLTIP_HEIGHT - 4);
-  ctx.globalAlpha = 0.94;
-  ctx.fillStyle = theme.surfaceRaised;
-  ctx.fillRect(left, top, width, TOOLTIP_HEIGHT);
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = theme.border;
-  ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, Math.round(width), TOOLTIP_HEIGHT);
-  ctx.fillStyle = theme.text;
-  ctx.fillText(text, left + 6, top + TOOLTIP_HEIGHT / 2);
-  ctx.restore();
+  const top = Math.min(Math.max(RULER_HEIGHT + 2, y), viewport.height - CHIP_HEIGHT - 4);
+  drawChip(ctx, theme, text, left, top);
 }

@@ -15,8 +15,13 @@ const LOW_CONFIDENCE = 0.5;
 /** Opacity bands the detected line is grouped into, weakest first. */
 const ALPHA_BANDS = [0.25, 0.45, 0.7, 1] as const;
 
+/** Shortest a detected column is drawn, in pixels, so a steady note is never a sub-pixel mark. */
+const MIN_COLUMN_HEIGHT = 1.5;
+
 interface Columns {
   count: number;
+  /** Screen x of the first column, which is a whole number of columns from time zero. */
+  originX: number;
   voiced: Uint8Array;
   low: Float32Array;
   high: Float32Array;
@@ -24,10 +29,21 @@ interface Columns {
   unvoiced: Float32Array;
 }
 
+/**
+ * Reduces the track to one column per pixel.
+ *
+ * @remarks Columns are cut on a grid anchored at time zero rather than at the left edge of the
+ * view, so panning does not move frames between columns. Anchoring on the edge made the line
+ * shuffle its own shape as the view slid under it, which reads as the whole track shimmering.
+ */
 function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
-  const count = Math.max(1, Math.ceil(viewport.width));
+  const count = Math.max(1, Math.ceil(viewport.width) + 1);
+  const step = viewport.secondsPerPixel;
+  const firstColumn = Math.floor(viewport.view.visibleStart / step);
+  const originX = viewport.timeToX(firstColumn * step);
   const columns: Columns = {
     count,
+    originX,
     voiced: new Uint8Array(count),
     low: new Float32Array(count),
     high: new Float32Array(count),
@@ -43,7 +59,7 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
     if (time > viewport.view.visibleEnd) {
       break;
     }
-    const column = Math.floor(viewport.timeToX(time));
+    const column = Math.floor(time / step) - firstColumn;
     if (column < 0 || column >= count) {
       continue;
     }
@@ -125,7 +141,7 @@ function drawUnvoiced(
     const level = Math.min(1, Math.sqrt(rms) * 2.5);
     const height = 2 + level * (UNVOICED_STRIP - 2);
     ctx.globalAlpha = 0.35 + level * 0.5;
-    ctx.fillRect(column, base - height, 1, height);
+    ctx.fillRect(columns.originX + column, base - height, 1, height);
   }
   ctx.restore();
 }
@@ -150,7 +166,7 @@ function drawUncertainty(
     const top = viewport.midiToY((columns.high[column] ?? 0) + spread);
     const bottom = viewport.midiToY((columns.low[column] ?? 0) - spread);
     ctx.globalAlpha = 0.18 + (LOW_CONFIDENCE - confidence) * 0.3;
-    ctx.fillRect(column, top, 1, Math.max(1, bottom - top));
+    ctx.fillRect(columns.originX + column, top, 1, Math.max(1, bottom - top));
   }
   ctx.restore();
 }
@@ -167,6 +183,7 @@ function drawDetected(
   theme: Theme,
 ): void {
   const paths = ALPHA_BANDS.map(() => new Path2D());
+  const origin = columns.originX;
   let previousColumn = -2;
   let previousY = 0;
   for (let column = 0; column < columns.count; column += 1) {
@@ -177,24 +194,30 @@ function drawDetected(
     const low = columns.low[column] ?? 0;
     const high = columns.high[column] ?? 0;
     const topY = viewport.midiToY(high);
-    const bottomY = viewport.midiToY(low);
+    // A steady note spans no pitch at all, so its column would be a hairline that only lands on
+    // a pixel at some sub-pixel offsets and vanishes at the rest. It is given a floor instead.
+    const bottomY = Math.max(viewport.midiToY(low), topY + MIN_COLUMN_HEIGHT);
     const path = paths[bandFor(columns.confidence[column] ?? 0)];
     if (path === undefined) {
       continue;
     }
+    const x = origin + column + 0.5;
     if (previousColumn === column - 1) {
-      path.moveTo(previousColumn + 0.5, previousY);
-      path.lineTo(column + 0.5, bottomY);
+      path.moveTo(origin + previousColumn + 0.5, previousY);
+      path.lineTo(x, bottomY);
     }
-    path.moveTo(column + 0.5, bottomY);
-    path.lineTo(column + 0.5, Math.min(bottomY - 1, topY));
+    path.moveTo(x, bottomY);
+    path.lineTo(x, topY);
     previousColumn = column;
     previousY = topY;
   }
 
   ctx.save();
-  ctx.lineWidth = 1.6;
-  ctx.lineCap = 'round';
+  // Thicker than the gold target line and dotted against it, so the two are told apart by shape
+  // as well as by colour at any zoom.
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'butt';
+  ctx.setLineDash([3, 2]);
   ctx.strokeStyle = theme.pitchDetected;
   for (let band = 0; band < paths.length; band += 1) {
     const path = paths[band];
@@ -204,6 +227,7 @@ function drawDetected(
     ctx.globalAlpha = ALPHA_BANDS[band] ?? 1;
     ctx.stroke(path);
   }
+  ctx.setLineDash([]);
   ctx.restore();
 }
 

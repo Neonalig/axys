@@ -6,6 +6,7 @@ import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER, RULER_HEIGHT } from '../view.js';
 import { noteName, noteNameWithCents } from './grid.js';
 import { detectedAt } from './pitch.js';
+import { chipWidth, drawChip, READOUT_FONT } from './readout.js';
 import { formatBarBeat, formatClock } from './ruler.js';
 
 /** Width in pixels of the grips on the loop range edges. */
@@ -19,9 +20,6 @@ const HOVER_KEY_ALPHA = 0.3;
 
 /** Opacity of the crosshair that reports where the pointer is. */
 const HOVER_LINE_ALPHA = 0.45;
-
-/** Height in pixels of a readout chip. */
-const CHIP_HEIGHT = 18;
 
 /**
  * Draws selection, loop range, playhead and the playhead readout.
@@ -116,7 +114,13 @@ export function drawHoverGuides(
   theme: Theme,
   point: { x: number; y: number },
 ): void {
-  const inPlot = point.y >= viewport.plotTop;
+  // Over a ruler only that ruler's own axis is previewed: a horizontal line across the time
+  // ruler, or a vertical one down the note gutter, would point at nothing that ruler measures.
+  const overTime = point.y < viewport.plotTop;
+  const overNotes = point.x < PITCH_LABEL_GUTTER && !overTime;
+  const inPlot = !overTime;
+  const showVertical = !overNotes;
+  const showHorizontal = inPlot;
   ctx.save();
 
   if (inPlot) {
@@ -137,10 +141,12 @@ export function drawHoverGuides(
   ctx.lineWidth = 1;
   ctx.setLineDash([3, 3]);
   ctx.beginPath();
-  const x = Math.round(point.x) + 0.5;
-  ctx.moveTo(x, viewport.plotTop);
-  ctx.lineTo(x, viewport.height);
-  if (inPlot) {
+  if (showVertical) {
+    const x = Math.round(point.x) + 0.5;
+    ctx.moveTo(x, viewport.plotTop);
+    ctx.lineTo(x, viewport.height);
+  }
+  if (showHorizontal) {
     const y = Math.round(point.y) + 0.5;
     ctx.moveTo(PITCH_LABEL_GUTTER, y);
     ctx.lineTo(viewport.width, y);
@@ -149,8 +155,10 @@ export function drawHoverGuides(
   ctx.setLineDash([]);
   ctx.globalAlpha = 1;
 
-  drawHoverRuler(ctx, state, viewport, theme, point.x);
-  if (inPlot) {
+  if (showVertical) {
+    drawHoverRuler(ctx, state, viewport, theme, point.x);
+  }
+  if (showHorizontal) {
     drawHoverKeyLabel(ctx, state, viewport, theme, point.y);
   }
   ctx.restore();
@@ -171,19 +179,9 @@ function drawHoverRuler(
       ? formatBarBeat(timeline, seconds)
       : formatClock(seconds, 0.001);
 
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
-  const width = ctx.measureText(text).width + 10;
+  const width = chipWidth(ctx, text);
   const left = Math.min(Math.max(0, x - width / 2), viewport.width - width);
-  ctx.fillStyle = theme.surfaceRaised;
-  ctx.globalAlpha = 0.92;
-  ctx.fillRect(left, 1, width, CHIP_HEIGHT);
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = theme.borderStrong;
-  ctx.strokeRect(Math.round(left) + 0.5, 1.5, Math.round(width), CHIP_HEIGHT);
-  ctx.fillStyle = theme.rulerText;
-  ctx.fillText(text, left + width / 2, 1 + CHIP_HEIGHT / 2);
+  drawChip(ctx, theme, text, left, 1);
 }
 
 /** The note the pointer is over, named in the pitch-label gutter. */
@@ -196,7 +194,7 @@ function drawHoverKeyLabel(
 ): void {
   const midi = Math.round(viewport.yToMidi(y));
   const text = noteName(midi, state.edits?.accidentals ?? 'sharps');
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.font = READOUT_FONT;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.text;
@@ -247,25 +245,14 @@ function drawReadout(
     state.view.timeDisplay === 'barsBeats' && timeline !== null
       ? formatBarBeat(timeline, position)
       : formatClock(position, 0.001);
+  // Where the take is unvoiced the readout simply ends: naming the absence puts a word under
+  // the cursor that changes on every frame the voice drops out.
   const detected = state.track === null ? null : detectedAt(state.track, position);
   const pitch =
-    detected === null
-      ? 'Unvoiced'
-      : noteNameWithCents(detected, state.edits?.accidentals ?? 'sharps');
-  const text = `${clock}  ${pitch}`;
+    detected === null ? '' : noteNameWithCents(detected, state.edits?.accidentals ?? 'sharps');
+  const text = pitch === '' ? clock : `${clock}  ${pitch}`;
 
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  const width = ctx.measureText(text).width + 12;
+  const width = chipWidth(ctx, text);
   const left = Math.min(Math.max(4, x + 8), viewport.width - width - 4);
-  const top = viewport.plotTop + 6;
-  ctx.fillStyle = theme.surfaceRaised;
-  ctx.globalAlpha = 0.92;
-  ctx.fillRect(left, top, width, 18);
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = theme.border;
-  ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, Math.round(width), 18);
-  ctx.fillStyle = theme.text;
-  ctx.fillText(text, left + 6, top + 9);
+  drawChip(ctx, theme, text, left, viewport.plotTop + 6);
 }

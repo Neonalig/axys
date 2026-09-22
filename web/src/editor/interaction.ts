@@ -673,9 +673,8 @@ export class EditorController {
         const loop = state.transport.loop;
         return { kind: 'loop', anchorTime: hit.edge === 'start' ? loop.end : loop.start };
       }
-      if (modifiers.constrain) {
-        return { kind: 'loop', anchorTime: hit.time };
-      }
+      // No loop drawing here: the ruler places the playhead, the same as anywhere else. A loop
+      // comes from the selection through Loop Selection, and its edges are dragged once it does.
       this.#scrubTo(hit.time);
       return { kind: 'scrub' };
     }

@@ -124,9 +124,6 @@ export interface Hit {
 
 /** Cursor shape for a tool over a given target. */
 export function cursorFor(tool: ToolId, hit: Hit): string {
-  if (hit.kind === 'ruler') {
-    return 'text';
-  }
   if (hit.kind === 'loopEdge' || hit.kind === 'blobEdge') {
     return 'ew-resize';
   }
@@ -142,13 +139,19 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   return toolDefinition(tool).cursor;
 }
 
-/** Tooltip describing what is under the cursor. */
+/**
+ * Readout describing what is under the cursor.
+ *
+ * @remarks The ruler has no readout of its own. It reports the time it measures, the same way
+ * every other position does, because naming the control the cursor is over says less than saying
+ * where the cursor is.
+ */
 export function describeHit(hit: Hit, state: AppState): string {
   const accidentals = state.edits?.accidentals ?? 'sharps';
   const clock = formatClock(hit.time, 0.001);
   switch (hit.kind) {
     case 'ruler':
-      return `Ruler ${clock}`;
+      return clock;
     case 'loopEdge':
       return hit.edge === 'start' ? 'Loop Start' : 'Loop End';
     case 'anchor':
