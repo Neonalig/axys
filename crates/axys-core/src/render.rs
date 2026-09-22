@@ -315,7 +315,9 @@ impl Renderer {
                         target = warp_envelope(&target, target_ratio);
                     }
                     match_gain(&mut target, &rendered_envelope);
+                    let level = frame_rms(&frame);
                     processor.correct(&mut frame, &rendered_envelope, &target);
+                    restore_level(&mut frame, level);
                 }
             }
             for (k, &value) in frame.iter().enumerate() {
@@ -389,6 +391,27 @@ fn resolve_rate(plan_rate: f64, track_rate: f64) -> f64 {
         }
     }
     FALLBACK_SAMPLE_RATE
+}
+
+/// Scales `frame` back to the RMS it held before its envelope was reshaped.
+///
+/// The envelope pass replaces a frame's spectral shape, and the two envelopes are matched
+/// on their log means rather than their energy, so the reshaping can move a frame's level
+/// by tens of percent where the rendered and source spectra differ. Level belongs to the
+/// synthesiser and the plan, so it is put back. A frame that comes out silent is left
+/// alone rather than amplified.
+fn restore_level(frame: &mut [f32], level: f32) {
+    let now = frame_rms(frame);
+    if now <= ENVELOPE_RMS_FLOOR {
+        return;
+    }
+    let scale = level / now;
+    if !scale.is_finite() {
+        return;
+    }
+    for slot in frame.iter_mut() {
+        *slot *= scale;
+    }
 }
 
 /// Root mean square of a frame, zero when it holds a non-finite sample.

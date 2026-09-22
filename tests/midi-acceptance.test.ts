@@ -677,18 +677,7 @@ describe('13.5 step 6: overriding a mapping keeps the analysis and manual curves
     session.free();
   });
 
-  it.fails('restores the proposed mapping when the override is undone', () => {
-    // DEFECT. `Session.proposeMappings` (crates/axys-wasm/src/lib.rs, propose_mappings_js)
-    // writes straight into `state.mappings` without pushing an `EditOp`, and
-    // `Session::undo` rebuilds the state by replaying the history from the analysis. So
-    // undoing anything after a proposal does not restore the proposal, it erases every
-    // mapping: `stateJson().mappings` comes back `[]` and the guide stops applying to any
-    // blob at all, while the redo label still reads "Set Mapping".
-    // Repro: load fixtures/midi/melody.mid, select track 0 as a combined guide, call
-    // proposeMappings() (four mappings), applyEdit setMapping for blob 2, then undo().
-    // Expected blob 2 back on note 2 with the other three intact; actual is an empty
-    // mapping list. Manual curves and the pitch track do survive, so only the proposals
-    // are lost.
+  it('restores the proposed mapping when the override is undone', () => {
     const session = sessionWith('melody');
     selectGuide(session, 0, 'combined');
     session.proposeMappings();
@@ -722,17 +711,7 @@ describe('6.2 guide eligibility', () => {
     session.free();
   });
 
-  it.fails('reports the overlapping.mid overlap through the WASM boundary', () => {
-    // DEFECT. Design bible 6.2 requires overlapping notes in a monophonic guide to be
-    // detected and either resolved by a documented policy or handed to the user, and
-    // core_contracts.md declares `MidiFile::overlaps(track, channel)` for exactly that.
-    // Nothing exposes it: crates/axys-wasm/src/lib.rs has no wrapper, the MidiFile JSON
-    // `Session.midiJson` returns carries no overlap field, `Session.conflictsJson`
-    // reports only blob timing conflicts and returns `[]` here, `proposeMappings`
-    // reports only unmapped blob 3, and no TypeScript recomputes it. So the overlap is
-    // silently ignored, and docs/decisions.md records no policy either.
-    // Repro: load fixtures/midi/overlapping.mid, select track 0 as a combined guide,
-    // call proposeMappings() and conflictsJson(); neither mentions notes 0 and 1.
+  it('reports the overlapping.mid overlap through the WASM boundary', () => {
     const session = sessionWith('overlapping');
     selectGuide(session, 0, 'combined');
     const report = JSON.parse(session.proposeMappings()) as Record<string, unknown>;
