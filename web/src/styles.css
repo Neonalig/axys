@@ -141,6 +141,15 @@
   box-sizing: border-box;
 }
 
+/*
+ * `hidden` means hidden. Every `display` this file sets would otherwise outrank the user agent's
+ * own `[hidden]` rule, which is what left an empty overflow button on the toolbar.
+ */
+
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -230,13 +239,16 @@ body {
   display: flex;
   align-items: center;
   gap: var(--axys-space-2);
-  /* The bar never wraps: a second line moves the editor down and changes how tall it is. What
-     does not fit folds into the overflow menu instead. */
-  flex-wrap: nowrap;
-  overflow: hidden;
+  /* Wraps by whole group, because a group split across a line break reads as two sets. Past the
+     shell's line budget the groups that do not fit fold into the overflow menu instead. */
+  flex-wrap: wrap;
+  align-content: center;
+  /* A grid item spanning every column sizes the grid to its own content unless it is told it may
+     be narrower, which is what pushed the bar off the window rather than wrapping it. */
+  min-width: 0;
   min-height: var(--axys-toolbar-height);
   transition: min-height var(--axys-duration-base) var(--axys-ease-standard);
-  padding: 0 var(--axys-space-3);
+  padding: var(--axys-space-1) var(--axys-space-3);
   background: var(--axys-surface);
   border-bottom: 1px solid var(--axys-border);
 }
@@ -343,7 +355,8 @@ body {
 .axys-zoom {
   display: flex;
   align-items: center;
-  gap: 4px;
+  flex: none;
+  gap: var(--axys-space-1);
 }
 
 .axys-zoom-slider {
@@ -364,8 +377,10 @@ body {
   text-align: right;
 }
 
+/* The footer's controls are shorter than the toolbar's, but they take their names the same way */
+
 .axys-zoom .axys-icon {
-  width: 24px;
+  width: var(--axys-control-height);
   height: 22px;
   min-height: 0;
 }
@@ -531,14 +546,23 @@ body {
   grid-area: status;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--axys-space-2);
+  /* Spans every column, so it needs the same leave to be narrower than its content as the bar */
+  min-width: 0;
   min-height: var(--axys-status-height);
-  padding: 0 var(--axys-space-3);
+  padding: var(--axys-space-1) var(--axys-space-3);
   font-size: var(--axys-size-sm);
   color: var(--axys-text-muted);
   background: var(--axys-surface);
   border-top: 1px solid var(--axys-border);
 }
+
+/*
+ * Compact: one column, so the inspector stacks under the canvas rather than beside it. Every area
+ * the shell places has to be named here, or the grid puts the unnamed ones in implicit tracks of
+ * their own, which is what left a gap under the canvas with the mixer in the corner.
+ */
 
 @media (width <= 900px) {
   #app {
@@ -546,16 +570,49 @@ body {
     grid-template-areas:
       'toolbar'
       'canvas'
+      'resizer'
       'inspector'
+      'mixer'
       'status';
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto auto auto;
   }
+
+  /* There is no column to drag when the panel is a row under the canvas */
+
+  .axys-resizer {
+    display: none;
+  }
+
+  /*
+   * The panels are stacked with the canvas rather than beside it, so between them they may take
+   * at most half the window. The editor is what the window is for.
+   */
 
   #app > aside,
   .axys-inspector {
-    max-height: 40dvh;
+    max-height: 30dvh;
     border-left: 0;
     border-top: 1px solid var(--axys-border);
+  }
+
+  /* The rail is a narrow column; folded in one column the panel keeps its head and loses its body */
+
+  #app.is-inspector-collapsed {
+    --axys-inspector-width: auto;
+  }
+
+  .axys-inspector.is-collapsed {
+    padding: var(--axys-space-2) var(--axys-space-3);
+  }
+
+  .axys-inspector.is-collapsed .axys-inspector-head {
+    justify-content: flex-end;
+  }
+
+  /* Clamped rather than a plain fraction, so a fader stays long enough to be worth dragging */
+
+  .axys-mixer {
+    height: clamp(180px, 26dvh, var(--axys-mixer-height));
   }
 }
 
@@ -583,15 +640,29 @@ body {
   }
 }
 
-/* The project name, shown in the titlebar of the installed app only */
+/*
+ * The project's name at the end of the toolbar, and in the titlebar of the installed app. It is
+ * a button, because the name is editable and this is where someone looks for it, but it is drawn
+ * as the title it is until it is reached for.
+ */
 
 .axys-title {
+  justify-content: flex-end;
   overflow: hidden;
   max-width: 28ch;
+  padding: 0 var(--axys-space-2);
+  background: transparent;
+  border-color: transparent;
   color: var(--axys-text-muted);
   font-size: var(--axys-size-sm);
+  font-weight: var(--axys-weight-body);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.axys-title:hover:not(:disabled) {
+  color: var(--axys-text);
+  background: var(--axys-surface-sunken);
 }
 
 /* Toolbar groups */
@@ -605,6 +676,12 @@ body {
 .axys-group + .axys-group {
   padding-left: var(--axys-space-2);
   border-left: 1px solid var(--axys-border);
+}
+
+/* A group hidden into the overflow menu leaves no gap and no divider behind it */
+
+.axys-group[hidden] {
+  display: none;
 }
 
 /* Segmented: a set of buttons that share one answer, joined so only one can read as chosen */
@@ -725,8 +802,12 @@ button.axys-icon {
 }
 
 .is-labelled button.axys-icon {
+  /* `width` alone is not enough: a flex item still shrinks past its content unless it is told
+     not to, which is what clipped the zoom buttons' names. */
+  flex: none;
   width: auto;
-  padding: 0 10px;
+  min-width: var(--axys-control-height);
+  padding: 0 var(--axys-space-3);
 }
 
 .is-labelled .axys-button-label {

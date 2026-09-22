@@ -170,6 +170,19 @@ export interface Chrome {
   toggleCheatsheet(): void;
 }
 
+/**
+ * Whether the host is Windows, for the one shortcut whose conventional key differs by platform.
+ *
+ * @remarks Reads `userAgentData` where it exists and falls back to the user agent string, which
+ * is all that is needed to tell Windows from everything else. Anything not recognised is treated
+ * as not Windows, which is the wider convention.
+ */
+function isWindows(): boolean {
+  const data = (navigator as { userAgentData?: { platform?: string } }).userAgentData;
+  const platform = data?.platform ?? navigator.userAgent;
+  return /win/i.test(platform);
+}
+
 /** Nominal viewport the zoom commands measure against, so zoom needs no canvas. */
 const ZOOM_WIDTH = 1000;
 const ZOOM_HEIGHT = 400;
@@ -525,8 +538,10 @@ export function buildCommands(): Command[] {
       id: 'edit.redo',
       label: 'Redo',
       group: 'Edit',
-      shortcut: 'Ctrl+Shift+Z',
-      altShortcut: 'Ctrl+Y',
+      // Both keys always run it. Which one is shown follows the platform: Ctrl+Y is what Windows
+      // editors train people to reach for, and Cmd+Shift+Z is what macOS does.
+      shortcut: isWindows() ? 'Ctrl+Y' : 'Ctrl+Shift+Z',
+      altShortcut: isWindows() ? 'Ctrl+Shift+Z' : 'Ctrl+Y',
       enabled: editable,
       run: (ctx) => {
         if (!ctx.workspace.redo()) ctx.toast.info('Nothing to redo');
@@ -536,7 +551,7 @@ export function buildCommands(): Command[] {
       // Splitting is the Slice tool's, and only the Slice tool's: a command that split wherever
       // the playhead happened to be was a second way to cut that nothing on screen pointed at.
       id: 'edit.joinBlobs',
-      label: 'Join Blobs',
+      label: 'Join Blob(s)',
       group: 'Edit',
       shortcut: 'J',
       enabled: (ctx) => editable(ctx) && joinRun(ctx.store.state) !== null,
@@ -560,7 +575,7 @@ export function buildCommands(): Command[] {
     },
     {
       id: 'edit.reset',
-      label: 'Reset',
+      label: 'Reset Blob(s)',
       group: 'Edit',
       shortcut: 'R',
       enabled: (ctx) => editable(ctx) && resetTarget(ctx.store.state) !== null,
@@ -602,7 +617,7 @@ export function buildCommands(): Command[] {
       // on it by hand still apply.
       // `E` rather than a digit: the digits address the take by proportion, all ten of them.
       id: 'edit.excludeBlob',
-      label: 'Exclude Blob',
+      label: 'Exclude Blob(s)',
       group: 'Edit',
       shortcut: 'E',
       enabled: (ctx) => editable(ctx) && targetBlobs(ctx.store.state).length > 0,
@@ -648,7 +663,10 @@ export function buildCommands(): Command[] {
       label: 'Stop',
       group: 'Transport',
       shortcut: 'Shift+Space',
-      enabled: ready,
+      // Stop both halts playback and returns the playhead to the start, so it has something to do
+      // while either is true and nothing to do when the transport is already stopped at zero.
+      enabled: (ctx) =>
+        ready(ctx) && (ctx.store.state.transport.playing || ctx.store.state.transport.position > 0),
       run: (ctx) => {
         ctx.audio.stop();
       },
@@ -687,7 +705,7 @@ export function buildCommands(): Command[] {
     },
     {
       id: 'transport.toggleMetronome',
-      label: 'Toggle Metronome',
+      label: 'Metronome',
       group: 'Transport',
       shortcut: 'M',
       enabled: (ctx) => timelineOf(ctx.store.state) !== null,
@@ -797,6 +815,9 @@ export function buildCommands(): Command[] {
       label: 'Find Command',
       group: 'View',
       shortcut: 'Ctrl+Shift+P',
+      // A backtick is nothing on its own in an editor and is one key rather than three, which is
+      // what a palette wants to be reached by.
+      altShortcut: '`',
       enabled: () => true,
       run: (ctx) => {
         ctx.chrome.toggleCommandPalette();
@@ -806,7 +827,7 @@ export function buildCommands(): Command[] {
       id: 'help.shortcuts',
       label: 'Keyboard Shortcuts',
       group: 'Help',
-      shortcut: '?',
+      shortcut: ',',
       enabled: () => true,
       run: (ctx) => {
         ctx.chrome.toggleCheatsheet();

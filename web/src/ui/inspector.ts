@@ -540,6 +540,19 @@ export class Inspector {
     setTooltip(this.#fold, label);
   }
 
+  /**
+   * Opens the project tab and puts the caret in the name, ready to be typed over.
+   *
+   * @remarks What pressing the title in the toolbar does. The panel has to be unfolded first, and
+   * that is the shell's to do, so this asks for it rather than reaching for the grid itself.
+   */
+  editProjectName(): void {
+    this.#hooks.setCollapsed(false);
+    this.#setTab('project');
+    this.#projectName.focus();
+    this.#projectName.select();
+  }
+
   /** Shows one tab and marks its button, ignoring a tab that has nothing to show. */
   #setTab(name: InspectorTab): void {
     const button = this.#tabButtons.get(name);

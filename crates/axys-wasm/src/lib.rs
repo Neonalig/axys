@@ -124,12 +124,32 @@ fn check_fits_audio(
 /// Returns `NaN` for non-positive or non-finite input.
 /// A project's opening name, from the file it was imported from with its extension stripped.
 ///
-/// A leading dot is kept, so a file called `.wav` names a project `.wav` rather than nothing.
+/// Only the last extension goes, so `take 3.final.wav` opens as `take 3.final`. A name that is
+/// only an extension keeps it, so a file called `.wav` names a project `.wav` rather than nothing.
 fn project_name(file_name: &str) -> String {
     let trimmed = file_name.trim();
     match trimmed.rfind('.') {
         Some(dot) if dot > 0 => trimmed[..dot].to_string(),
         _ => trimmed.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_name;
+
+    #[test]
+    fn a_project_opens_named_after_its_file_without_the_extension() {
+        assert_eq!(project_name("phrase.wav"), "phrase");
+        assert_eq!(project_name("  Take 3.FLAC  "), "Take 3");
+        assert_eq!(project_name("take 3.final.wav"), "take 3.final");
+    }
+
+    #[test]
+    fn a_name_with_no_extension_to_strip_is_kept_whole() {
+        assert_eq!(project_name("phrase"), "phrase");
+        assert_eq!(project_name(".wav"), ".wav");
+        assert_eq!(project_name(""), "");
     }
 }
 
@@ -459,11 +479,12 @@ impl Session {
             track,
             base: project.base.clone(),
             // A project written before the name moved into the edit state carries it only at the
-            // top level, so it is read back into the one place the editor keeps it.
+            // top level, where it was the imported file's own name, extension and all. It is read
+            // back into the one place the editor keeps it, stripped the same way an import is.
             state: {
                 let mut edits = project.edits.clone();
                 if edits.name.trim().is_empty() {
-                    edits.name = project.name.clone();
+                    edits.name = project_name(&project.name);
                 }
                 edits
             },

@@ -1391,3 +1391,69 @@ judgement, so it is measured as an OKLab distance, where roughly 0.02 is where a
 to read as a different colour at all. The tightest pair in the shipped set is Abyssal against a
 MIDI note at 0.088, and Sea Glass against the detected pitch at 0.147. The test asserts a floor of
 0.06 over every accent, so a ninth cannot be added that collides.
+
+### The toolbar wraps by group before it folds
+
+The bar was set not to wrap at all, which pushed it off the window rather than onto a second line,
+and folded groups into an overflow menu that could come out empty because a group of tool buttons
+holds no commands for a menu to list.
+
+It now wraps by whole group, because a group split across a line break reads as two sets, and only
+past three lines does it fold from the right, which leaves the file and edit commands that anchor
+the bar the last to go. A group holding nothing the menu could offer is never folded, and the
+overflow control is hidden whenever nothing is.
+
+Two layout faults went with it. A grid item spanning every column sizes the grid to its own
+content, so the toolbar and the status bar each needed `min-width: 0` before either would wrap
+instead of widening the window. And `hidden` was being outranked by this stylesheet's own
+`display` rules, which is why a hidden button still drew; `[hidden]` now wins outright.
+
+### The compact layout names every area it places
+
+The one-column template named four areas for six placed ones, so the mixer and the resizer landed
+in implicit tracks of their own: a gap under the canvas and a panel in the corner. Every area is
+named now, the resizer is dropped outright because there is no column to drag, and the inspector
+and mixer are capped so that between them they take at most half the window. The editor is what
+the window is for.
+
+### Icons that say what the control is without its name
+
+A panel glyph on the mixer only said that a panel opens somewhere, and the button's name is off by
+default. It is `sliders-vertical`, a desk of faders, which says mixer on its own; it keeps one
+glyph and carries its state in its pressed styling, the way the metronome does. The panel glyph
+stays on the inspector fold, where a panel beside a pane is exactly what it shows and hides, with
+the pair swapped so the glyph names what pressing it will do rather than where the panel is.
+
+The pitch tool takes `list-chevrons-up-down`, which is the axis it drags along, and hands its
+spline to the ramp tool, which is what a spline actually draws. Align Guide takes
+`ruler-dimension-line` rather than the time tool's arrows, and the keyboard cheatsheet takes a
+keyboard.
+
+### Shortcuts on keys a browser leaves alone
+
+The cheatsheet moved from `?` to `,`, and the command palette answers to a bare backtick as well as
+`Ctrl+Shift+P`: one key rather than three, and nothing on its own in an editor.
+
+Redo shows the key the host platform's own editors use, `Ctrl+Y` on Windows and `Cmd+Shift+Z`
+elsewhere, and answers to both regardless. Showing one and binding both is what a second editor
+trains people to expect.
+
+### A command that can do nothing says so
+
+Stop was enabled whenever a project was open, including with the transport already stopped at the
+start, where it does nothing. It now asks whether there is playback to halt or a playhead to
+return, which is the pair of things it actually does.
+
+### Blob commands name what they act on
+
+Join, Reset and Exclude all act on the selection, which is one blob or several, so each says
+Blob(s) rather than guessing a number. Correction and Voice Character open a panel and preview
+across the whole project, so they are their own group with a rule after them, and the four that
+act on the selected blobs read as one set.
+
+### The project's name is where you press to change it
+
+The name sits at the end of the toolbar, which is the window's titlebar once the app is installed.
+It is a button: pressing it unfolds the inspector, shows the project tab and puts the caret in the
+name with the whole of it offered. A label there would have been the one place someone looks for
+the name and the one place they could not change it.

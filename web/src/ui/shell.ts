@@ -24,7 +24,7 @@ import type { EngineReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { button as control } from './controls/index.js';
-import { ICONS, STATE_ICONS, stateIcon, type IconName } from './icons.js';
+import { ICONS, STATE_ICONS, type IconName } from './icons.js';
 import type { Dialog } from './dialog.js';
 import { Inspector } from './inspector.js';
 import { MixerPanel } from './mixer.js';
@@ -149,6 +149,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'file.exportWav': 'Export',
   'file.importMidi': 'Import',
   'edit.joinBlobs': 'Join',
+  'edit.reset': 'Reset',
   'edit.excludeBlob': 'Exclude',
   'edit.voiceCharacter': 'Voice',
   'edit.smoothSpan': 'Smooth',
@@ -296,6 +297,17 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
 /** Commands drawn in their own group ahead of the rest of theirs. */
 const HISTORY_COMMANDS: ReadonlySet<string> = new Set(['edit.undo', 'edit.redo']);
 
+/**
+ * The two edits that open a panel and preview across the whole project.
+ *
+ * @remarks Drawn as their own group, so the four that act on the selected blobs read as one set
+ * rather than as four more buttons in the same run.
+ */
+const CORRECTION_COMMANDS: ReadonlySet<string> = new Set([
+  'edit.voiceCharacter',
+  'edit.correction',
+]);
+
 const GROUP_ORDER: readonly CommandGroup[] = [
   'File',
   'Edit',
@@ -325,12 +337,12 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Export Audio': 'export',
   Undo: 'undo',
   Redo: 'redo',
-  'Join Blobs': 'join',
-  Reset: 'reset',
+  'Join Blob(s)': 'join',
+  'Reset Blob(s)': 'reset',
   Correction: 'correct',
   'Voice Character': 'voice',
   'Smooth Span': 'smooth',
-  'Exclude Blob': 'exclude',
+  'Exclude Blob(s)': 'exclude',
   Play: 'play',
   Pause: 'pause',
   Stop: 'stop',
@@ -340,8 +352,10 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Zoom Fit': 'zoomFit',
   'Toggle Bars and Beats': 'barsBeats',
   'Follow Playhead': 'follow',
-  'Toggle Metronome': 'metronome',
-  'Align Guide': 'time',
+  Metronome: 'metronome',
+  'Align Guide': 'alignGuide',
+  'Keyboard Shortcuts': 'keyboard',
+  'Find Command': 'search',
   'Help and Diagnostics': 'help',
 };
 
@@ -384,6 +398,16 @@ interface ButtonFace {
  * an empty editor is waiting for.
  */
 const EMPTY_COMMANDS: readonly string[] = ['file.open', 'file.newProject'];
+
+/**
+ * Lines the toolbar may wrap onto before it starts folding groups into the overflow menu.
+ *
+ * @remarks Three, because past that the bar takes more of the window than the editor under it.
+ */
+const MAX_TOOLBAR_LINES = 3;
+
+/** Height of one toolbar line in pixels, matching `--axys-toolbar-height`. */
+const TOOLBAR_LINE_HEIGHT = 44;
 
 /** What sits between the project's name and the application's in a window title. */
 const TITLE_SEPARATOR = ' - ';
@@ -465,10 +489,8 @@ export class AppShell {
   readonly #header: HTMLElement;
   readonly #footer: HTMLElement;
   readonly #mixerToggle: HTMLButtonElement;
-  /* Assigned by #buildMixerToggle, which the constructor calls before anything reads it. */
-  #mixerIcon!: HTMLElement;
   readonly #themeButton: HTMLButtonElement;
-  readonly #title: HTMLElement;
+  readonly #title: HTMLButtonElement;
   readonly #empty: HTMLElement;
   readonly #overflow: HTMLButtonElement;
   /** Groups currently folded into the overflow menu, outermost first. */
@@ -558,11 +580,21 @@ export class AppShell {
         }
         header.append(section);
       }
-      const rest = commands.filter((command) => !HISTORY_COMMANDS.has(command.id));
+      const corrections = commands.filter((command) => CORRECTION_COMMANDS.has(command.id));
+      if (corrections.length > 0) {
+        const section = group('Correction Commands');
+        for (const command of corrections) {
+          section.append(this.#buildCommandButton(command));
+        }
+        header.append(section);
+      }
+      const rest = commands.filter(
+        (command) => !HISTORY_COMMANDS.has(command.id) && !CORRECTION_COMMANDS.has(command.id),
+      );
       if (rest.length === 0 && name !== 'Transport' && name !== 'View') {
         continue;
       }
-      const section = group(`${name} Commands`);
+      const section = group(name === 'Edit' ? 'Blob Commands' : `${name} Commands`);
       for (const command of rest) {
         section.append(this.#buildCommandButton(command));
       }
@@ -600,10 +632,16 @@ export class AppShell {
     header.append(spacer);
 
     // The project's name at the end of the bar, which is the window's titlebar once the app is
-    // installed. In a browser tab it simply reads as one more thing the bar says.
-    const title = document.createElement('span');
+    // installed. It is a button rather than a label because the name is editable and this is
+    // where someone looks for it: pressing it opens the panel that renames it.
+    const title = document.createElement('button');
+    title.type = 'button';
     title.className = 'axys-title';
     title.hidden = true;
+    setTooltip(title, 'Rename Project');
+    title.addEventListener('click', () => {
+      this.#inspector.editProjectName();
+    });
     header.append(title);
     this.#title = title;
 
@@ -887,7 +925,7 @@ export class AppShell {
     this.#setFace('transport.toggleMetronome', {
       icon: 'metronome',
       label: 'Metronome',
-      tooltip: metronome ? 'Silence Metronome (M)' : 'Sound Metronome (M)',
+      tooltip: metronome ? 'Silence Metronome (M)' : 'Metronome (M)',
       pressed: metronome,
     });
 
@@ -926,11 +964,10 @@ export class AppShell {
     );
 
     const mixerOpen = !state.mixerCollapsed;
-    const mixerLabel = mixerOpen ? 'Hide Mixer' : 'Show Mixer';
-    this.#mixerIcon.innerHTML = stateIcon('mixerFold', mixerOpen);
-    this.#mixerToggle.setAttribute('aria-label', mixerLabel);
+    // A desk of faders says mixer on its own, so the control keeps one glyph and carries its
+    // state in its pressed styling, the way the metronome does.
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
-    setTooltip(this.#mixerToggle, `${mixerLabel} (K)`);
+    setTooltip(this.#mixerToggle, `${mixerOpen ? 'Hide Mixer' : 'Show Mixer'} (K)`);
 
     // `Axys` with nothing open, `Take 3 - Axys` open and saved, `*Take 3 - Axys` unsaved. The
     // marker leads, so a truncated tab still shows it.
@@ -1032,15 +1069,14 @@ export class AppShell {
    * already where the controls that say how the editor is laid out live.
    */
   #buildMixerToggle(): HTMLButtonElement {
-    const element = control({
-      icon: 'mixerClosed',
-      label: 'Show Mixer',
+    return control({
+      icon: 'mixer',
+      label: 'Mixer',
+      tooltip: 'Show Mixer (K)',
       onPress: () => {
         this.#hooks.runCommand('view.toggleMixer');
       },
     });
-    this.#mixerIcon = element.querySelector<HTMLElement>('.axys-button-icon') as HTMLElement;
-    return element;
   }
 
   /** Shows a theme as the chosen one, without applying it. */
@@ -1294,14 +1330,12 @@ export class AppShell {
   }
 
   /**
-   * Folds toolbar groups into the overflow menu until the bar fits on one line.
+   * Keeps the toolbar inside its line budget, wrapping first and folding only past it.
    *
-   * @remarks The bar does not wrap: a two-line toolbar moves every control underneath it and
-   * changes how tall the editor is, which is worse than a menu. Groups are folded from the right,
-   * so the file and edit commands that anchor the bar are the last to go.
-   *
-   * Measured against `scrollWidth`, which is what the row would need, so the check does not
-   * depend on knowing any control's own width.
+   * @remarks A narrow window wraps whole groups onto further lines, because a group split across
+   * a line break reads as two sets. Past {@link MAX_TOOLBAR_LINES} the bar would take more of the
+   * window than the editor under it, so groups fold into the overflow menu from the right
+   * instead, which leaves the file and edit commands that anchor the bar the last to go.
    */
   #reflowToolbar(): void {
     for (const group of this.#folded) {
@@ -1310,18 +1344,34 @@ export class AppShell {
     this.#folded = [];
     this.#overflow.hidden = true;
 
-    const groups = [...this.#header.querySelectorAll<HTMLElement>('.axys-group')].filter(
-      (group) => !group.contains(this.#overflow),
+    // A group holding nothing the menu could offer is never folded: the menu lists commands, and
+    // a group of tool buttons would fold into an empty one.
+    const foldable = [...this.#header.querySelectorAll<HTMLElement>('.axys-group')].filter(
+      (group) => this.#commandsIn(group).length > 0,
     );
-    let index = groups.length - 1;
-    while (this.#header.scrollWidth > this.#header.clientWidth && index >= 0) {
-      const group = groups[index];
+    let index = foldable.length - 1;
+    while (this.#toolbarLines() > MAX_TOOLBAR_LINES && index >= 0) {
+      const group = foldable[index];
       index -= 1;
-      if (group === undefined || group.hidden) continue;
+      if (group === undefined) continue;
       group.hidden = true;
       this.#folded.unshift(group);
       this.#overflow.hidden = false;
     }
+  }
+
+  /** Lines the toolbar is drawn on, from the height it actually takes. */
+  #toolbarLines(): number {
+    return Math.max(1, Math.round(this.#header.scrollHeight / TOOLBAR_LINE_HEIGHT));
+  }
+
+  /** The command buttons inside a group, in the order the bar has them. */
+  #commandsIn(group: HTMLElement): { id: string; entry: ToolbarButton }[] {
+    const found: { id: string; entry: ToolbarButton }[] = [];
+    for (const [id, entry] of this.#commandButtons) {
+      if (group.contains(entry.button)) found.push({ id, entry });
+    }
+    return found;
   }
 
   /** The folded groups' commands, as menu entries in the order the bar had them. */
@@ -1331,8 +1381,7 @@ export class AppShell {
       if (entries.length > 0) {
         entries.push({ separator: true });
       }
-      for (const [id, entry] of this.#commandButtons) {
-        if (!group.contains(entry.button)) continue;
+      for (const { id, entry } of this.#commandsIn(group)) {
         entries.push({
           label: entry.command.label,
           icon: iconFor(entry.command),
