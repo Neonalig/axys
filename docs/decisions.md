@@ -165,8 +165,8 @@ Fixed order, each stage seeing the previous result: detected pitch, then scale c
 MIDI pitch guidance, then blob pitch offset, then drawn curve anchors, then modulation settings. A
 later stage can always override an earlier one, and nothing deletes what an earlier stage produced
 because each stage is recomputed from the immutable analysis on every plan compile. A blob's
-`bypassed` flag skips every stage for that blob; `excluded` skips only scale correction and MIDI
-guidance, leaving the user's own offsets and anchors intact.
+`excluded` flag skips scale correction and MIDI guidance for it, leaving the user's own offsets
+and anchors intact.
 
 ### MIDI guidance is live, not committed
 
@@ -321,11 +321,10 @@ These were resolved while implementing `crates/axys-core`. Each names the module
   inside the blob and makes "strength 0.5 moves halfway" exactly observable.
 - **A drawn curve replaces the corrected target rather than adding to it**, but the blob's own pitch
   offset still translates it, so moving a blob moves its drawn contour with it.
-- **The time map stretches the gaps between blobs** to absorb blob moves, keeps bypassed blobs at
-  their source position, and forces each point strictly past the previous one, so the map stays
-  monotone and invertible.
+- **The time map stretches the gaps between blobs** to absorb blob moves and forces each point
+  strictly past the previous one, so the map stays monotone and invertible.
 - **Undo is re-derivation, not an inverse patch.** `History` stores operations; the session replays
-  them over fresh analysis. That is what guarantees an edit can never corrupt the evidence it was
+  them over the base state. That is what guarantees an edit can never corrupt the evidence it was
   made against. The applied stack is capped at 10,000 operations to bound browser memory.
 - **`blob.rs` split and join preserve audible continuity** by writing a boundary anchor at the
   evaluated curve value on each side of a cut, rather than snapping to the nearest surviving anchor.
@@ -555,10 +554,17 @@ loops across the material between its parts.
 
 Blob bypass and project-wide bypass both answered "hear this without its edits", which is what
 Compare and Reset already answer, one for listening and one for committing. Two more ways to say it
-made four controls to reason about and no new capability. `EditOp::SetBypass` and `SetGlobalBypass`
-stay in the core, because a project document may carry them, and nothing in the UI sets them.
+made four controls to reason about and no new capability. Nothing of either remains: the ops, the
+`Blob::bypassed` and `EditState::global_bypass` fields and the plan's bypass flag are all gone,
+because nothing has shipped that could be holding one.
+
+Rendering kept what the bypass path was good for. `RenderPlan::is_identity` recognises a plan that
+asks for nothing, and `render_range` copies the source rather than resynthesising it, so an
+unedited take exports as the file that was imported.
+
 Exclusion survives and is now drawn as what it is: dim, dotted and without the marks that invite an
-edit.
+edit. It means "no automatic correction here", not "no sound here": the blob still plays and the
+edits made on it by hand still apply.
 
 ### Correction and voice character are operations
 
@@ -651,3 +657,69 @@ than opening one, which is the opposite of what Open does.
 A host without the File System Access API downloads every save and cannot offer Save As a picker at
 all. That was invisible and read as a bug, so the capability is probed and reported in Help beside
 the rest.
+
+## Editor interaction, after the third testing round
+
+### Undo replays from a base state
+
+`Session::replay` rebuilt the edit state from a fresh `EditState::default()` and resegmented blobs,
+so an undo silently discarded everything the history had never recorded. The timeline a MIDI import
+adopted was the visible one: every guide note and bar line moved on the first Ctrl+Z, the project
+autosaved in that state, and reopening it kept the damage. A reopened project was worse still,
+because its scale, modulation, formant and guide settings live in the document rather than in the
+history, and the replay reset them all.
+
+The session now holds a `base: EditState` and replays the applied ops over a clone of it. The base
+is the analysis for a new project, the document's own `base` for a reopened one, and a MIDI import
+writes its timeline into both the base and the state, because an import is not an edit. The project
+document carries the base for the same reason.
+
+Removing the resegmentation also removed the freeze: the first undo after reopening used to run
+energy analysis and segmentation over the whole take on the main thread, which is the "lags the
+whole site" in the report, and the several seconds the first slider of an operation cost.
+
+### A group is one undo step
+
+`EditOp::Group` applies several operations as one history entry. A stroke across four blobs, a join
+across a selection, excluding a selection and an operation panel's whole preview are each one
+press of undo. The preview machinery got simpler with it: one group is one entry, so `previewEdits`
+undoes exactly one thing before applying the next, and the pinning that kept an operation's scope
+out of the replaced part is gone.
+
+### The plan carries the target pitch
+
+The editor drew the gold target line by reading the plan's pitch ratio and adding it to its own
+detected track. The core compiles the ratio against its own reading of the same track, and the two
+disagree wherever detection is uncertain, so every octave-ambiguous frame drew a spike a semitone
+or an octave tall. `RenderPlan::target_midi` publishes the absolute target, 0.0 where the plan
+leaves pitch alone, and the editor draws that.
+
+Sampling it needed care of its own: interpolating between an edited sample and the zero beyond it
+drew a line plunging towards MIDI zero at every span edge, which is what the spikes at the ends of
+a drawn stroke were. The sampler mixes two samples only when both carry a target.
+
+### Both pitch lines are cut on a fixed grid
+
+The detected line was already sampled on a grid anchored at time zero; the target line was still
+sampled per screen column, so a following view resampled it into a slightly different shape every
+frame and it shimmered. It is now read at the same absolute times whatever the view is doing.
+
+### One renderer per session
+
+`Renderer::new` builds an epoch map across the whole source, and every export preview built a new
+one, so asking what one second of a long take would export cost a pass over the take. The session
+keeps one renderer and swaps the plan into it on recompile, which also keeps the grain checkpoints
+that let a range late in the output be rendered without walking to it. Measuring a two-second
+selection seventeen seconds into a one-minute take went from a whole-take render to 64 ms.
+
+### Opening asks before discarding
+
+Open and a dropped file both replace the whole project, and neither asked. Both now put the
+question when the project is dirty, and offer to save first rather than only to discard.
+
+### The metronome flash is read from the playhead
+
+A CSS animation on a timer of its own was never on the beat and its brightest point was the middle
+of the cycle. The flash is now computed from the playhead against the timeline: full brightness at
+the click, fading over 120 ms, over a darkened ground that still says the metronome is on while the
+transport is stopped.

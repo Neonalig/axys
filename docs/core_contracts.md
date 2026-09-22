@@ -178,10 +178,9 @@ pub struct Blob {
     pub subregions: Vec<Subregion>,
     /// Anchors editing the target inside this blob, in source seconds.
     pub curve: PitchCurve,
-    /// Excludes the blob from automatic scale correction.
+    /// Excludes the blob from automatic scale correction and MIDI guidance. The blob still
+    /// sounds, and edits made on it by hand still apply.
     pub excluded: bool,
-    /// Suppresses every edit on this blob without discarding it.
-    pub bypassed: bool,
 }
 
 impl Blob {
@@ -751,14 +750,22 @@ pub struct RenderPlan {
     pub time_map: TimeMap,
     /// Frequency multiplier indexed by **source** time. 1.0 leaves pitch unchanged.
     pub pitch_ratio: SampledCurve,
+    /// Pitch the plan produces, in fractional MIDI, indexed by **source** time.
+    ///
+    /// 0.0 where the plan leaves pitch alone. Published so the editor draws what will be heard
+    /// rather than rebuilding it from its own copy of the detected track, which disagrees with
+    /// this one wherever detection is uncertain. Read by the editor, never by the renderer, so a
+    /// plan written by hand may omit it.
+    #[serde(default)]
+    pub target_midi: SampledCurve,
     pub formant: FormantMode,
-    /// Suppresses every edit, so rendering returns the source.
-    pub bypass: bool,
 }
 
 impl RenderPlan {
     /// A plan that reproduces the source exactly.
     pub fn passthrough(sample_rate: f64, duration: f64) -> Self;
+    /// Whether the plan asks for nothing: no time move, no repitch, no formant move.
+    pub fn is_identity(&self) -> bool;
 }
 
 /// Inputs the compiler reads to produce a plan.
@@ -771,7 +778,6 @@ pub struct PlanInputs<'a> {
     pub modulation: &'a ModulationSettings,
     pub formant: FormantMode,
     pub guide: Option<GuideInputs<'a>>,
-    pub bypass: bool,
     /// Plan resolution in seconds; 0.005 matches the analysis hop.
     pub hop: f64,
 }
@@ -788,9 +794,9 @@ pub struct GuideInputs<'a> {
 ///
 /// Intent composes in a fixed order, later stages seeing the result of the earlier ones:
 /// detected pitch, then scale correction, then MIDI pitch guidance, then blob pitch offset,
-/// then drawn curve anchors, then modulation. A blob's `bypassed` flag skips every stage for
-/// that blob and `excluded` skips only scale correction and MIDI guidance. Blob timing
-/// offsets and scales, plus MIDI timing guidance, build the time map.
+/// then drawn curve anchors, then modulation. A blob's `excluded` flag skips scale correction
+/// and MIDI guidance for that blob. Blob timing offsets and scales, plus MIDI timing guidance,
+/// build the time map.
 pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan>;
 
 /// Splits a detected contour into slow drift and fast vibrato about `split_hz`.
@@ -822,7 +828,6 @@ pub enum EditOp {
     ResetSpan { blob: BlobId, start: f64, end: f64 },
     ResetBlob { blob: BlobId },
     ResetRange { start: f64, end: f64 },
-    SetBypass { blob: BlobId, bypassed: bool },
     SetExcluded { blob: BlobId, excluded: bool },
     SetScale { scale: ScaleSettings },
     SetModulation { modulation: ModulationSettings },
@@ -832,7 +837,8 @@ pub enum EditOp {
     SetTimelineOrigin { seconds: f64 },
     SetTempoMap { events: Vec<TempoEvent> },
     SetMeterMap { events: Vec<MeterEvent> },
-    SetGlobalBypass { bypassed: bool },
+    /// Applies several operations as one undo step.
+    Group { ops: Vec<EditOp> },
 }
 
 impl EditOp {
@@ -961,7 +967,6 @@ pub struct EditState {
     pub mappings: Vec<NoteMapping>,
     pub tuning: Tuning,
     pub accidentals: AccidentalStyle,
-    pub global_bypass: bool,
 }
 
 /// Saved editor view state, restored on reopen.
@@ -997,6 +1002,10 @@ pub struct Project {
     /// Stored analysis output. Discardable: it can be rebuilt from the source and params.
     pub track: Option<PitchTrack>,
     pub edits: EditState,
+    /// The state the history replays from: the analysis, plus everything no edit recorded, such
+    /// as the timeline a MIDI import adopted. An undo rebuilds `edits` from this and `history`,
+    /// so the document has to carry it or a reopened project loses it on the first undo.
+    pub base: EditState,
     /// Bytes of the imported MIDI file, base64, so the guide survives a reopen.
     pub midi: Option<String>,
     pub view: ViewState,
@@ -1063,5 +1072,6 @@ impl Renderer {
 
 `render.rs` converts the plan into the two closures `Psola::render` wants: `source_at` from
 `TimeMap`, and `pitch_ratio_at` from `pitch_ratio` evaluated at the _source_ time the time map
-gives. With `plan.bypass` set, `render_range` copies the source through the time map with plain
-interpolation and no repitching.
+gives. For a plan that `is_identity`, `render_range` copies the source through the time map with
+plain interpolation and no repitching, so an unedited take renders as the file that was imported
+rather than as a resynthesis of it.

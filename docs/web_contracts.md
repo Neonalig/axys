@@ -231,10 +231,8 @@ than `Ctrl+R` and `Ctrl+H`.
 An operation previews through the workspace rather than committing as it goes:
 
 ```ts
-/** Applies edits as the outstanding preview, replacing whatever the previous call applied. */
+/** Applies edits as one group, replacing whatever the previous call applied. */
 previewEdits(ops: readonly EditOp[]): void;
-/** Fixes what the preview has applied so far, so later previews replace only what follows. */
-pinPreview(): void;
 /** Keeps the outstanding preview and ends the run. */
 commitPreview(): void;
 /** Undoes the outstanding preview and ends the run. */
@@ -342,8 +340,8 @@ range, hover readout, drag preview).
 - Modifiers: Shift constrains, Alt is fine adjustment, Ctrl/Cmd toggles snap. With the Select tool
   Ctrl adds a span of its own to the selection and Shift stretches the one that is there.
 - A pen or line stroke starts anywhere, including over open canvas, and applies to every blob it
-  crosses; each blob is one `EditOp`.
-- Every other gesture commits exactly one `EditOp` so undo is one step.
+  crosses, as one `EditOp::Group` so undo is one step.
+- Every other gesture commits exactly one `EditOp`, so undo is one step.
 - Numeric entry for the selected object's pitch and time coexists with dragging.
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 

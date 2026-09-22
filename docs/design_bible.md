@@ -43,7 +43,7 @@ The primary environment is a desktop-class browser. Installation, user accounts 
 
 **Musical first.** The editor speaks in notes, cents, beats, bars, tempo and meter while retaining seconds, sample positions and waveform context where useful.
 
-**Non-destructive.** Source audio is immutable. Analysis and edits remain separate data until audition or export. Every edit can be revised, bypassed or reset.
+**Non-destructive.** Source audio is immutable. Analysis and edits remain separate data until audition or export. Every edit can be revised, undone or reset.
 
 **Human-correctable.** Automatic analysis is expected to make mistakes. Splitting, joining, reclassifying, remapping and redrawing are normal direct operations.
 
@@ -132,7 +132,7 @@ Wanted capabilities make Axys practical for repeated musical work and distinguis
 | Modulation controls | Control drift and vibrato depth, and expose rate or regularity only where supported reliably. | Strong correction need not erase all expression. |
 | Formant handling | Preserve vocal character during pitch movement and optionally expose an independent formant adjustment. | Moderate shifts avoid obvious chipmunk or giant artefacts. |
 | Higher-quality export | Permit a slower offline rendering path when it measurably improves fidelity. | Export improves quality without changing edit interpretation. |
-| Comparison tools | Bypass globally or locally, compare detected and target pitch, and level-match where practical. | Users can judge whether an edit improved the result. |
+| Comparison tools | Switch between the processed and the original audio, compare detected and target pitch, and level-match where practical. | Users can judge whether an edit improved the result. |
 
 ### 4.3 Nice-to-have capabilities
 
@@ -272,7 +272,7 @@ Preview may trade fidelity for latency, but it must preserve target curves, timi
 | Transients | Consonants and attacks remain intelligible and sensibly placed during time edits. |
 | Modulation | Vibrato and bends are retained, reduced or replaced only according to explicit settings. |
 | Determinism | Equivalent input, project state and render settings produce equivalent output. |
-| Safety | Failure falls back to controlled bypass or silence rather than uncontrolled output. |
+| Safety | Failure falls back to the unprocessed source or to silence rather than uncontrolled output. |
 
 Natural-sounding transformation is an iterative engineering target. Functional, replaceable implementations take priority over pretending initial DSP is mature. Known artefacts and unsupported material must be documented honestly.
 
@@ -346,7 +346,7 @@ Persist projects locally without a remote service. The project model must preser
 - tempo and meter maps;
 - audio-to-MIDI alignment and mappings;
 - tuning, key and scale information;
-- bypass and reset states;
+- exclusion and reset states;
 - application and project-format versions;
 - relevant editor view state.
 

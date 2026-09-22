@@ -154,7 +154,7 @@ engine, without a browser:
 2. Move one boundary and assert the pitch track is unchanged, meaning nothing reanalysed.
 3. Move a note centre, reshape its tail with anchors, change its timing, and assert each affects
    only what it should.
-4. Render the looped region twice, processed and bypassed, and assert they differ audibly but
+4. Render the looped region twice, processed and unprocessed, and assert they differ audibly but
    share length.
 5. Serialise, reopen, and assert the render is bit-identical.
 6. Export WAV, decode it back, and assert its F0 and onset positions match the active edits.
