@@ -86,8 +86,8 @@ export function drawWaveform(
 /**
  * Fills a sampled envelope as one shape, one pixel column per sample from `left`.
  *
- * @remarks `centre` is the zero line and `half` the full-scale half-height, in pixels. Every column
- * is at least a pixel tall, so silence still draws a line.
+ * @remarks `centre` is the middle of the zero line and `half` the full-scale half-height, in
+ * pixels. Silence draws a one-pixel line centred there, and louder columns grow evenly from it.
  */
 export function fillEnvelope(
   ctx: CanvasRenderingContext2D,
@@ -99,17 +99,20 @@ export function fillEnvelope(
   if (span.count === 0) {
     return;
   }
+  // The zero line is one pixel tall, so peaks grow from its edges and stay centred on it.
+  const upper = centre - 0.5;
+  const lower = centre + 0.5;
   ctx.beginPath();
   for (let column = 0; column < span.count; column += 1) {
-    const top = centre - (span.max[column] ?? 0) * half;
+    const top = upper - (span.max[column] ?? 0) * half;
     const x = left + column;
     if (column === 0) ctx.moveTo(x, top);
     else ctx.lineTo(x, top);
     ctx.lineTo(x + 1, top);
   }
   for (let column = span.count - 1; column >= 0; column -= 1) {
-    const top = centre - (span.max[column] ?? 0) * half;
-    const bottom = Math.max(top + 1, centre - (span.min[column] ?? 0) * half);
+    const top = upper - (span.max[column] ?? 0) * half;
+    const bottom = Math.max(top + 1, lower - (span.min[column] ?? 0) * half);
     const x = left + column;
     ctx.lineTo(x + 1, bottom);
     ctx.lineTo(x, bottom);

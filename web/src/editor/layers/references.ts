@@ -105,7 +105,12 @@ export function drawReferenceBand(
     ctx.fillStyle = colour;
     // Drawn from a device pixel, so the columns do not smear across a moving sub-pixel offset.
     const x = Math.round(left * viewport.ratio) / viewport.ratio;
-    fillEnvelope(ctx, span, x, rect.y + rect.height / 2, rect.height / 2 - 1);
+    // Centred between the drawn edges of the band's outline, which sit on the device grid.
+    const line = viewport.crispWidth();
+    const inner = viewport.crisp(rect.y) + line / 2;
+    const outer = viewport.crisp(rect.y + rect.height) - line / 2;
+    const middle = (inner + outer) / 2;
+    fillEnvelope(ctx, span, x, middle, (outer - inner) / 2 - 1);
   }
 
   ctx.globalAlpha = alpha;
