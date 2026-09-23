@@ -36,6 +36,9 @@ export interface HoverReadout {
 
 const GHOST_ALPHA = 0.55;
 
+/** Opacity of what the edit mode does not edit. */
+const DISABLED_ALPHA = 0.35;
+
 /** Opacity of the clips outside the editor's layer, per way of showing them. */
 const OTHERS_ALPHA = { show: 0.5, dim: 0.2 } as const;
 
@@ -64,6 +67,8 @@ export class EditorRenderer {
   #base: HTMLCanvasElement | null = null;
   /** Where the clips outside the layer are drawn before they are laid under it, faded. */
   #others: HTMLCanvasElement | null = null;
+  /** Where a faint layer is drawn before it is laid over the rest. */
+  #faded: HTMLCanvasElement | null = null;
   #baseKey: BaseKey | null = null;
   /** The blob under the pointer, whose title scrolls when it does not fit, and since when. */
   #hoverBlob: { id: BlobId; since: number } | null = null;
@@ -247,17 +252,56 @@ export class EditorRenderer {
     ctx.fillRect(0, 0, viewport.width, viewport.height);
     drawGrid(ctx, state, viewport, theme);
     this.#drawOthers(ctx, state, viewport, theme);
-    drawWaveform(ctx, state, viewport, theme);
+    // What the edit mode leaves alone is drawn faint, so it reads as out of reach: the blobs and
+    // their audio in Pitch mode, the pitch lines in Blob mode.
+    const blobAlpha = state.editMode === 'pitch' ? DISABLED_ALPHA : 1;
+    const pitchAlpha = state.editMode === 'blob' ? DISABLED_ALPHA : 1;
     drawMidi(ctx, state, viewport, theme);
     drawReferences(ctx, state, viewport, theme);
-    this.#scrolling = drawBlobs(ctx, state, viewport, theme, marquee);
+    this.#scrolling = this.#faint(ctx, blobAlpha, (layer) => {
+      drawWaveform(layer, state, viewport, theme);
+      return drawBlobs(layer, state, viewport, theme, marquee);
+    });
     if (this.#scrolling) {
       this.invalidate();
     }
-    drawPitch(ctx, state, viewport, theme);
+    this.#faint(ctx, pitchAlpha, (layer) => {
+      drawPitch(layer, state, viewport, theme);
+    });
     drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
     return base;
+  }
+
+  /**
+   * Runs `draw` straight onto `ctx`, or at `alpha` when that is below one.
+   *
+   * @remarks Faded as a finished picture on a canvas of its own, since the layers set their own
+   * opacities stroke by stroke and would otherwise overwrite the fade.
+   */
+  #faint<T>(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    draw: (layer: CanvasRenderingContext2D) => T,
+  ): T {
+    if (alpha >= 1) return draw(ctx);
+    const canvas = (this.#faded ??= document.createElement('canvas'));
+    if (canvas.width !== this.#canvas.width || canvas.height !== this.#canvas.height) {
+      canvas.width = this.#canvas.width;
+      canvas.height = this.#canvas.height;
+    }
+    const layer = canvas.getContext('2d');
+    if (layer === null) return draw(ctx);
+    layer.setTransform(1, 0, 0, 1, 0, 0);
+    layer.clearRect(0, 0, canvas.width, canvas.height);
+    layer.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
+    const result = draw(layer);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(canvas, 0, 0);
+    ctx.restore();
+    return result;
   }
 
   /**
@@ -388,6 +432,16 @@ export class EditorRenderer {
       case 'curve':
         drawCurvePreview(ctx, viewport, theme, preview.points);
         labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
+        break;
+      case 'lines':
+        for (const line of preview.lines) drawCurvePreview(ctx, viewport, theme, line);
+        labelAt(
+          ctx,
+          viewport,
+          theme,
+          preview.label,
+          curveAnchorPoint(viewport, preview.lines[0] ?? []),
+        );
         break;
       case 'bezier':
         drawCurvePreview(ctx, viewport, theme, preview.points);
