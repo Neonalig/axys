@@ -14,6 +14,10 @@ import {
   signedMessage,
   sourceProblem,
 } from './scripts/source-check.mjs';
+import { exitWithParent } from './scripts/exit-with-parent.mjs';
+
+// A dev server started by `scripts/dev.mjs` goes when the launcher does, however it was stopped.
+exitWithParent();
 
 /** What `source.json` records. */
 interface SourceConfig {

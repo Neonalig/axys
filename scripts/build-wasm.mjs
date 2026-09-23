@@ -13,6 +13,8 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { exitWithParent } from './exit-with-parent.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const crateDir = join(root, 'crates', 'axys-wasm');
 const outDir = join(root, 'web', 'src', 'wasm');
@@ -116,6 +118,7 @@ if (!force && isCurrent()) {
   if (first !== 0) process.exit(first);
 }
 
+exitWithParent();
 console.log('[wasm] watching crates for changes');
 let lastSeen = watchRoots.reduce((acc, dir) => Math.max(acc, latestMtime(dir)), 0);
 let building = false;
