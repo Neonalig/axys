@@ -413,30 +413,30 @@ function drawBlob(
   const width = Math.max(2, x1 - x0);
   const height = Math.max(4, bottom - top);
 
+  // Each edge on the device grid on its own, so neither jitters a pixel as the view slides, and
+  // the fill shares them: a fill at the fractional edges covers the pixel beside the outline by a
+  // different amount each frame, which reads as the outline shimmering.
+  const bound = viewport.crispWidth(isSelected ? 2 : 1);
+  const left = viewport.crisp(x0, bound);
+  const upper = viewport.crisp(top, bound);
+  const right = viewport.crisp(x0 + width, bound);
+  const lower = viewport.crisp(top + height, bound);
+
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = isSelected ? theme.blobFillSelected : theme.blobFill;
-  ctx.fillRect(x0, top, width, height);
+  ctx.fillRect(left, upper, right - left, lower - upper);
 
   // Detail narrower than a few pixels is not legible and costs a draw per blob when zoomed out.
   const detailed = x1 - x0 >= DETAIL_MIN_WIDTH;
 
   ctx.globalAlpha = alpha;
-  const bound = viewport.crispWidth(isSelected ? 2 : 1);
   ctx.lineWidth = bound;
   ctx.strokeStyle = isSelected ? theme.selection : theme.blobBounds;
   if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
-  // Each edge on the device grid on its own, so neither jitters a pixel as the view slides.
-  const left = viewport.crisp(x0, bound);
-  const upper = viewport.crisp(top, bound);
-  ctx.strokeRect(
-    left,
-    upper,
-    viewport.crisp(x0 + width, bound) - left,
-    viewport.crisp(top + height, bound) - upper,
-  );
+  ctx.strokeRect(left, upper, right - left, lower - upper);
   ctx.setLineDash([]);
 
   const centreY = viewport.midiToY(blob.detectedCenter + blob.pitchOffset);

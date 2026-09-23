@@ -83,10 +83,18 @@ export function drawReferenceBand(
     return;
   }
   const colour = referenceColour(reference.source.fingerprint);
+  // Fill and outline share edges on the device grid. A fill at the band's fractional edges
+  // covers the pixel beside the outline by a different amount each frame, which reads as the
+  // outline shimmering while the band slides.
+  const line = viewport.crispWidth();
+  const x0 = viewport.crisp(rect.x);
+  const y0 = viewport.crisp(rect.y);
+  const x1 = viewport.crisp(rect.x + rect.width);
+  const y1 = viewport.crisp(rect.y + rect.height);
   ctx.save();
   ctx.globalAlpha = BAND_ALPHA * alpha;
   ctx.fillStyle = colour;
-  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.fillRect(x0 - line / 2, y0 - line / 2, x1 - x0 + line, y1 - y0 + line);
 
   const envelope = peaksFor(referencePeaksKey(reference.source.fingerprint));
   // Columns are cut a whole number of pixels from the band's own start, so a band sliding under a
@@ -105,26 +113,17 @@ export function drawReferenceBand(
     ctx.fillStyle = colour;
     // Drawn from a device pixel, so the columns do not smear across a moving sub-pixel offset.
     const x = Math.round(left * viewport.ratio) / viewport.ratio;
-    // Centred between the drawn edges of the band's outline, which sit on the device grid.
-    const line = viewport.crispWidth();
-    const inner = viewport.crisp(rect.y) + line / 2;
-    const outer = viewport.crisp(rect.y + rect.height) - line / 2;
+    // Centred between the drawn edges of the band's outline.
+    const inner = y0 + line / 2;
+    const outer = y1 - line / 2;
     const middle = (inner + outer) / 2;
     fillEnvelope(ctx, span, x, middle, (outer - inner) / 2 - 1);
   }
 
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = colour;
-  ctx.lineWidth = viewport.crispWidth();
-  // Both edges on the device grid, so neither blurs and sharpens as the band slides.
-  const x0 = viewport.crisp(rect.x);
-  const y0 = viewport.crisp(rect.y);
-  ctx.strokeRect(
-    x0,
-    y0,
-    viewport.crisp(rect.x + rect.width) - x0,
-    viewport.crisp(rect.y + rect.height) - y0,
-  );
+  ctx.lineWidth = line;
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
   ctx.font = TITLE_FONT;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
