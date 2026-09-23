@@ -722,8 +722,11 @@ function spanPitchOps(
 }
 
 /**
- * Where copied pitch lands: stretched over the selection when there is one, else starting at the
- * playhead.
+ * Where copied pitch lands: from the start of the selection when there is one, else from the
+ * playhead, at the length and pitch it was copied at.
+ *
+ * @remarks Never fitted to the selection: selecting where a line goes is usually clicking what is
+ * there already, and a paste that took that span's length stretched the line it was asked to copy.
  */
 export function placePitch(
   content: ClipboardContent,
@@ -741,16 +744,8 @@ function placement(
   target: TimeRange | null,
   playhead: number,
 ): (point: PitchPoint) => PitchPoint {
-  const length = content.end - content.start;
-  if (target === null || !(length > 0)) {
-    const shift = playhead - content.start;
-    return (point) => ({ time: point.time + shift, midi: point.midi });
-  }
-  const scale = (target.end - target.start) / length;
-  return (point) => ({
-    time: target.start + (point.time - content.start) * scale,
-    midi: point.midi,
-  });
+  const shift = (target?.start ?? playhead) - content.start;
+  return (point) => ({ time: point.time + shift, midi: point.midi });
 }
 
 /**

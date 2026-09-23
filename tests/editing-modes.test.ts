@@ -166,14 +166,13 @@ describe('editing modes', () => {
       expect(line[0]!.time).toBeCloseTo(range.start, 5);
       expect(line[line.length - 1]!.time).toBeCloseTo(range.end, 5);
 
-      // Pasted over the whole take, every blob under it takes its part of the one line.
-      const points = placePitch(
-        copied,
-        { start: 0, end: fixture.samples.length / fixture.sampleRate },
-        0,
-      );
+      // Pasted back where it came from, every blob under it takes its part of the one line.
+      const points = placePitch(copied, null, range.start);
       const ops = pastePitchOps(state, points);
-      expect(ops.filter((op) => op.type === 'replacePitch')).toHaveLength(state.blobs.length);
+      const under = state.blobs.filter(
+        (blob) => blob.end > range.start && blob.start + blob.timeOffset < range.end,
+      );
+      expect(ops.filter((op) => op.type === 'replacePitch')).toHaveLength(under.length);
     } finally {
       scoped.free();
     }
@@ -328,6 +327,65 @@ describe('editing modes', () => {
       expect(pasted.points[pasted.points.length - 1]!.time).toBeCloseTo(at + length, 6);
       expect(scoped.undo()).toBe(true);
       expect(stateOf(scoped).edits?.strokes).toHaveLength(2);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('pastes a drawing over another exactly as it was drawn', () => {
+    const scoped = session();
+    try {
+      const blobs = stateOf(scoped).blobs;
+      const line = (from: number, to: number, midi: (t: number) => number) =>
+        Array.from({ length: 41 }, (_, i) => {
+          const time = from + ((to - from) * i) / 40;
+          return { time, midi: midi(time) };
+        });
+      const under = line(blobs[0]!.start, blobs[2]!.end, () => 55);
+      apply(scoped, drawStrokeOps(stateOf(scoped), under, null, null));
+      const last = blobs[blobs.length - 1]!;
+      const drawn = line(last.start, last.end, (t) => 62 + 2 * Math.sin((t - last.start) * 30));
+      apply(scoped, drawStrokeOps(stateOf(scoped), drawn, null, null));
+
+      // Copied with the drawing picked up, pasted with the one under it picked up.
+      const state = stateOf(scoped);
+      const pick = (points: { time: number }[]) => ({
+        ...state,
+        selection: {
+          blobs: [],
+          anchors: [],
+          ranges: [{ start: points[0]!.time, end: points[points.length - 1]!.time }],
+        },
+      });
+      const copied = copyPitch(pick(drawn));
+      if (copied?.kind !== 'pitch') throw new Error('nothing copied');
+      const target = pick(under);
+      const at = under[0]!.time;
+      const range = target.selection.ranges[0]!;
+      apply(scoped, [
+        ...pastePitchOps(target, placePitch(copied, range, 0)),
+        ...placeStrokes(target, copied, range, 0),
+      ]);
+
+      const after = stateOf(scoped);
+      const pasted = after.edits!.strokes!.find(
+        (stroke) => Math.abs(stroke.points[0]!.time - at) < 1e-6,
+      )!;
+      const shift = at - drawn[0]!.time;
+      // The same length and the same pitches, only moved in time.
+      expect(pasted.points).toHaveLength(drawn.length);
+      pasted.points.forEach((point, index) => {
+        expect(point.time).toBeCloseTo(drawn[index]!.time + shift, 6);
+        expect(point.midi).toBeCloseTo(drawn[index]!.midi, 6);
+      });
+      // And it is what is heard wherever a blob sings under it.
+      for (const index of [5, 10, 20]) {
+        const point = pasted.points[index]!;
+        const blob = after.blobs.find((b) => point.time >= b.start && point.time < b.end);
+        if (blob === undefined) continue;
+        const heard = planTargetMidi(after.plan!, point.time);
+        if (heard !== null) expect(Math.abs(heard - point.midi)).toBeLessThan(0.1);
+      }
     } finally {
       scoped.free();
     }

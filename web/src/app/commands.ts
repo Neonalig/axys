@@ -733,8 +733,8 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      // Paste lands at the playhead over whatever is there. Pitch pasted over a selection is
-      // fitted to it instead.
+      // Paste lands at the playhead over whatever is there. Pitch lands at the start of the
+      // selection when there is one, at the length it was copied at.
       id: 'edit.paste',
       label: 'Paste',
       group: 'Edit',

@@ -284,10 +284,13 @@ export class MixerPanel {
       // A toggle's tooltip names what pressing it will do, and follows the state icon.
       swapGlyph(controls.mute, stateIcon('mute', !strip.mute));
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
-      setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', controls.label));
+      setTooltip(controls.mute, switchTip('mute', strip.mute ? 'Unmute' : 'Mute', controls.label));
       if (controls.solo) {
         controls.solo.setAttribute('aria-pressed', String(strip.solo));
-        setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', controls.label));
+        setTooltip(
+          controls.solo,
+          switchTip('solo', strip.solo ? 'Unsolo' : 'Solo', controls.label),
+        );
       }
     }
   }
@@ -526,8 +529,9 @@ export class MixerPanel {
   /**
    * One mute or solo button.
    *
-   * @remarks Pressing one settles the desk on that strip alone; Ctrl or Cmd adds it to whatever
-   * is already switched on, which is how more than one strip is muted or soloed at a time.
+   * @remarks A mute is its own strip's and touches no other. A solo settles the desk on that strip
+   * alone; Ctrl or Cmd adds it to whatever is already soloed, which is how more than one strip is
+   * soloed at a time.
    */
   #buildSwitch(key: StripKey, field: 'mute' | 'solo', strip: string): HTMLButtonElement {
     const button = document.createElement('button');
@@ -539,7 +543,7 @@ export class MixerPanel {
     const action = field === 'mute' ? 'Mute' : 'Solo';
     button.setAttribute('aria-label', `${action} ${strip}`);
     button.setAttribute('aria-pressed', 'false');
-    setTooltip(button, switchTip(action, strip));
+    setTooltip(button, switchTip(field, action, strip));
     button.addEventListener('click', (event: MouseEvent) => {
       this.#toggle(key, field, event.ctrlKey || event.metaKey);
     });
@@ -548,9 +552,9 @@ export class MixerPanel {
 
   #toggle(key: StripKey, field: 'mute' | 'solo', additive: boolean): void {
     const wanted = !stripOf(this.#mixer, key)[field];
-    // The master is not one of the sources a switch settles the desk on, so it is toggled alone
-    // and left alone by every other strip's switch.
-    if (key.kind === 'master') {
+    // A mute is the strip's own, and the master is not one of the sources a solo settles the desk
+    // on, so both are toggled alone and leave every other strip as it is.
+    if (field === 'mute' || key.kind === 'master') {
       this.#commit(key, { [field]: wanted });
       return;
     }
@@ -576,12 +580,13 @@ export class MixerPanel {
 }
 
 /**
- * A mute or solo tooltip: what pressing it will do, and how to do it to more than one strip.
+ * A mute or solo tooltip: what pressing it will do, and for a solo how to solo more than one.
  *
- * @remarks Said the same way for both switches and in both states, because a gesture written
- * differently in each place is a gesture nobody learns.
+ * @remarks Said the same way in both states, because a gesture written differently in each place
+ * is a gesture nobody learns.
  */
-function switchTip(action: string, strip: string): string {
+function switchTip(field: 'mute' | 'solo', action: string, strip: string): string {
+  if (field === 'mute') return `${action} ${strip}`;
   return `${action} ${strip}\nCtrl-click for multiple strips`;
 }
 

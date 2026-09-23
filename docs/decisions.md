@@ -593,11 +593,12 @@ is released, so the sound follows the hand and the history gets one entry per dr
 per frame. It is the same shape as the guide strength slider, without the operation machinery,
 because a fader has nothing to discard.
 
-### Mute and solo are exclusive until Ctrl says otherwise
+### Solo is exclusive until Ctrl says otherwise, and mute is a strip's own
 
-Pressing a mute or a solo settles the desk on that strip alone, which is what someone wants nine
-times in ten. Ctrl or Cmd adds instead, which is how more than one strip is muted or soloed at a
-time. The same modifier that adds a span to a selection.
+Pressing a solo settles the desk on that strip alone, which is what someone wants nine times in
+ten. Ctrl or Cmd adds instead, which is how more than one strip is soloed at a time, the same
+modifier that adds a span to a selection. A mute touches its own strip and nothing else: muting
+one strip used to unmute every other, which undid a mix someone had set up strip by strip.
 
 ### Compare has no button at all
 

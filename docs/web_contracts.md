@@ -315,7 +315,7 @@ readonly previewing: boolean;
 
 Cut, Copy and Paste are `Ctrl+X`, `Ctrl+C` and `Ctrl+V` and act on what the edit mode edits:
 clips in Blob and Pitch, blobs in Blob, the heard pitch line in Pitch. Paste lands at the playhead,
-and pasted pitch is fitted over the selection when there is one. A clipboard only pastes in the
+and pasted pitch at the start of the selection when there is one, at the length it was copied. A clipboard only pastes in the
 mode it was taken in. Trim Start and Trim End, `Alt+[` and `Alt+]`, trim the clip under the playhead
 to it, and Reset Trim widens it again. `Q` and `Shift+Q` step through the edit modes, one command
 per mode sets it, and `W` and `Shift+W` step through the sources. The workspace takes clips in and
