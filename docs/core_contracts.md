@@ -296,7 +296,8 @@ pub struct Span { pub start: f64, pub end: f64 }
 pub struct Clip {
     pub id: ClipId,
     pub source: SourceInfo,
-    /// Project seconds at which the clip's source second 0 sits. Never negative.
+    /// Project seconds at which the clip's source second 0 sits. Negative only when the window
+    /// starts late enough that the clip is still heard from project second 0 or after.
     pub position: f64,
     /// In clip source seconds.
     pub blobs: BlobSet,
@@ -304,11 +305,20 @@ pub struct Clip {
     pub silenced: Vec<Span>,
     /// What the clip is called in place of its file's name.
     pub name: Option<String>,
+    /// The part of the source that is heard, in clip source seconds; `None` is all of it.
+    pub window: Option<Span>,
 }
 
 impl Clip {
     pub fn new(id: ClipId, source: SourceInfo, position: f64, blobs: BlobSet) -> Self;
+    /// The window held inside the source.
+    pub fn window(&self) -> Span;
+    /// Project seconds at which the clip starts and stops being heard.
+    pub fn start(&self) -> f64;
     pub fn end(&self) -> f64;
+    /// The source spans outside the window, which render as silence.
+    pub fn hidden(&self) -> Vec<Span>;
+    /// The blobs inside the window, cut at its edges, in project seconds.
     pub fn project_blobs(&self) -> Vec<Blob>;
     pub fn silence(&mut self, span: Span);
     pub fn unsilence(&mut self, start: f64, end: f64);
@@ -345,6 +355,10 @@ and `EditState::conflicts` lists the gaps timing edits opened inside each clip. 
 `ripple_insert` place a clip that is not `exact`, which only operations recorded before `exact`
 existed still do. `Blob::shifted` and `PitchCurve::shifted` move a blob and its anchors between
 the two time domains.
+
+A clip's lane span is `start()..end()`, its window placed at its position, and every placement,
+overlap and layer question reads that span. Trimming narrows the window and nothing else: blobs
+over the hidden audio stay in the clip, out of `project_blobs`, and return when it is widened.
 
 ## `analysis/segment.rs`
 
@@ -928,7 +942,11 @@ pub enum EditOp {
     ResetRange { start: f64, end: f64 },
     SetExcluded { blob: BlobId, excluded: bool },
     SetGain { blob: BlobId, gain_db: f64 },
-    DeleteBlobs { blobs: Vec<BlobId> },
+    DeleteBlobs { blobs: Vec<BlobId>, keep_audio: bool },
+    AddBlobs { blobs: Vec<Blob> },
+    ShiftBlob { blob: BlobId, seconds: f64 },
+    ReplacePitch { blob: BlobId, start: f64, end: f64, fill: PitchFill },
+    TrimClip { clip: ClipId, start: f64, end: f64 },
     AddClip { clip: Clip, ripple: bool, exact: bool },
     MoveClip { clip: ClipId, position: f64, exact: bool },
     RemoveClip { clip: ClipId },
@@ -953,6 +971,17 @@ pub enum EditOp {
 impl EditOp {
     /// Short label for the undo history, e.g. "Move Pitch".
     pub fn label(&self) -> &'static str;
+}
+
+/// What a span of a blob sounds after `ReplacePitch`.
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PitchFill {
+    /// A heard contour, in project seconds and fractional MIDI.
+    Contour { anchors: Vec<Anchor> },
+    /// The blob's own pitch, as it sounds with no curve drawn.
+    Sung,
+    /// A level line at the span's median detected pitch, moved by the blob's offset.
+    Flat,
 }
 
 /// Undo and redo stacks over a project's edit history.
@@ -994,8 +1023,16 @@ pub fn apply_with_baseline(state: &mut EditState, track: Option<&PitchTrack>,
     baseline: Option<&BlobSet>, op: &EditOp) -> Result<()>;
 ```
 
-`DeleteBlobs` removes the blobs and silences the source spans they covered; `ResetRange` restores
-both the analysed blobs and the silenced material across its span. `AddClip` refuses a clip whose
+`DeleteBlobs` removes the blobs and silences the source spans they covered, unless `keep_audio`
+leaves the material playing as sung; `ResetRange` restores both the analysed blobs and the silenced
+material across its span. `AddBlobs` puts blobs over audio no blob covers, each in the clip its id
+names, with a fresh id and its detected centre read from that clip's track. `ShiftBlob` slides a
+blob's span along the audio without a timing edit, held between its neighbours and inside the
+clip's window; its curve is cut to the new span and its centre is read again. `ReplacePitch`
+replaces what a blob sounds across a span and leaves the rest of the blob as it sounded, using
+`Interp::Release` anchors for stretches that follow the blob's own pitch; `Sung` across the whole
+blob clears its curve and offset. `TrimClip` sets the window from a project span, `None` when it
+covers the whole source. `AddClip` refuses a clip whose
 blobs are not numbered for it. With `exact` it lands where it was asked, over any clip there; with
 `ripple` it lands where it was asked, or on the nearer edge of a clip it was asked inside, and every
 clip after it moves later by the overlap; with neither it lands on the nearest free position.

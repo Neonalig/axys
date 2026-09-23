@@ -70,7 +70,10 @@ pub struct Clip {
     pub id: ClipId,
     /// Facts about the audio the clip was imported from.
     pub source: SourceInfo,
-    /// Project seconds at which the clip's source second 0 sits. Never negative.
+    /// Project seconds at which the clip's source second 0 sits.
+    ///
+    /// Negative only when the window starts late enough that the clip is still heard from project
+    /// second 0 or after.
     pub position: f64,
     /// Editable regions of the clip, in clip source seconds.
     #[serde(default)]
@@ -83,6 +86,12 @@ pub struct Clip {
     /// What the clip is called on the desk and over its blobs, in place of its file's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The part of the source the clip plays, in clip source seconds; `None` plays all of it.
+    ///
+    /// Trimming narrows the window and nothing else, so the audio outside it, the blobs over that
+    /// audio and their edits stay with the clip and return when the window is widened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<Span>,
 }
 
 impl Clip {
@@ -95,19 +104,64 @@ impl Clip {
             blobs,
             silenced: Vec::new(),
             name: None,
+            window: None,
         }
     }
 
-    /// Project seconds at which the clip's source ends.
-    pub fn end(&self) -> f64 {
-        self.position + self.source.duration
+    /// The part of the source the clip plays, in clip source seconds, held inside the source.
+    pub fn window(&self) -> Span {
+        let duration = self.source.duration.max(0.0);
+        match self.window {
+            Some(span) => {
+                let start = span.start.clamp(0.0, duration);
+                Span {
+                    start,
+                    end: span.end.clamp(start, duration),
+                }
+            }
+            None => Span {
+                start: 0.0,
+                end: duration,
+            },
+        }
     }
 
-    /// The clip's blobs moved into project seconds.
+    /// Project seconds at which the clip starts being heard.
+    pub fn start(&self) -> f64 {
+        self.position + self.window().start
+    }
+
+    /// Project seconds at which the clip stops being heard.
+    pub fn end(&self) -> f64 {
+        self.position + self.window().end
+    }
+
+    /// The source spans outside the window, in clip source seconds, which render as silence.
+    pub fn hidden(&self) -> Vec<Span> {
+        let window = self.window();
+        let mut spans = Vec::with_capacity(2);
+        if window.start > 0.0 {
+            spans.push(Span {
+                start: 0.0,
+                end: window.start,
+            });
+        }
+        if window.end < self.source.duration {
+            spans.push(Span {
+                start: window.end,
+                end: self.source.duration,
+            });
+        }
+        spans
+    }
+
+    /// The clip's blobs inside its window, cut at the window's edges, in project seconds.
     pub fn project_blobs(&self) -> Vec<Blob> {
+        let window = self.window();
         self.blobs
             .blobs()
             .iter()
+            .filter_map(|blob| blob.clipped_to(window.start, window.end))
             .map(|blob| blob.shifted(self.position))
             .collect()
     }
@@ -292,7 +346,7 @@ pub fn layer(clips: &[Clip], active: Option<ClipId>, isolate: bool) -> Vec<ClipI
     if !isolate {
         for clip in clips {
             let clear = chosen.iter().all(|other| {
-                clip.end() <= other.position + 1e-9 || clip.position >= other.end() - 1e-9
+                clip.end() <= other.start() + 1e-9 || clip.start() >= other.end() - 1e-9
             });
             if clear {
                 chosen.push(clip);

@@ -23,7 +23,9 @@ use axys_core::analysis::f0::{
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
-use axys_core::clip::{fit_to_source, layer, renumber, Clip, ClipId, Reference, ReferenceId};
+use axys_core::clip::{
+    fit_to_source, layer, renumber, Clip, ClipId, Reference, ReferenceId, Span, MAX_CLIPS,
+};
 use axys_core::dsp::formant::FormantMode;
 use axys_core::edit::{apply_in, ClipSources, EditOp, History};
 use axys_core::midi::{
@@ -551,7 +553,46 @@ impl ClipRuntime {
             blobs: self.analysed.clone(),
         }
     }
+
+    /// The same audio and analysis under another clip's id, for a pasted copy.
+    fn duplicate(&self, id: ClipId, sample_rate: f64) -> Result<ClipRuntime, JsValue> {
+        let duration = self.source.duration;
+        Ok(ClipRuntime {
+            id,
+            samples: self.samples.clone(),
+            source: self.source.clone(),
+            analysis: self.analysis.clone(),
+            track: self.track.clone(),
+            needs_track: self.needs_track,
+            analysed: renumber(&self.analysed, id).map_err(to_js)?,
+            plan: RenderPlan::passthrough(sample_rate, duration),
+            voices: vec![RenderPlan::passthrough(sample_rate, duration)],
+            renderers: Vec::new(),
+        })
+    }
 }
+
+/// A part of a clip as the clipboard holds it: the clip as it was copied, and the project span
+/// taken from it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CopiedPart {
+    clip: Clip,
+    start: f64,
+    end: f64,
+}
+
+/// A span of a clip on the lane to cut, in project seconds.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CutPart {
+    clip: ClipId,
+    start: f64,
+    end: f64,
+}
+
+/// Shortest part of a clip a cut or a paste keeps, in seconds.
+const MIN_PART_SECONDS: f64 = 0.01;
 
 /// Each clip's own evidence, read by the edit applier.
 struct Sources<'a>(&'a [ClipRuntime]);
@@ -579,6 +620,8 @@ struct ClipPlan<'a> {
     clip: ClipId,
     /// Project seconds at which the clip's output second 0 sits.
     position: f64,
+    /// The part of the clip's source that is heard, in its source seconds.
+    window: Span,
     /// The clip's first voice.
     plan: &'a RenderPlan,
     /// Every further voice, one for each set of blobs a timing edit laid over the others.
@@ -1052,10 +1095,13 @@ impl Session {
                 }),
                 _ => None,
             };
+            // Audio trimmed out of the clip is silent, as deleted material is.
+            let mut silenced = clip.silenced.clone();
+            silenced.extend(clip.hidden());
             let inputs = PlanInputs {
                 track: &runtime.track,
                 blobs: &clip.blobs,
-                silenced: &clip.silenced,
+                silenced: &silenced,
                 sample_rate: self.sample_rate,
                 duration: runtime.source.duration,
                 scale: &self.state.scale,
@@ -1203,6 +1249,7 @@ impl Session {
             .map(|(clip, runtime)| ClipPlan {
                 clip: clip.id,
                 position: clip.position,
+                window: clip.window(),
                 plan: &runtime.voices[0],
                 layers: &runtime.voices[1..],
             })
@@ -1295,8 +1342,178 @@ impl Session {
     /// Project seconds at which the last clip's output ends.
     fn output_seconds(&self) -> f64 {
         self.lane()
-            .map(|(clip, runtime)| clip.position + runtime.output_duration())
+            .map(|(clip, runtime)| {
+                let end = clip.window().end;
+                let heard = runtime
+                    .voices
+                    .iter()
+                    .map(|plan| plan.time_map.output_at(end))
+                    .fold(0.0, f64::max);
+                clip.position + heard.min(runtime.output_duration())
+            })
             .fold(0.0, f64::max)
+    }
+
+    fn next_clip_id(&self) -> ClipId {
+        ClipId(self.clips.iter().map(|r| r.id.0 + 1).max().unwrap_or(0))
+    }
+
+    /// Pastes copied parts of clips as new clips, as one undoable edit, returning their ids.
+    ///
+    /// `parts_json` is an array of `{ clip, start, end }`: each clip as it was when it was
+    /// copied, and the project span taken from it. The earliest part lands at `at`, project
+    /// seconds, and the others keep their distance from it. Each copy keeps its blobs, edits and
+    /// analysis and lands over whatever is already there.
+    #[wasm_bindgen(js_name = pasteClips)]
+    pub fn paste_clips(&mut self, parts_json: &str, at: f64) -> Result<String, JsValue> {
+        let parts: Vec<CopiedPart> = parse(parts_json)?;
+        if !at.is_finite() {
+            return Err(JsValue::from_str("paste position is not finite"));
+        }
+        let origin = parts
+            .iter()
+            .map(|part| part.start)
+            .fold(f64::INFINITY, f64::min);
+        if !origin.is_finite() {
+            return Err(JsValue::from_str("nothing to paste"));
+        }
+        if self.state.clips.len() + parts.len() > MAX_CLIPS {
+            return Err(JsValue::from_str(&format!(
+                "a project holds at most {MAX_CLIPS} clips"
+            )));
+        }
+        let mut ops = Vec::with_capacity(parts.len());
+        let mut added = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let Some(from) = self.clips.iter().find(|r| r.id == part.clip.id) else {
+                return self.forget(added, "copied clip is not in this project");
+            };
+            if from.source.fingerprint != part.clip.source.fingerprint {
+                return self.forget(added, "copied clip is not in this project");
+            }
+            let id = self.next_clip_id();
+            let runtime = match from.duplicate(id, self.sample_rate) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    self.clips.retain(|r| !added.contains(&r.id));
+                    return Err(error);
+                }
+            };
+            let mut clip = part.clip.clone();
+            let window = clip.window();
+            let start = (part.start - clip.position).max(window.start);
+            let end = (part.end - clip.position).min(window.end);
+            if end - start < MIN_PART_SECONDS {
+                continue;
+            }
+            clip.blobs = match renumber(&clip.blobs, id) {
+                Ok(blobs) => blobs,
+                Err(error) => {
+                    self.clips.retain(|r| !added.contains(&r.id));
+                    return Err(to_js(error));
+                }
+            };
+            clip.id = id;
+            clip.window = Some(Span { start, end });
+            clip.position = at + (clip.position + start - origin) - start;
+            self.clips.push(runtime);
+            added.push(id);
+            ops.push(EditOp::AddClip {
+                clip,
+                ripple: false,
+                exact: true,
+            });
+        }
+        if ops.is_empty() {
+            return Err(JsValue::from_str("nothing to paste"));
+        }
+        if let Err(error) = self.apply_op(EditOp::Group { ops }) {
+            self.clips.retain(|r| !added.contains(&r.id));
+            return Err(error);
+        }
+        dump(&added)
+    }
+
+    /// Takes spans out of clips on the lane, as one undoable edit.
+    ///
+    /// `parts_json` is an array of `{ clip, start, end }` in project seconds. A span covering a
+    /// clip removes it, one reaching an end trims it, and one inside it leaves the clip in two.
+    #[wasm_bindgen(js_name = cutClips)]
+    pub fn cut_clips(&mut self, parts_json: &str) -> Result<(), JsValue> {
+        let parts: Vec<CutPart> = parse(parts_json)?;
+        let mut ops = Vec::new();
+        let mut added = Vec::new();
+        for part in &parts {
+            let Some(clip) = self.state.clip(part.clip).cloned() else {
+                return self.forget(added, &format!("the project has no clip {}", part.clip.0));
+            };
+            let (heard_from, heard_to) = (clip.start(), clip.end());
+            let start = part.start.max(heard_from);
+            let end = part.end.min(heard_to);
+            if end - start < MIN_PART_SECONDS {
+                continue;
+            }
+            let keeps_head = start - heard_from >= MIN_PART_SECONDS;
+            let keeps_tail = heard_to - end >= MIN_PART_SECONDS;
+            match (keeps_head, keeps_tail) {
+                (false, false) => ops.push(EditOp::RemoveClip { clip: clip.id }),
+                (false, true) => ops.push(EditOp::TrimClip {
+                    clip: clip.id,
+                    start: end,
+                    end: heard_to,
+                }),
+                (true, false) => ops.push(EditOp::TrimClip {
+                    clip: clip.id,
+                    start: heard_from,
+                    end: start,
+                }),
+                (true, true) => {
+                    let id = self.next_clip_id();
+                    let runtime = match self.runtime(clip.id)?.duplicate(id, self.sample_rate) {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            return self.forget(added, &error.as_string().unwrap_or_default())
+                        }
+                    };
+                    let mut tail = clip.clone();
+                    tail.id = id;
+                    tail.blobs = match renumber(&clip.blobs, id) {
+                        Ok(blobs) => blobs,
+                        Err(error) => return self.forget(added, &error.to_string()),
+                    };
+                    tail.window = Some(Span {
+                        start: end - clip.position,
+                        end: heard_to - clip.position,
+                    });
+                    self.clips.push(runtime);
+                    added.push(id);
+                    ops.push(EditOp::TrimClip {
+                        clip: clip.id,
+                        start: heard_from,
+                        end: start,
+                    });
+                    ops.push(EditOp::AddClip {
+                        clip: tail,
+                        ripple: false,
+                        exact: true,
+                    });
+                }
+            }
+        }
+        if ops.is_empty() {
+            return Ok(());
+        }
+        if let Err(error) = self.apply_op(EditOp::Group { ops }) {
+            self.clips.retain(|r| !added.contains(&r.id));
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Drops runtimes made for an edit that did not happen, and reports why.
+    fn forget<T>(&mut self, added: Vec<ClipId>, message: &str) -> Result<T, JsValue> {
+        self.clips.retain(|r| !added.contains(&r.id));
+        Err(JsValue::from_str(message))
     }
 
     /// Undo and redo labels, as `{ "undo": string | null, "redo": string | null }`.
@@ -2187,6 +2404,80 @@ mod analysis_handoff_tests {
         let (session, _) = two_clips(0.4);
         let state = json(session.state_json().expect("state"));
         assert_eq!(state["clips"][1]["position"], serde_json::json!(1.0));
+    }
+
+    fn one_clip() -> Session {
+        let (samples, analysis) = analysed();
+        Session::create(samples, SAMPLE_RATE, "take".to_string(), &analysis, "").expect("session")
+    }
+
+    fn clips_of(session: &Session) -> Vec<serde_json::Value> {
+        json(session.state_json().expect("state"))["clips"]
+            .as_array()
+            .expect("clips")
+            .clone()
+    }
+
+    #[test]
+    fn a_pasted_part_is_a_clip_of_its_own_with_the_copied_blobs() {
+        let mut session = one_clip();
+        let clip = clips_of(&session)[0].clone();
+        let parts = serde_json::json!([{ "clip": clip, "start": 0.2, "end": 0.7 }]);
+        let ids = json(
+            session
+                .paste_clips(&parts.to_string(), 3.0)
+                .expect("pasted"),
+        );
+        assert_eq!(ids, serde_json::json!([1]));
+        let clips = clips_of(&session);
+        assert_eq!(clips.len(), 2);
+        let pasted = &clips[1];
+        assert_eq!(pasted["window"]["start"], 0.2);
+        assert_eq!(pasted["window"]["end"], 0.7);
+        assert!((pasted["position"].as_f64().unwrap() - 2.8).abs() < 1e-9);
+        assert_eq!(
+            pasted["blobs"]["blobs"].as_array().unwrap().len(),
+            clips[0]["blobs"]["blobs"].as_array().unwrap().len()
+        );
+        assert!(session.undo().expect("undo"));
+        assert_eq!(clips_of(&session).len(), 1);
+        assert!(session.redo().expect("redo"));
+        assert_eq!(clips_of(&session).len(), 2);
+    }
+
+    #[test]
+    fn cutting_inside_a_clip_leaves_it_in_two_and_cutting_all_of_it_removes_it() {
+        let mut session = one_clip();
+        session
+            .cut_clips(r#"[{ "clip": 0, "start": 0.3, "end": 0.6 }]"#)
+            .expect("cut");
+        let clips = clips_of(&session);
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0]["window"]["end"], 0.3);
+        assert_eq!(clips[1]["window"]["start"], 0.6);
+        assert!(session.undo().expect("undo"));
+        assert_eq!(clips_of(&session).len(), 1);
+
+        session
+            .cut_clips(r#"[{ "clip": 0, "start": 0.0, "end": 0.5 }]"#)
+            .expect("cut");
+        assert_eq!(clips_of(&session)[0]["window"]["start"], 0.5);
+        session
+            .cut_clips(r#"[{ "clip": 0, "start": 0.0, "end": 5.0 }]"#)
+            .expect("cut");
+        assert!(clips_of(&session).is_empty());
+    }
+
+    #[test]
+    fn a_trimmed_end_shortens_the_lane() {
+        let mut session = one_clip();
+        let before = session.output_frames();
+        session
+            .apply_edit(r#"{ "type": "trimClip", "clip": 0, "start": 0.0, "end": 0.5 }"#)
+            .expect("trim");
+        let after = session.output_frames();
+        assert!(after < before);
+        assert!((f64::from(after) - SAMPLE_RATE * 0.5).abs() <= 2.0);
     }
 
     #[test]
