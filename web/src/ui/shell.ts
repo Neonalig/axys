@@ -93,6 +93,8 @@ export interface ShellHooks {
   setAccent(accent: AccentName): void;
   /** Renames the project. One undo step, like any other edit. */
   setProjectName(name: string): void;
+  /** Sets the tempo, meter, start and key from what the vocal's notes suggest. */
+  estimate(): void;
   /** Projects to offer under Open, most recently saved first. */
   recentProjects(): Promise<ProjectSummary[]>;
   /** Reopens a project from the recent list. */
@@ -821,6 +823,9 @@ export class AppShell {
       },
       setCollapsed: (on) => {
         this.#hooks.setInspectorCollapsed(on);
+      },
+      estimate: () => {
+        this.#hooks.estimate();
       },
     });
 

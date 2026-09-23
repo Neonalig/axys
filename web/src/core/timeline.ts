@@ -43,21 +43,42 @@ export function meterAt(timeline: TimelineMap, tick: number): MeterEvent {
   return current;
 }
 
-/** Beat of the bar at source second 0, from 1, as the ruler and the metronome count it. */
-export function startBeat(timeline: TimelineMap): number {
-  return Math.floor(barBeatAt(timeline, 0).beat);
+/** Seconds the first beat lasts, at the tempo and meter in force at tick 0. */
+export function firstBeatSeconds(timeline: TimelineMap): number {
+  const meter = meterAt(timeline, 0);
+  const beatTicks = (ppqOf(timeline) * 4) / Math.max(1, meter.denominator);
+  return tickToSeconds(timeline, beatTicks) - tickToSeconds(timeline, 0);
+}
+
+/** Where the metronome's count starts against project zero. */
+export interface StartPosition {
+  /** Beat of the bar the first beat at or after zero is, from 1. */
+  beat: number;
+  /** Seconds from zero to that beat, less than one beat. */
+  offset: number;
 }
 
 /**
- * The timeline origin that puts source second 0 on beat `beat` of its bar.
+ * The first beat at or after project zero, as its beat of the bar and when it falls.
  *
- * @remarks Moves the origin by whole beats at the tempo there, so the bars keep their length.
+ * @remarks Read from the timeline origin at the tempo and meter of tick 0, which is where the
+ * count starts.
  */
-export function originForStartBeat(timeline: TimelineMap, beat: number): number {
-  const meter = meterAt(timeline, 0);
-  const beatTicks = (ppqOf(timeline) * 4) / Math.max(1, meter.denominator);
-  const beatSeconds = tickToSeconds(timeline, beatTicks) - tickToSeconds(timeline, 0);
-  return timeline.originSeconds - (beat - startBeat(timeline)) * beatSeconds;
+export function startPosition(timeline: TimelineMap): StartPosition {
+  const beat = firstBeatSeconds(timeline);
+  const beats = Math.max(1, meterAt(timeline, 0).numerator);
+  if (!(beat > 0)) return { beat: 1, offset: 0 };
+  const origin = timeline.originSeconds;
+  const first = Math.ceil(-origin / beat - 1e-6);
+  return {
+    beat: (((first % beats) + beats) % beats) + 1,
+    offset: Math.max(0, origin + first * beat),
+  };
+}
+
+/** The timeline origin that puts beat `beat` of a bar `offset` seconds after project zero. */
+export function originFor(timeline: TimelineMap, beat: number, offset: number): number {
+  return offset - (beat - 1) * firstBeatSeconds(timeline);
 }
 
 /** Seconds one bar lasts from a source time, at the tempo and meter in force there. */

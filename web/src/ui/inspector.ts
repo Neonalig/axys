@@ -7,10 +7,12 @@
  * built once and refreshed from state, and a control the user is editing is left alone.
  */
 
-import { noteName } from '../core/notes.js';
-import { meterAt, originForStartBeat, startBeat } from '../core/timeline.js';
+import { noteName, SHARP_NAMES } from '../core/notes.js';
+import { MAJOR_DEGREES, MINOR_DEGREES } from '../app/estimate.js';
+import { bpmAt, firstBeatSeconds, meterAt, originFor, startPosition } from '../core/timeline.js';
 import {
   bindDragAdjust,
+  button,
   checkboxInput,
   field,
   guidedLabel,
@@ -20,7 +22,7 @@ import {
   swapGlyph,
   textInput,
 } from './controls/index.js';
-import type { SelectElement } from './controls/index.js';
+import type { SelectElement, SelectOption } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { musicMarkup } from './music.js';
 import type { MusicGlyph } from './music.js';
@@ -35,6 +37,7 @@ import type {
   EditOp,
   GuideMode,
   GuideSelection,
+  ScaleSettings,
   TimeDisplay,
   ViewState,
 } from '../core/types.js';
@@ -57,7 +60,58 @@ export interface InspectorHooks {
   setProjectName(name: string): void;
   /** Folds the inspector away to its rail, or opens it again. */
   setCollapsed(on: boolean): void;
+  /** Sets the tempo, meter, start and key from what the vocal's notes suggest. */
+  estimate(): void;
 }
+
+/** Slowest and fastest tempo the Tempo field takes, in beats per minute. */
+const MIN_BPM = 20;
+const MAX_BPM = 300;
+
+/** Time signatures the Time Signature field offers, as numerator and denominator. */
+const METERS: readonly (readonly [number, number])[] = [
+  [2, 4],
+  [3, 4],
+  [4, 4],
+  [5, 4],
+  [6, 8],
+  [7, 8],
+  [9, 8],
+  [12, 8],
+];
+
+/** The Time Signature field's options, with `current` added when it is not a common one. */
+function meterOptions(current: string | null): SelectOption[] {
+  const options = METERS.map(([top, bottom]) => {
+    const value = `${String(top)}/${String(bottom)}`;
+    return { value, label: value };
+  });
+  if (current !== null && !options.some((option) => option.value === current)) {
+    options.push({ value: current, label: current });
+  }
+  return options;
+}
+
+/** Every major and minor key, then the two scales that are not a key. */
+const KEY_OPTIONS: readonly SelectOption[] = [
+  ...SHARP_NAMES.map((name, root) => ({ value: `${String(root)}:major`, label: `${name} Major` })),
+  ...SHARP_NAMES.map((name, root) => ({ value: `${String(root)}:minor`, label: `${name} Minor` })),
+  { value: 'chromatic', label: 'Chromatic' },
+  { value: 'custom', label: 'Custom Scale', enabled: false },
+];
+
+/** Which Key option a scale is. */
+function keyValue(scale: ScaleSettings): string {
+  const same = (degrees: readonly number[]): boolean =>
+    scale.degrees.length === degrees.length &&
+    degrees.every((degree, index) => scale.degrees[index] === degree);
+  if (same(MAJOR_DEGREES)) return `${String(scale.root)}:major`;
+  if (same(MINOR_DEGREES)) return `${String(scale.root)}:minor`;
+  return scale.degrees.length === 12 ? 'chromatic' : 'custom';
+}
+
+/** Every pitch class, which is what a chromatic scale allows. */
+const CHROMATIC: readonly number[] = Array.from({ length: 12 }, (_, index) => index);
 
 /** Longest a project name may be, matching the limit the core enforces. */
 const MAX_PROJECT_NAME = 120;
@@ -254,7 +308,12 @@ export class Inspector {
   readonly #blobHeading: HTMLElement;
 
   readonly #tuning: HTMLInputElement;
+  readonly #key: SelectElement;
+  readonly #bpm: HTMLInputElement;
+  readonly #meter: SelectElement;
   readonly #startBeat: HTMLInputElement;
+  readonly #startOffset: HTMLInputElement;
+  readonly #estimate: HTMLButtonElement;
   readonly #projectName: HTMLInputElement;
   readonly #accidentals: SelectElement;
   readonly #snap: SelectElement;
@@ -382,16 +441,46 @@ export class Inspector {
     // save file name and the export default all read.
     const projectPanel = panel('Project');
     this.#projectName = textInput(MAX_PROJECT_NAME);
-    this.#startBeat = numberInput({ step: 1, min: 1, max: 4 });
+    this.#key = selectInput(KEY_OPTIONS);
     projectPanel.append(
       field('Name', this.#projectName, 'What this project is called. Renaming is undoable'),
+      field('Key', this.#key, 'Key the project is in. Correction pulls blobs onto its scale'),
+    );
+    project.append(projectPanel);
+
+    // Timing panel: the tempo and meter the ruler, the snap grid and the metronome count in, and
+    // where that count starts.
+    const timingPanel = panel('Timing');
+    this.#bpm = numberInput({ step: 0.1, min: MIN_BPM, max: MAX_BPM });
+    this.#meter = selectInput(meterOptions(null));
+    this.#startBeat = numberInput({ step: 1, min: 1, max: 4 });
+    this.#startOffset = numberInput({ step: 0.001, min: 0, max: 0.5 });
+    this.#estimate = button({
+      icon: 'correct',
+      label: 'Estimate From Vocal',
+      tooltip: 'Estimate the tempo, meter, start and key from the vocal',
+      onPress: () => {
+        this.#hooks.estimate();
+      },
+    });
+    this.#estimate.classList.add('is-labelled', 'axys-estimate');
+    timingPanel.append(
+      field('Tempo', this.#bpm, 'Beats per minute at the start of the project', 'BPM'),
+      field('Time Signature', this.#meter, 'Beats in a bar, and the note that counts one'),
       field(
         'Start Beat',
         this.#startBeat,
-        'Beat of the bar the project starts on. The metronome and the ruler count from it',
+        'Beat of the bar the first beat is. The metronome and the ruler count from it',
       ),
+      field(
+        'Start Offset',
+        this.#startOffset,
+        'Seconds from the start of the project to the first beat',
+        's',
+      ),
+      this.#estimate,
     );
-    project.append(projectPanel);
+    project.append(timingPanel);
 
     // Display panel.
     const displayPanel = panel('Display');
@@ -700,12 +789,31 @@ export class Inspector {
     const edits = state.edits;
     this.#tuning.disabled = edits === null;
     this.#accidentals.disabled = edits === null;
-    this.#startBeat.disabled = edits === null;
+    for (const control of [
+      this.#key,
+      this.#bpm,
+      this.#meter,
+      this.#startBeat,
+      this.#startOffset,
+      this.#estimate,
+    ]) {
+      control.disabled = edits === null;
+    }
     if (edits) {
       setValue(this.#tuning, edits.tuning.a4Hz.toFixed(1));
       setValue(this.#accidentals, edits.accidentals);
-      this.#startBeat.max = String(meterAt(edits.timeline, 0).numerator);
-      setValue(this.#startBeat, String(startBeat(edits.timeline)));
+      const timeline = edits.timeline;
+      const meter = meterAt(timeline, 0);
+      const signature = `${String(meter.numerator)}/${String(meter.denominator)}`;
+      this.#meter.setOptions(meterOptions(signature));
+      setValue(this.#meter, signature);
+      setValue(this.#bpm, bpmAt(timeline, 0).toFixed(1));
+      const start = startPosition(timeline);
+      this.#startBeat.max = String(meter.numerator);
+      setValue(this.#startBeat, String(start.beat));
+      this.#startOffset.max = firstBeatSeconds(timeline).toFixed(3);
+      setValue(this.#startOffset, start.offset.toFixed(3));
+      setValue(this.#key, keyValue(edits.scale));
     }
     setValue(this.#snap, String(state.view.snapDivision));
     setValue(this.#timeDisplay, state.view.timeDisplay);
@@ -871,19 +979,62 @@ export class Inspector {
       this.#hooks.setProjectName(typed);
     });
 
-    this.#startBeat.addEventListener('change', () => {
+    const setStart = (): void => {
       const timeline = this.#state?.edits?.timeline;
       if (timeline === undefined) return;
-      const beats = meterAt(timeline, 0).numerator;
-      const wanted = Math.round(readNumber(this.#startBeat, startBeat(timeline)));
-      const beat = Math.min(Math.max(wanted, 1), Math.max(1, beats));
-      if (beat === startBeat(timeline)) {
-        this.#startBeat.value = String(beat);
+      const current = startPosition(timeline);
+      const beats = Math.max(1, meterAt(timeline, 0).numerator);
+      const beat = Math.min(
+        Math.max(Math.round(readNumber(this.#startBeat, current.beat)), 1),
+        beats,
+      );
+      const offset = Math.min(
+        Math.max(readNumber(this.#startOffset, current.offset), 0),
+        firstBeatSeconds(timeline),
+      );
+      const seconds = originFor(timeline, beat, offset);
+      if (Math.abs(seconds - timeline.originSeconds) < 1e-9) {
+        this.#startBeat.value = String(current.beat);
+        this.#startOffset.value = current.offset.toFixed(3);
         return;
       }
+      this.#hooks.applyEdit({ type: 'setTimelineOrigin', seconds });
+    };
+    this.#startBeat.addEventListener('change', setStart);
+    this.#startOffset.addEventListener('change', setStart);
+    this.#bpm.addEventListener('change', () => {
+      const timeline = this.#state?.edits?.timeline;
+      if (timeline === undefined) return;
+      const bpm = Math.min(Math.max(readNumber(this.#bpm, bpmAt(timeline, 0)), MIN_BPM), MAX_BPM);
+      const [first, ...rest] = timeline.tempo;
+      const events = [
+        { tick: 0, microsPerQuarter: Math.round(60_000_000 / bpm) },
+        ...(first !== undefined && first.tick > 0 ? [first] : []),
+        ...rest,
+      ];
+      this.#hooks.applyEdit({ type: 'setTempoMap', events });
+    });
+    this.#meter.addEventListener('change', () => {
+      const timeline = this.#state?.edits?.timeline;
+      const [top, bottom] = this.#meter.value.split('/').map((part) => Number.parseInt(part, 10));
+      if (timeline === undefined || top === undefined || bottom === undefined) return;
+      const [first, ...rest] = timeline.meter;
+      const events = [
+        { tick: 0, numerator: top, denominator: bottom },
+        ...(first !== undefined && first.tick > 0 ? [first] : []),
+        ...rest,
+      ];
+      this.#hooks.applyEdit({ type: 'setMeterMap', events });
+    });
+    this.#key.addEventListener('change', () => {
+      const scale = this.#state?.edits?.scale;
+      if (scale === undefined) return;
+      const [root, mode] = this.#key.value.split(':');
+      const degrees =
+        mode === 'major' ? MAJOR_DEGREES : mode === 'minor' ? MINOR_DEGREES : CHROMATIC;
       this.#hooks.applyEdit({
-        type: 'setTimelineOrigin',
-        seconds: originForStartBeat(timeline, beat),
+        type: 'setScale',
+        scale: { ...scale, root: Number.parseInt(root ?? '0', 10) || 0, degrees: [...degrees] },
       });
     });
     this.#tuning.addEventListener('change', () => {

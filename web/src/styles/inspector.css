@@ -231,3 +231,9 @@ input.is-adjustable {
 .axys-error {
   color: var(--axys-danger);
 }
+
+/* The Timing panel's estimate action, under the fields it fills */
+
+.axys-estimate {
+  margin-top: var(--axys-space-1);
+}

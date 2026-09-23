@@ -525,9 +525,12 @@ supersedes Compare outright: which vocal is playing is the processed and origina
 own mutes, and there is no command or button beside them. `audio/mixer.ts` is the one place the desk
 is turned into amplitudes, read by the worklet and by the blob layer that draws what is audible.
 
-`ui/inspector.ts` shows the selection's numeric fields, the display settings and the guide
-settings, each bound to an `EditOp`. Correction and voice character are not here: they are
-operations.
+`ui/inspector.ts` shows the selection's numeric fields, the project's key and timing, the display
+settings and the guide settings, each bound to an `EditOp`. Correction and voice character are not
+here: they are operations. Tempo and Time Signature set the first tempo and meter; Start Beat and
+Start Offset set the timeline origin through `startPosition` and `originFor` in `core/timeline.ts`.
+`app/estimate.ts` proposes the tempo, meter, start and key from the blobs, applied as one edit when
+a project is first opened from audio and again from Estimate From Vocal.
 
 The panel folds away to a rail carrying the one control that opens it again, and the divider
 between it and the canvas is dragged to set its width. Both are device preferences rather than

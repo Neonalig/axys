@@ -10,6 +10,8 @@
  */
 
 import { buildCommands, findCommand } from './app/commands.js';
+import { estimateEdits } from './app/estimate.js';
+import { SHARP_NAMES } from './core/notes.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { startOffline } from './app/offline.js';
 import { bindShortcuts } from './app/shortcuts.js';
@@ -499,6 +501,7 @@ class AxysWorkspace implements Workspace {
       });
       this.#close();
       await this.#install(session, null, null);
+      this.estimate(true);
       if (decoded.resampled) {
         this.#toast.warn(`Decoded at ${String(decoded.sampleRate)} Hz, not the file's own rate.`);
       }
@@ -1001,6 +1004,32 @@ class AxysWorkspace implements Workspace {
       this.#fail('Align Guide', error);
       return null;
     }
+  }
+
+  /**
+   * Sets the tempo, meter, start and key from what the blobs suggest, as one undoable edit.
+   *
+   * @remarks `quiet` leaves out the report, for the estimate made when a project is first opened.
+   */
+  estimate(quiet = false): void {
+    const state = this.#store.state;
+    if (state.edits === null) return;
+    const estimate = estimateEdits(state.blobs, state.edits);
+    if (estimate.ops.length === 0) {
+      if (!quiet) this.#toast.warn('Too few notes to estimate from');
+      return;
+    }
+    this.apply({ type: 'group', ops: estimate.ops });
+    const parts: string[] = [];
+    const timing = estimate.timing;
+    if (timing !== null) {
+      parts.push(`${timing.bpm.toFixed(1)} BPM`, `${String(timing.beatsPerBar)}/4`);
+    }
+    const key = estimate.key;
+    if (key !== null) {
+      parts.push(`${SHARP_NAMES[key.root] ?? ''} ${key.minor ? 'Minor' : 'Major'}`);
+    }
+    this.#toast.info(`Estimated ${parts.join(', ')}. Check the Project tab`);
   }
 
   /** Sets the concert reference the editor names and measures pitch against. */
@@ -1975,6 +2004,9 @@ function buildHooks(
     },
     setProjectName(name: string): void {
       workspace()?.apply({ type: 'setName', name });
+    },
+    estimate(): void {
+      workspace()?.estimate();
     },
     async recentProjects(): Promise<ProjectSummary[]> {
       return (await workspace()?.recentProjects()) ?? [];
