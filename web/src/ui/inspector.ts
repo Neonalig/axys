@@ -30,10 +30,12 @@ import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState, FollowMode } from '../app/store.js';
 import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
+import { scopeText } from './source-picker.js';
 import type {
   AccidentalStyle,
   Blob,
   BlobId,
+  ClipId,
   EditOp,
   GuideMode,
   GuideSelection,
@@ -155,14 +157,10 @@ export function describeLeftovers(blobs: number, notes: number): string {
  * operation has to say and saying it differently each time makes it a thing to read rather than
  * a thing to glance at.
  */
-export function scopeLine(state: AppState): HTMLElement {
+export function scopeLine(state: AppState, clips: readonly ClipId[]): HTMLElement {
   const line = document.createElement('p');
   line.className = 'axys-hint';
-  const count = state.selection.blobs.length;
-  line.textContent =
-    count === 0
-      ? 'No selection. Affects whole project'
-      : `Affects ${String(count)} selected ${count === 1 ? 'blob' : 'blobs'}.`;
+  line.textContent = scopeText(state, clips);
   return line;
 }
 

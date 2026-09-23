@@ -9,11 +9,14 @@
  * by closing the panel by accident, because closing it throws the preview away.
  *
  * With a span selected the operation applies to that span, by leaving every blob outside it out
- * of correction. With nothing selected it applies to the whole project.
+ * of correction. With nothing selected it applies to the whole project. With more than one vocal
+ * source, the sources it changes are ticked in the panel and every other source is left out.
  */
 
 import { Dialog } from './dialog.js';
 import { scopeLine } from './inspector.js';
+import { initialSources, sourcePicker } from './source-picker.js';
+import { sourceNames } from '../app/sources.js';
 import {
   checkboxInput,
   field,
@@ -25,7 +28,7 @@ import {
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
 import { SHARP_NAMES } from '../core/notes.js';
-import type { EditOp, FormantMode, ScaleSettings } from '../core/types.js';
+import type { ClipId, EditOp, FormantMode, ScaleSettings } from '../core/types.js';
 
 interface ScalePreset {
   id: string;
@@ -71,22 +74,28 @@ function hint(text: string): HTMLElement {
 }
 
 /**
- * The edits that confine an operation to the selection.
+ * The edits that confine an operation to the selection and to the chosen sources.
  *
  * @remarks Correction is compiled project-wide, so applying it to a span means leaving every
- * blob outside that span out of it. Those exclusions are part of the operation: discarding it
- * takes them back with everything else.
+ * blob outside that span out of it, and applying it to some sources means leaving the others out.
+ * With nothing selected in the chosen sources, their blobs keep whatever exclusions they had.
+ * Those exclusions are part of the operation: discarding it takes them back with everything else.
  */
-function scopeOf(state: AppState): EditOp[] {
+function scopeOf(state: AppState, sources: readonly ClipId[]): EditOp[] {
   const selected = new Set(state.selection.blobs);
-  if (selected.size === 0 || state.blobs.length === 0) {
-    return [];
-  }
   const ops: EditOp[] = [];
-  for (const blob of state.blobs) {
-    const wanted = !selected.has(blob.id);
-    if (blob.excluded !== wanted) {
-      ops.push({ type: 'setExcluded', blob: blob.id, excluded: wanted });
+  const clips = state.edits?.clips ?? [];
+  const narrowed = clips.some(
+    (clip) => sources.includes(clip.id) && clip.blobs.blobs.some((blob) => selected.has(blob.id)),
+  );
+  for (const clip of clips) {
+    const chosen = sources.includes(clip.id);
+    for (const blob of clip.blobs.blobs) {
+      const inScope = chosen && (!narrowed || selected.has(blob.id));
+      if (inScope && !narrowed) continue;
+      if (blob.excluded !== !inScope) {
+        ops.push({ type: 'setExcluded', blob: blob.id, excluded: !inScope });
+      }
     }
   }
   return ops;
@@ -142,8 +151,6 @@ export function showCorrection(ctx: CommandContext): Dialog {
     ctx.toast.warn('Open a vocal before correcting it');
     return Dialog.open({ title: 'Correction', content: hint('Nothing to correct') });
   }
-  const scopeOps = scopeOf(state);
-
   const content = document.createElement('div');
   content.className = 'axys-panel';
 
@@ -193,6 +200,12 @@ export function showCorrection(ctx: CommandContext): Dialog {
     boxes.push(box);
   }
 
+  // Rebuilt from `apply`, which the picker runs, so it is defined before either needs it.
+  let scope: HTMLElement = document.createElement('p');
+  const picker = sourcePicker(state, initialSources(state), () => {
+    apply();
+  });
+
   content.append(
     field('Key', key, 'Tonic the scale is built on. Every scale degree is measured from it'),
     field(
@@ -202,10 +215,15 @@ export function showCorrection(ctx: CommandContext): Dialog {
     ),
     strengthRow,
     excluded,
-    scopeLine(state),
+    ...(picker.element === null ? [] : [picker.element]),
+    scope,
   );
 
   const apply = (): void => {
+    const sources = picker.chosen();
+    const line = scopeLine(state, sources);
+    scope.replaceWith(line);
+    scope = line;
     const preset = SCALE_PRESETS.find((entry) => entry.id === scale.value);
     const root = Number.parseInt(key.value, 10);
     const settings: ScaleSettings = {
@@ -214,7 +232,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
       strength: readNumber(strength, current.strength),
       excluded: boxes.flatMap((box, index) => (box.checked ? [index] : [])),
     };
-    ctx.workspace.previewEdits([...scopeOps, { type: 'setScale', scale: settings }]);
+    ctx.workspace.previewEdits([...scopeOf(state, sources), { type: 'setScale', scale: settings }]);
   };
 
   strength.addEventListener('input', () => {
@@ -288,8 +306,15 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
     field('Formant Mode', mode, 'How the vocal tract is treated while pitch moves'),
     row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones'),
     // Drift, vibrato and formants are properties of the voice rather than of a span, and the
-    // core compiles them over the whole take, so this one has no selection to narrow it to.
-    hint('Affects whole project'),
+    // core compiles them over every take, so this one has no selection or source to narrow it to.
+    hint(
+      edits.clips.length > 1
+        ? `Affects every source: ${sourceNames(
+            edits,
+            edits.clips.map((clip) => clip.id),
+          )}`
+        : 'Affects whole project',
+    ),
   );
 
   const readouts = (): void => {
