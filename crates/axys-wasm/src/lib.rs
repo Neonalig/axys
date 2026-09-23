@@ -760,6 +760,7 @@ impl Session {
             tuning: Default::default(),
             accidentals: Default::default(),
             mixer: Default::default(),
+            strokes: Vec::new(),
         };
         let duration = source.duration;
         let mut session = Session {

@@ -16,10 +16,13 @@ import {
   cutBlobOps,
   cutClipSpans,
   cutPitchOps,
+  deleteStrokeOps,
+  drawStrokeOps,
   liftRunOps,
   outsideRuns,
   pastePitchOps,
   placePitch,
+  placeStrokes,
   samplePitch,
 } from '../web/src/app/clipboard';
 import { initialState } from '../web/src/app/store';
@@ -170,6 +173,65 @@ describe('editing modes', () => {
       );
       const ops = pastePitchOps(state, points, false);
       expect(ops.filter((op) => op.type === 'replacePitch')).toHaveLength(state.blobs.length);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('keeps a curve drawn across a gap whole, and copies, reshapes and deletes it as drawn', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped);
+      const [left, right] = [state.blobs[1]!, state.blobs[2]!];
+      // A straight ramp from the middle of one blob to the middle of the next, over the gap.
+      const from = { time: (left.start + left.end) / 2, midi: 58 };
+      const to = { time: (right.start + right.end) / 2, midi: 70 };
+      const ramp = Array.from({ length: 21 }, (_, i) => ({
+        time: from.time + ((to.time - from.time) * i) / 20,
+        midi: from.midi + ((to.midi - from.midi) * i) / 20,
+      }));
+      scoped.applyEdit(JSON.stringify({ type: 'setPitchOffset', blob: left.id, semitones: 1 }));
+      apply(scoped, drawStrokeOps(stateOf(scoped), ramp, [from, from, to, to], null));
+      const drawn = stateOf(scoped);
+      expect(drawn.edits?.strokes).toHaveLength(1);
+
+      // Copying the ramp copies it as drawn, including where it crosses nothing.
+      const gap = (left.end + right.start) / 2;
+      const copied = copyPitch({
+        ...drawn,
+        selection: { blobs: [], anchors: [], ranges: [{ start: from.time, end: to.time }] },
+      });
+      if (copied?.kind !== 'pitch') throw new Error('nothing copied');
+      expect(copied.strokes).toHaveLength(1);
+      const line = copied.lines[0]!;
+      const near = line.reduce((best, point) =>
+        Math.abs(point.time - gap) < Math.abs(best.time - gap) ? point : best,
+      );
+      const expected =
+        from.midi + ((to.midi - from.midi) * (near.time - from.time)) / (to.time - from.time);
+      expect(Math.abs(near.midi - expected)).toBeLessThan(0.05);
+
+      // Pasted elsewhere, the curve comes with it as a curve of its own.
+      apply(scoped, placeStrokes(drawn, copied, null, 0.1));
+      const pasted = stateOf(scoped).edits?.strokes ?? [];
+      expect(pasted).toHaveLength(2);
+      expect(pasted[1]!.points[0]!.time).toBeCloseTo(0.1, 9);
+
+      // Reshaped, it keeps its id; deleted, it goes and the blob keeps its own offset.
+      const kept = pasted[0]!;
+      const flatter = ramp.map((point) => ({ ...point, midi: 60 }));
+      apply(scoped, drawStrokeOps(stateOf(scoped), flatter, null, kept));
+      expect(stateOf(scoped).edits?.strokes?.map((stroke) => stroke.id)).toEqual([
+        kept.id,
+        pasted[1]!.id,
+      ]);
+      const reshaped = stateOf(scoped).edits!.strokes!.find((stroke) => stroke.id === kept.id)!;
+      apply(scoped, deleteStrokeOps(stateOf(scoped), reshaped));
+      const after = stateOf(scoped);
+      expect(after.edits?.strokes?.map((stroke) => stroke.id)).toEqual([pasted[1]!.id]);
+      expect(after.blobs.find((blob) => blob.id === left.id)!.pitchOffset).toBe(1);
+      expect(scoped.undo()).toBe(true);
+      expect(stateOf(scoped).edits?.strokes).toHaveLength(2);
     } finally {
       scoped.free();
     }

@@ -442,6 +442,8 @@ export type EditOp =
   | { type: 'setTimelineOrigin'; seconds: number }
   | { type: 'setTempoMap'; events: TempoEvent[] }
   | { type: 'setMeterMap'; events: MeterEvent[] }
+  | { type: 'setStroke'; stroke: Stroke }
+  | { type: 'removeStroke'; stroke: number }
   | { type: 'group'; ops: EditOp[] };
 
 /**
@@ -451,7 +453,28 @@ export type EditOp =
  * is a level line at the span's median detected pitch.
  */
 export type PitchFill =
-  { kind: 'contour'; anchors: Anchor[] } | { kind: 'sung' } | { kind: 'flat' };
+  | { kind: 'contour'; anchors: Anchor[] }
+  | { kind: 'sung' }
+  | { kind: 'release' }
+  | { kind: 'flat' };
+
+/** A point on a kept stroke: project output seconds and fractional MIDI, as heard. */
+export interface StrokePoint {
+  time: number;
+  midi: number;
+}
+
+/**
+ * A curve kept whole as it was drawn, across blobs and the gaps between them.
+ *
+ * @remarks Heard only through what it wrote into the blobs it crossed. `bezier` is the start, two
+ * control points and end of the Bezier it was drawn as, when it was.
+ */
+export interface Stroke {
+  id: number;
+  points: StrokePoint[];
+  bezier?: [StrokePoint, StrokePoint, StrokePoint, StrokePoint];
+}
 
 /** Undo and redo stacks over a project's edit history. */
 export interface History {
@@ -616,6 +639,8 @@ export interface EditState {
   references: Reference[];
   /** Monitor levels for everything the transport plays. */
   mixer: MixerSettings;
+  /** Curves kept whole as they were drawn; absent when there are none. */
+  strokes?: Stroke[];
   scale: ScaleSettings;
   modulation: ModulationSettings;
   formant: FormantMode;

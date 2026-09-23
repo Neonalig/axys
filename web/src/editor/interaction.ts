@@ -9,26 +9,22 @@ import {
 } from '../app/selection.js';
 import type { TimeRange } from '../app/selection.js';
 import {
+  deleteStrokeOps,
+  drawStrokeOps,
   liftRunOps,
   movePitchOps,
   outsideRunAt,
-  outsideRuns,
   samplePitch,
   shiftLines,
+  strokeSpan,
+  strokeValue,
 } from '../app/clipboard.js';
 import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
 import { othersOf } from '../app/sources.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
-import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
-import {
-  CLIP_ID_BITS,
-  clipEnd,
-  clipOf,
-  clipStart,
-  displayTitle,
-  MIN_BLOB_SECONDS,
-} from '../core/types.js';
+import type { Blob, BlobId, Edge, EditOp, Stroke, ViewState } from '../core/types.js';
+import { clipEnd, clipOf, clipStart, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -66,7 +62,6 @@ import {
   EDGE_GRIP,
   FINE_FACTOR,
   extendStroke,
-  gestureAnchors,
   modifiersOf,
   rippleInsert,
   moveBezierHandle,
@@ -171,6 +166,9 @@ const BEZIER_MAX_SAMPLES = 96;
 
 const KEY_ZOOM = 1.3;
 
+/** Grab distance in pixels around a kept curve. */
+const STROKE_GRIP = 5;
+
 /** Grab distance in pixels above and below a pitch line outside every blob. */
 const PITCH_LINE_GRIP = 6;
 
@@ -207,6 +205,8 @@ export class EditorController {
    * reaches the session until it is kept, so shaping one leaves no history.
    */
   #bezier: BezierCurve | null = null;
+  /** The kept curve the Bezier being shaped was opened from, which keeping it replaces. */
+  #editing: Stroke | null = null;
 
   constructor(options: EditorControllerOptions) {
     this.#options = options;
@@ -327,6 +327,15 @@ export class EditorController {
             midi: heard,
           };
         }
+      }
+    }
+
+    // A kept curve answers to the tools that pick one up, wherever it runs, blob or gap.
+    if (state.editMode !== 'blob' && (state.tool === 'select' || state.tool === 'bezier')) {
+      const stroke = this.#strokeAt(viewport, x, y);
+      if (stroke !== null) {
+        const value = strokeValue(stroke, time) ?? midi;
+        return { ...base, kind: 'stroke', stroke: stroke.id, midi: value };
       }
     }
 
@@ -884,6 +893,18 @@ export class EditorController {
   };
 
   #onKeyDown = (event: KeyboardEvent): void => {
+    if (
+      (event.key === 'Delete' || event.key === 'Backspace') &&
+      this.#gesture === null &&
+      (this.#editing !== null || this.#store.state.activeStroke !== null)
+    ) {
+      // Ahead of the window's own Delete, which would delete the blobs under the curve.
+      if (this.#deleteStroke()) {
+        event.stopPropagation();
+        event.preventDefault();
+        return;
+      }
+    }
     if (this.#bezier !== null && this.#gesture === null) {
       if (event.key === 'Enter' || event.key === 'Escape') {
         if (event.key === 'Enter') this.#keepBezier();
@@ -979,6 +1000,13 @@ export class EditorController {
       if (gesture !== null) {
         return gesture;
       }
+    }
+
+    if (hit.kind === 'stroke' && hit.stroke !== undefined && hit.stroke !== null) {
+      const handle = state.tool === 'bezier' ? this.#bezierHandleAt(this.#origin) : null;
+      if (handle !== null) return { kind: 'bezierHandle', handle };
+      this.#pickStroke(hit.stroke);
+      return null;
     }
 
     const mode = state.editMode;
@@ -1582,7 +1610,7 @@ export class EditorController {
           viewport.secondsPerPixel * 2,
           viewport.semitonesPerPixel * 2,
         );
-        this.#commitStroke(simplified, 'smooth', 'Draw Curve');
+        this.#commitStroke(simplified, null, 'Draw Curve');
         break;
       }
       case 'bezierDraw':
@@ -1860,70 +1888,30 @@ export class EditorController {
   }
 
   /**
-   * Commits a stroke drawn in output seconds onto every blob it crossed.
+   * Keeps a line drawn in output seconds whole and lays it over every blob it crosses.
    *
-   * @remarks A stroke is one gesture and one undo step, carrying one curve edit per blob,
-   * because a pitch curve belongs to a blob while the stroke belongs to the take. Each blob is
-   * given the part of the stroke that falls inside it, sampled at its own edges so a curve does
-   * not stop short of the boundary it was drawn across. Blobs the stroke only grazes are left
-   * alone.
+   * @remarks One gesture and one undo step. The line is kept as a curve of its own, gaps and all,
+   * so it is drawn, picked up and copied as it was drawn; each blob it crosses is given the part
+   * over it and keeps the rest of what it sang. A Bezier keeps its handles, and one reopened for
+   * shaping replaces the curve it was opened from.
    */
-  #commitStroke(points: readonly GesturePoint[], interp: Interp, message: string): void {
+  #commitStroke(
+    points: readonly GesturePoint[],
+    bezier: BezierCurve | null,
+    message: string,
+  ): void {
+    const replacing = this.#editing;
+    this.#editing = null;
     if (points.length < 2) {
       return;
     }
-    const ops: EditOp[] = [];
-    for (const blob of this.#store.state.blobs) {
-      const inside = clipToSpan(points, blobOutputStart(blob), blobOutputEnd(blob));
-      if (inside.length < 2) {
-        continue;
-      }
-      const anchors = gestureAnchors(
-        inside.map((point) => ({
-          time: clamp(outputToSource(blob, point.time), blob.start, blob.end),
-          // Drawn in heard pitch; the blob's offset is added again when it is heard.
-          midi: point.midi - blob.pitchOffset,
-        })),
-        interp,
-      );
-      if (anchors.length < 2) {
-        continue;
-      }
-      ops.push({ type: 'drawSpan', blob: blob.id, anchors });
-    }
-    // Over pitch outside every blob, shown and so editable, the stroke makes a blob of its own.
-    const state = this.#store.state;
-    const first = points[0];
-    const last = points[points.length - 1];
-    if (state.outsidePitch && first !== undefined && last !== undefined) {
-      const created: Blob[] = [];
-      for (const run of outsideRuns(state, first.time, last.time)) {
-        const inside = clipToSpan(points, run.start, run.end);
-        const anchors = gestureAnchors(inside, interp);
-        if (anchors.length < 2) continue;
-        created.push({
-          id: run.clip * 2 ** CLIP_ID_BITS,
-          start: run.start,
-          end: run.end,
-          detectedCenter: 0,
-          pitchOffset: 0,
-          timeOffset: 0,
-          timeScale: 1,
-          subregions: [],
-          curve: { anchors },
-          excluded: false,
-          gainDb: 0,
-        });
-      }
-      if (created.length > 0) ops.push({ type: 'addBlobs', blobs: created });
-    }
+    const shape: Stroke['bezier'] | null =
+      bezier === null ? null : [bezier.from, bezier.c1, bezier.c2, bezier.to];
+    const ops = drawStrokeOps(this.#store.state, points, shape, replacing);
     if (ops.length === 0) {
       return;
     }
-    this.#commit(
-      grouped(ops),
-      ops.length === 1 ? message : `${message} Over ${String(ops.length)} Blobs`,
-    );
+    this.#commit(grouped(ops), message);
   }
 
   #dragSet(id: BlobId): BlobId[] {
@@ -2069,8 +2057,69 @@ export class EditorController {
     this.#announce('Loop cleared');
   }
 
-  #setSelection(selection: Selection): void {
-    this.#store.update({ selection });
+  #setSelection(selection: Selection, stroke: number | null = null): void {
+    this.#store.update({ selection, activeStroke: stroke });
+  }
+
+  /** The kept curve within grabbing distance of a canvas position, the newest first. */
+  #strokeAt(viewport: Viewport, x: number, y: number): Stroke | null {
+    const strokes = this.#store.state.edits?.strokes ?? [];
+    for (let s = strokes.length - 1; s >= 0; s -= 1) {
+      const stroke = strokes[s];
+      if (stroke === undefined) continue;
+      for (let i = 1; i < stroke.points.length; i += 1) {
+        const a = stroke.points[i - 1];
+        const b = stroke.points[i];
+        if (a === undefined || b === undefined) continue;
+        const distance = segmentDistance(
+          x,
+          y,
+          viewport.timeToX(a.time),
+          viewport.midiToY(a.midi),
+          viewport.timeToX(b.time),
+          viewport.midiToY(b.midi),
+        );
+        if (distance <= STROKE_GRIP) return stroke;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Picks up a kept curve: a Bezier opens for shaping again, and any curve becomes the selection.
+   *
+   * @remarks Shaping switches to the Bezier tool, since that is where its handles are dragged.
+   */
+  #pickStroke(id: number): void {
+    const stroke = (this.#store.state.edits?.strokes ?? []).find((entry) => entry.id === id);
+    if (stroke === undefined) return;
+    this.#keepBezier();
+    const span = strokeSpan(stroke);
+    this.#setSelection(selectionForRange(this.#store.state.blobs, span), stroke.id);
+    if (stroke.bezier !== undefined) {
+      if (this.#store.state.tool !== 'bezier') this.#store.update({ tool: 'bezier' });
+      const [from, c1, c2, to] = stroke.bezier;
+      this.#bezier = { from, c1, c2, to };
+      this.#editing = stroke;
+      this.#announce('Drag handles to shape. Enter to apply, Delete to delete, Esc to cancel');
+    } else {
+      this.#announce('Curve selected');
+    }
+    this.#updatePreview();
+  }
+
+  /** Deletes the kept curve being shaped or selected, and what it wrote into the blobs. */
+  #deleteStroke(): boolean {
+    const state = this.#store.state;
+    const id = this.#editing?.id ?? state.activeStroke;
+    const stroke = (state.edits?.strokes ?? []).find((entry) => entry.id === id);
+    if (stroke === undefined) return false;
+    this.#bezier = null;
+    this.#editing = null;
+    this.#renderer?.setPreview(null);
+    this.#commit(grouped(deleteStrokeOps(state, stroke)), 'Curve deleted');
+    this.#setSelection(emptySelection());
+    return true;
   }
 
   #commit(op: EditOp, message: string): void {
@@ -2200,17 +2249,29 @@ export class EditorController {
     }
     this.#bezier = null;
     this.#renderer?.setPreview(null);
+    // A curve reopened and let go untouched changes nothing, so it leaves no history.
+    const before = this.#editing?.bezier;
+    if (
+      before !== undefined &&
+      [curve.from, curve.c1, curve.c2, curve.to].every(
+        (point, index) => point.time === before[index]?.time && point.midi === before[index]?.midi,
+      )
+    ) {
+      this.#editing = null;
+      this.render();
+      return;
+    }
     const viewport = this.viewport;
-    // Reduced the way a pen stroke is, so the curve keeps its shape in a handful of anchors
-    // rather than one per sample.
+    // Reduced the way a pen stroke is, so the curve keeps its shape in a handful of points
+    // rather than one per sample, but finely enough to stay smooth between them.
     const points = simplifyGesture(
       sampleBezier(curve, this.#bezierSamples(curve)),
-      viewport.secondsPerPixel,
-      viewport.semitonesPerPixel,
+      viewport.secondsPerPixel / 2,
+      viewport.semitonesPerPixel / 2,
     );
     this.#commitStroke(
       points,
-      'smooth',
+      curve,
       `Draw Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}`,
     );
     this.render();
@@ -2222,6 +2283,7 @@ export class EditorController {
       return;
     }
     this.#bezier = null;
+    this.#editing = null;
     this.#renderer?.setPreview(null);
     this.#announce('Curve discarded');
     this.render();
@@ -2248,56 +2310,28 @@ function capturePointer(element: Element, pointerId: number): void {
   }
 }
 
-/**
- * The part of a stroke that falls inside a span, with a point placed at each edge it crosses.
- *
- * @remarks The interpolated edge points are what keep a curve reaching the blob boundary instead
- * of stopping at the last sample that happened to land inside it.
- */
-function clipToSpan(points: readonly GesturePoint[], start: number, end: number): GesturePoint[] {
-  const inside: GesturePoint[] = [];
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index];
-    if (point === undefined) {
-      continue;
-    }
-    const previous = points[index - 1];
-    if (previous !== undefined) {
-      // Both edges, not the first one found: a single segment drawn across a whole blob crosses
-      // its start and its end, and taking only one of them leaves that blob a single point.
-      for (const edge of [start, end]) {
-        const crossing = crossPoint(previous, point, edge);
-        if (crossing !== null) {
-          inside.push(crossing);
-        }
-      }
-    }
-    if (point.time >= start && point.time <= end) {
-      inside.push(point);
-    }
-  }
-  inside.sort((a, b) => a.time - b.time);
-  return inside;
-}
-
-/** Where a segment crosses a time, or `null` when it does not. */
-function crossPoint(a: GesturePoint, b: GesturePoint, at: number): GesturePoint | null {
-  const low = Math.min(a.time, b.time);
-  const high = Math.max(a.time, b.time);
-  if (at <= low || at >= high) {
-    return null;
-  }
-  const span = b.time - a.time;
-  const t = span === 0 ? 0 : (at - a.time) / span;
-  return { time: at, midi: a.midi + (b.midi - a.midi) * t };
-}
-
 /** A gesture with no modifier held. */
 const NO_MODIFIERS: Modifiers = { constrain: false, fine: false, snap: false };
 
 /** One edit when there is one, and one group when there are several. */
 function grouped(ops: readonly EditOp[]): EditOp {
   return ops.length === 1 && ops[0] !== undefined ? ops[0] : { type: 'group', ops: [...ops] };
+}
+
+/** Distance in pixels from a point to a segment. */
+function segmentDistance(
+  x: number,
+  y: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): number {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const length = dx * dx + dy * dy;
+  const t = length === 0 ? 0 : clamp(((x - x0) * dx + (y - y0) * dy) / length, 0, 1);
+  return Math.hypot(x - (x0 + dx * t), y - (y0 + dy * t));
 }
 
 function clamp(value: number, low: number, high: number): number {

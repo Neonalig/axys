@@ -600,6 +600,7 @@ function baseKey(
       state.tool,
       state.editMode,
       state.outsidePitch ? 1 : 0,
+      state.activeStroke ?? -1,
       viewport.width,
       viewport.height,
       ratio,

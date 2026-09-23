@@ -18,6 +18,7 @@ import {
   pasteBlobOps,
   pastePitchOps,
   placePitch,
+  placeStrokes,
 } from './clipboard.js';
 import type { ClipboardContent } from './clipboard.js';
 import { savePreferences } from './preferences.js';
@@ -691,11 +692,14 @@ export function buildCommands(): Command[] {
         const ops =
           content.kind === 'blobs'
             ? pasteBlobOps(state, content, at)
-            : pastePitchOps(
-                state,
-                placePitch(content, selectedRange(state), at),
-                state.outsidePitch,
-              );
+            : [
+                ...pastePitchOps(
+                  state,
+                  placePitch(content, selectedRange(state), at),
+                  state.outsidePitch,
+                ),
+                ...placeStrokes(state, content, selectedRange(state), at),
+              ];
         if (ops.length === 0) {
           ctx.toast.warn(
             content.kind === 'blobs'

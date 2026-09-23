@@ -54,6 +54,54 @@ impl Anchor {
     }
 }
 
+/// A point on a kept stroke: project output seconds and fractional MIDI.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrokePoint {
+    /// Project output seconds.
+    pub time: f64,
+    /// Fractional MIDI note number, as heard.
+    pub midi: f64,
+}
+
+/// A curve kept whole as it was drawn, across blobs and the gaps between them.
+///
+/// A stroke is heard only through the anchors it wrote into the blobs it crossed, so it changes
+/// nothing in the render on its own. It is what the curve is selected, reshaped and copied as.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stroke {
+    /// Identity within the project.
+    pub id: u32,
+    /// The curve as a line through time, in time order.
+    pub points: Vec<StrokePoint>,
+    /// The start, two control points and end of the Bezier it was drawn as, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[StrokePoint; 4]>,
+}
+
+impl Stroke {
+    /// Rejects a stroke with too many points, a non-finite value or points out of time order.
+    pub fn validate(&self) -> Result<()> {
+        if self.points.len() < 2 || self.points.len() > limits::MAX_STROKE_POINTS {
+            return Err(AxysError::Invalid(format!(
+                "a stroke has 2 to {} points",
+                limits::MAX_STROKE_POINTS
+            )));
+        }
+        let finite = |p: &StrokePoint| p.time.is_finite() && p.midi.is_finite();
+        if !self.points.iter().all(finite) || !self.bezier.iter().flatten().all(finite) {
+            return Err(AxysError::Invalid("stroke point is not finite".into()));
+        }
+        if self.points.windows(2).any(|w| w[1].time < w[0].time) {
+            return Err(AxysError::Invalid(
+                "stroke points are out of time order".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// An ordered set of anchors evaluated as a continuous pitch function.
 ///
 /// Anchors stay sorted by time. Evaluating outside the anchor range clamps to

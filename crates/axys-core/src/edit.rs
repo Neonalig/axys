@@ -14,7 +14,7 @@ use crate::clip::{
     clip_of, fit_to_source, free_position, numbered_for, ripple_insert, Clip, ClipId, Reference,
     ReferenceId, Span, MAX_CLIPS, MAX_REFERENCES,
 };
-use crate::curve::{Anchor, Interp, PitchCurve};
+use crate::curve::{Anchor, Interp, PitchCurve, Stroke};
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideSelection, NoteMapping};
 use crate::mixer::MixerSettings;
@@ -373,6 +373,16 @@ pub enum EditOp {
         /// New meter events.
         events: Vec<MeterEvent>,
     },
+    /// Keeps a drawn curve whole, replacing the one with its id.
+    SetStroke {
+        /// The stroke, whose id is new or names the one it replaces.
+        stroke: Stroke,
+    },
+    /// Forgets a kept curve. What it wrote into blobs is left as it is.
+    RemoveStroke {
+        /// Id of the stroke to forget.
+        stroke: u32,
+    },
     /// Applies several operations as one undo step.
     Group {
         /// Operations in the order they are applied.
@@ -428,6 +438,8 @@ impl EditOp {
             EditOp::SetTimelineOrigin { .. } => "Align Timeline",
             EditOp::SetTempoMap { .. } => "Set Tempo Map",
             EditOp::SetMeterMap { .. } => "Set Meter Map",
+            EditOp::SetStroke { .. } => "Draw Curve",
+            EditOp::RemoveStroke { .. } => "Delete Curve",
             EditOp::Group { .. } => "Grouped Edit",
         }
     }
@@ -446,8 +458,11 @@ pub enum PitchFill {
         /// Points of the contour in time order.
         anchors: Vec<Anchor>,
     },
-    /// The blob's own pitch, as it sounds with no curve drawn.
+    /// The blob's own pitch, as it sounds with no curve drawn. Across the whole blob it also
+    /// clears the blob's offset, so the blob sounds as it was sung.
     Sung,
+    /// Whatever was drawn across the span let go, leaving the blob's own pitch with its offset.
+    Release,
     /// A level line at the span's median detected pitch, moved by the blob's offset.
     Flat,
 }
@@ -1099,6 +1114,28 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
         EditOp::SetMeterMap { events } => {
             state.timeline.set_meter(events.clone())?;
         }
+        EditOp::SetStroke { stroke } => {
+            stroke.validate()?;
+            match state.strokes.iter_mut().find(|kept| kept.id == stroke.id) {
+                Some(kept) => *kept = stroke.clone(),
+                None => {
+                    if state.strokes.len() >= limits::MAX_STROKES {
+                        return Err(AxysError::Invalid(format!(
+                            "a project keeps at most {} curves",
+                            limits::MAX_STROKES
+                        )));
+                    }
+                    state.strokes.push(stroke.clone());
+                }
+            }
+        }
+        EditOp::RemoveStroke { stroke } => {
+            let before = state.strokes.len();
+            state.strokes.retain(|kept| kept.id != *stroke);
+            if state.strokes.len() == before {
+                return Err(AxysError::NotFound(format!("curve {stroke}")));
+            }
+        }
         EditOp::Group { ops } => {
             for op in ops {
                 apply_in(state, sources, op)?;
@@ -1197,9 +1234,11 @@ fn replace_pitch(
         return Ok(());
     }
     let whole = start <= blob.start + EDGE_SECONDS && end >= blob.end - EDGE_SECONDS;
-    if whole && matches!(fill, PitchFill::Sung) {
+    if whole && matches!(fill, PitchFill::Sung | PitchFill::Release) {
         blob.curve = PitchCurve::new();
-        blob.pitch_offset = 0.0;
+        if matches!(fill, PitchFill::Sung) {
+            blob.pitch_offset = 0.0;
+        }
         return Ok(());
     }
 
@@ -1227,7 +1266,7 @@ fn replace_pitch(
                 Anchor::with_interp(end, level, Interp::Linear),
             ]
         }
-        PitchFill::Sung => Vec::new(),
+        PitchFill::Sung | PitchFill::Release => Vec::new(),
     };
     inside.sort_by(|a, b| a.time.total_cmp(&b.time));
     let released = inside.is_empty();
@@ -1558,6 +1597,7 @@ mod tests {
             tuning: Tuning::default(),
             accidentals: AccidentalStyle::default(),
             mixer: MixerSettings::default(),
+            strokes: Vec::new(),
         }
     }
 
@@ -1688,6 +1728,46 @@ mod tests {
         apply(&mut s, None, &op).unwrap();
         assert!((s.clips[0].blobs.get(BlobId(1)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
         assert!((s.clips[0].blobs.get(BlobId(2)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_kept_stroke_is_set_replaced_and_removed_without_touching_the_blobs() {
+        use crate::curve::StrokePoint;
+        let mut s = state();
+        let before = s.clips.clone();
+        let point = |time: f64, midi: f64| StrokePoint { time, midi };
+        let stroke = |midi: f64| Stroke {
+            id: 4,
+            points: vec![point(0.2, 60.0), point(1.8, midi)],
+            bezier: None,
+        };
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetStroke {
+                stroke: stroke(62.0),
+            },
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetStroke {
+                stroke: stroke(65.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.strokes, vec![stroke(65.0)]);
+        assert_eq!(s.clips, before);
+        let backwards = Stroke {
+            id: 5,
+            points: vec![point(1.0, 60.0), point(0.5, 60.0)],
+            bezier: None,
+        };
+        assert!(apply(&mut s, None, &EditOp::SetStroke { stroke: backwards }).is_err());
+        apply(&mut s, None, &EditOp::RemoveStroke { stroke: 4 }).unwrap();
+        assert!(s.strokes.is_empty());
+        assert!(apply(&mut s, None, &EditOp::RemoveStroke { stroke: 4 }).is_err());
     }
 
     #[test]

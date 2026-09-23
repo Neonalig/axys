@@ -67,6 +67,8 @@ export interface AppState {
   pitchCutFill: PitchCutFill;
   /** What Copy or Cut last took, or `null` before either has. */
   clipboard: ClipboardContent | null;
+  /** The kept curve picked up with the selection, which Delete deletes. */
+  activeStroke: number | null;
   dirty: boolean;
 }
 
@@ -236,6 +238,7 @@ export function initialState(): AppState {
     outsidePitch: false,
     pitchCutFill: 'sung',
     clipboard: null,
+    activeStroke: null,
     dirty: false,
   };
 }

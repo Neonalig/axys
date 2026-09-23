@@ -11,7 +11,7 @@
 
 import type { AppState, EditMode } from './store.js';
 import type { TimeRange } from './selection.js';
-import type { Anchor, Blob, ClipId, EditOp } from '../core/types.js';
+import type { Anchor, Blob, ClipId, EditOp, Stroke, StrokePoint } from '../core/types.js';
 import { CLIP_ID_BITS, clipEnd, clipOf, clipStart, MIN_BLOB_SECONDS } from '../core/types.js';
 import type { ClipPart } from '../core/wasm.js';
 import {
@@ -37,7 +37,7 @@ export interface PitchPoint {
 export type ClipboardContent =
   | { kind: 'clips'; parts: ClipPart[] }
   | { kind: 'blobs'; blobs: Blob[]; start: number; end: number }
-  | { kind: 'pitch'; lines: PitchPoint[][]; start: number; end: number };
+  | { kind: 'pitch'; lines: PitchPoint[][]; strokes: Stroke[]; start: number; end: number };
 
 /** What a span of pitch is left at once its line is cut away. */
 export type PitchCutFill = 'sung' | 'flat';
@@ -220,12 +220,24 @@ export function samplePitch(state: AppState, ranges: readonly TimeRange[]): Pitc
     if (!Number.isFinite(detected)) continue;
     const blob = blobHolding(state.blobs, source);
     if (blob === undefined) {
-      if (clipAt(state, source) !== undefined) heard.push({ time: source, midi: detected });
+      // Pitch outside every blob is often breath or bleed, so it is read only while it is shown.
+      if (state.outsidePitch && clipAt(state, source) !== undefined) {
+        heard.push({ time: source, midi: detected });
+      }
       continue;
     }
     const target = state.plan === null ? null : planTargetMidi(state.plan, source);
     heard.push({ time: sourceToOutput(blob, source), midi: target ?? detected });
   }
+  // A kept curve is the line as it was drawn, gaps and all, so its own points stand in for what
+  // the blobs under it happen to sing.
+  const strokes = strokesOf(state);
+  const drawn = heard.filter(
+    (point) => !strokes.some((stroke) => within(strokeSpan(stroke), point.time)),
+  );
+  for (const stroke of strokes) drawn.push(...stroke.points);
+  heard.length = 0;
+  heard.push(...drawn);
   heard.sort((a, b) => a.time - b.time);
   const lines: PitchPoint[][] = [];
   for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
@@ -243,14 +255,127 @@ export function samplePitch(state: AppState, ranges: readonly TimeRange[]): Pitc
   return lines;
 }
 
-/** Copies the heard pitch line across the selection, or `null` where there is none. */
+/**
+ * Copies the heard pitch line across the selection, and every kept curve it holds whole, or
+ * `null` where there is no line.
+ */
 export function copyPitch(state: AppState): ClipboardContent | null {
-  const lines = samplePitch(state, state.selection.ranges);
-  if (lines.length === 0) return null;
   const ranges = state.selection.ranges;
+  const lines = samplePitch(state, ranges);
+  if (lines.length === 0) return null;
   const start = Math.min(...ranges.map((range) => range.start));
   const end = Math.max(...ranges.map((range) => range.end));
-  return { kind: 'pitch', lines, start, end };
+  const strokes = structuredClone(strokesInside(state, ranges));
+  return { kind: 'pitch', lines, strokes, start, end };
+}
+
+/** The kept curves, oldest first. */
+export function strokesOf(state: AppState): Stroke[] {
+  return state.edits?.strokes ?? [];
+}
+
+/** The output span a kept curve covers. */
+export function strokeSpan(stroke: Stroke): TimeRange {
+  return {
+    start: stroke.points[0]?.time ?? 0,
+    end: stroke.points[stroke.points.length - 1]?.time ?? 0,
+  };
+}
+
+/** A kept curve's pitch at an output time, or `null` outside its span. */
+export function strokeValue(stroke: Stroke, time: number): number | null {
+  const points = stroke.points;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    if (a === undefined || b === undefined || time < a.time || time > b.time) continue;
+    const span = b.time - a.time;
+    return span <= 0 ? b.midi : a.midi + ((b.midi - a.midi) * (time - a.time)) / span;
+  }
+  return null;
+}
+
+/** Whether a time falls in a span, within {@link EPS}. */
+function within(range: TimeRange, time: number): boolean {
+  return time >= range.start - EPS && time <= range.end + EPS;
+}
+
+/** The kept curves lying wholly inside some spans. */
+export function strokesInside(state: AppState, ranges: readonly TimeRange[]): Stroke[] {
+  return strokesOf(state).filter((stroke) => {
+    const span = strokeSpan(stroke);
+    return ranges.some((range) => within(range, span.start) && within(range, span.end));
+  });
+}
+
+/** An id no kept curve has yet. */
+function nextStrokeId(state: AppState, taken: readonly number[] = []): number {
+  return Math.max(-1, ...strokesOf(state).map((stroke) => stroke.id), ...taken) + 1;
+}
+
+/** A stroke moved through time and pitch by `map`, with a new id. */
+function mapStroke(stroke: Stroke, id: number, map: (point: StrokePoint) => StrokePoint): Stroke {
+  const moved: Stroke = { id, points: stroke.points.map(map) };
+  if (stroke.bezier !== undefined) {
+    const [a, b, c, d] = stroke.bezier;
+    moved.bezier = [map(a), map(b), map(c), map(d)];
+  }
+  return moved;
+}
+
+/**
+ * Keeps a drawn line whole and lays it over whatever it crosses, as one group.
+ *
+ * @remarks With `replacing`, the curve it reshapes lets go of the span it covered first, so
+ * shortening a curve leaves the rest of that span at the blob's own pitch. Pitch outside every
+ * blob is drawn over only while it is shown, where the line makes a blob of its own.
+ */
+export function drawStrokeOps(
+  state: AppState,
+  points: readonly PitchPoint[],
+  bezier: Stroke['bezier'] | null,
+  replacing: Stroke | null,
+): EditOp[] {
+  if (points.length < 2) return [];
+  const ops: EditOp[] = replacing === null ? [] : releasePitchOps(state, [strokeSpan(replacing)]);
+  const stroke: Stroke = {
+    id: replacing?.id ?? nextStrokeId(state),
+    points: [...points].sort((a, b) => a.time - b.time),
+  };
+  if (bezier !== null && bezier !== undefined) stroke.bezier = bezier;
+  ops.push({ type: 'setStroke', stroke });
+  ops.push(...pastePitchOps(state, [stroke.points], state.outsidePitch));
+  return ops;
+}
+
+/** Forgets a kept curve and lets go of what it wrote into the blobs under it. */
+export function deleteStrokeOps(state: AppState, stroke: Stroke): EditOp[] {
+  return [
+    ...releasePitchOps(state, [strokeSpan(stroke)]),
+    { type: 'removeStroke', stroke: stroke.id },
+  ];
+}
+
+/** Lets every blob's part of some spans go back to its own pitch, keeping its offset. */
+function releasePitchOps(state: AppState, ranges: readonly TimeRange[]): EditOp[] {
+  return spanPitchOps(state, ranges, { kind: 'release' });
+}
+
+/** The kept curves a pasted line brings with it, placed as the line was and given new ids. */
+export function placeStrokes(
+  state: AppState,
+  content: ClipboardContent,
+  target: TimeRange | null,
+  playhead: number,
+): EditOp[] {
+  if (content.kind !== 'pitch') return [];
+  const place = placement(content, target, playhead);
+  const ids: number[] = [];
+  return content.strokes.map((stroke): EditOp => {
+    const id = nextStrokeId(state, ids);
+    ids.push(id);
+    return { type: 'setStroke', stroke: mapStroke(stroke, id, place) };
+  });
 }
 
 /** The part of a line inside a span, with a point placed at each edge it crosses. */
@@ -409,6 +534,20 @@ export function cutPitchOps(
   ranges: readonly TimeRange[],
   fill: PitchCutFill,
 ): EditOp[] {
+  // The kept curves cut with the line go with it; what they wrote is replaced below.
+  const forgotten = strokesInside(state, ranges).map((stroke): EditOp => ({
+    type: 'removeStroke',
+    stroke: stroke.id,
+  }));
+  return [...spanPitchOps(state, ranges, { kind: fill }), ...forgotten];
+}
+
+/** Gives every blob's part of some spans a fill without a contour. */
+function spanPitchOps(
+  state: AppState,
+  ranges: readonly TimeRange[],
+  fill: { kind: 'sung' | 'flat' | 'release' },
+): EditOp[] {
   const ops: EditOp[] = [];
   for (const blob of state.blobs) {
     for (const range of ranges) {
@@ -420,7 +559,7 @@ export function cutPitchOps(
         blob: blob.id,
         start: Math.max(blob.start, outputToSource(blob, from)),
         end: Math.min(blob.end, outputToSource(blob, to)),
-        fill: { kind: fill },
+        fill,
       });
     }
   }
@@ -437,17 +576,26 @@ export function placePitch(
   playhead: number,
 ): PitchPoint[][] {
   if (content.kind !== 'pitch') return [];
+  const place = placement(content, target, playhead);
+  return content.lines.map((line) => line.map(place));
+}
+
+/** Where each copied point lands, for a line and the curves it carries alike. */
+function placement(
+  content: Extract<ClipboardContent, { kind: 'pitch' }>,
+  target: TimeRange | null,
+  playhead: number,
+): (point: PitchPoint) => PitchPoint {
   const length = content.end - content.start;
   if (target === null || !(length > 0)) {
-    return shiftLines(content.lines, playhead - content.start, 0);
+    const shift = playhead - content.start;
+    return (point) => ({ time: point.time + shift, midi: point.midi });
   }
   const scale = (target.end - target.start) / length;
-  return content.lines.map((line) =>
-    line.map((point) => ({
-      time: target.start + (point.time - content.start) * scale,
-      midi: point.midi,
-    })),
-  );
+  return (point) => ({
+    time: target.start + (point.time - content.start) * scale,
+    midi: point.midi,
+  });
 }
 
 /**
@@ -467,7 +615,15 @@ export function movePitchOps(
   const lines = samplePitch(state, ranges);
   if (lines.length === 0 || (seconds === 0 && semitones === 0)) return [];
   const ops = seconds === 0 ? [] : cutPitchOps(state, ranges, fill);
-  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones), outside)];
+  // The kept curves inside the spans move with the line, keeping their ids.
+  const kept = strokesInside(state, ranges).map((stroke): EditOp => ({
+    type: 'setStroke',
+    stroke: mapStroke(stroke, stroke.id, (point) => ({
+      time: point.time + seconds,
+      midi: point.midi + semitones,
+    })),
+  }));
+  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones), outside), ...kept];
 }
 
 /**

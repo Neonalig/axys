@@ -51,6 +51,8 @@ import type {
   SourceInfo,
   PitchFill,
   Span,
+  Stroke,
+  StrokePoint,
   Subregion,
   TempoEvent,
   TimeMap,
@@ -550,12 +552,14 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   setTimelineOrigin: (op) => isNumber(op.seconds),
   setTempoMap: (op) => Array.isArray(op.events) && op.events.every(isTempoEvent),
   setMeterMap: (op) => Array.isArray(op.events) && op.events.every(isMeterEvent),
+  setStroke: (op) => isStroke(op.stroke),
+  removeStroke: (op) => isNumber(op.stroke),
   group: (op) => Array.isArray(op.ops) && op.ops.every(isEditOp),
 };
 
 function isPitchFill(value: unknown): value is PitchFill {
   if (!isRecord(value)) return false;
-  if (value.kind === 'sung' || value.kind === 'flat') return true;
+  if (value.kind === 'sung' || value.kind === 'release' || value.kind === 'flat') return true;
   return value.kind === 'contour' && Array.isArray(value.anchors) && value.anchors.every(isAnchor);
 }
 
@@ -773,7 +777,25 @@ export function isEditState(value: unknown): value is EditState {
     Array.isArray(value.mappings) &&
     value.mappings.every(isNoteMapping) &&
     isTuning(value.tuning) &&
-    isLiteral(ACCIDENTAL_STYLES, value.accidentals)
+    isLiteral(ACCIDENTAL_STYLES, value.accidentals) &&
+    (value.strokes === undefined || (Array.isArray(value.strokes) && value.strokes.every(isStroke)))
+  );
+}
+
+function isStrokePoint(value: unknown): value is StrokePoint {
+  return isRecord(value) && isNumber(value.time) && isNumber(value.midi);
+}
+
+function isStroke(value: unknown): value is Stroke {
+  return (
+    isRecord(value) &&
+    isNumber(value.id) &&
+    Array.isArray(value.points) &&
+    value.points.every(isStrokePoint) &&
+    (value.bezier === undefined ||
+      (Array.isArray(value.bezier) &&
+        value.bezier.length === 4 &&
+        value.bezier.every(isStrokePoint)))
   );
 }
 

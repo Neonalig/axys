@@ -188,6 +188,7 @@ export function drawPitch(
   }
   drawBridges(ctx, state.track, state.blobs, viewport, theme);
   drawTarget(ctx, state, viewport, theme);
+  drawStrokes(ctx, state, viewport, theme);
   drawAnchors(ctx, state, viewport, theme);
 
   ctx.restore();
@@ -610,6 +611,48 @@ function drawTarget(
     }
   }
   ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Draws each kept curve where no blob carries it: dotted and faint across gaps, so a line drawn
+ * over nothing still shows where it runs. The one picked up is drawn whole and bright.
+ *
+ * @remarks Over a blob the curve is already drawn as the target line, which is what is heard.
+ */
+function drawStrokes(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+): void {
+  const strokes = state.edits?.strokes ?? [];
+  if (strokes.length === 0) return;
+  const covered = (time: number): boolean =>
+    state.blobs.some((blob) => time >= blobOutputStart(blob) && time <= blobOutputEnd(blob));
+  const view = viewport.view;
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  for (const stroke of strokes) {
+    const first = stroke.points[0];
+    const last = stroke.points[stroke.points.length - 1];
+    if (first === undefined || last === undefined) continue;
+    if (last.time < view.visibleStart || first.time > view.visibleEnd) continue;
+    const active = stroke.id === state.activeStroke;
+    const path = new Path2D();
+    for (let i = 1; i < stroke.points.length; i += 1) {
+      const a = stroke.points[i - 1];
+      const b = stroke.points[i];
+      if (a === undefined || b === undefined) continue;
+      if (!active && covered((a.time + b.time) / 2)) continue;
+      path.moveTo(viewport.timeToX(a.time), viewport.midiToY(a.midi));
+      path.lineTo(viewport.timeToX(b.time), viewport.midiToY(b.midi));
+    }
+    ctx.strokeStyle = active ? theme.handleActive : theme.pitchTarget;
+    ctx.globalAlpha = active ? 1 : 0.55;
+    ctx.setLineDash(active ? [] : [2, 3]);
+    ctx.stroke(path);
+  }
   ctx.restore();
 }
 

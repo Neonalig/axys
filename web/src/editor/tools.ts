@@ -88,7 +88,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     id: 'bezier',
     label: 'Draw Bezier',
-    hint: 'Drag a line, then drag handles to shape',
+    hint: 'Drag a line, or click a curve to reshape',
     key: 'N',
     cursor: 'crosshair',
   },
@@ -118,7 +118,8 @@ export type HitKind =
   | 'conflict'
   | 'clipTitle'
   | 'reference'
-  | 'pitchLine';
+  | 'pitchLine'
+  | 'stroke';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -132,6 +133,8 @@ export interface Hit {
   conflict: TimingConflict | null;
   /** The reference whose band the position is over. */
   reference: number | null;
+  /** The kept curve the position is on. */
+  stroke?: number | null;
   /** Output seconds under the cursor. */
   time: number;
   /** Source seconds under the cursor; equal to `time` outside any blob. */
@@ -174,6 +177,9 @@ export function cursorFor(tool: ToolId, hit: Hit, mode: EditMode = 'both'): stri
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
     return 'default';
   }
+  if (hit.kind === 'stroke') {
+    return 'pointer';
+  }
   // Pitch outside every blob is picked up by the tools that move pitch, and selected by the rest.
   if (hit.kind === 'pitchLine') {
     return tool === 'pitch'
@@ -208,6 +214,8 @@ export function describeHit(hit: Hit, state: AppState): string {
       return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'pitchLine':
       return `Pitch ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'stroke':
+      return `Curve ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
       return 'Move Clip  Ctrl Start  Shift Insert  Double-Click Select';
     case 'reference':

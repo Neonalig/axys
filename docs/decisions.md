@@ -836,12 +836,32 @@ Decided where the backlog left it open:
 Copying took the pitch only where it was sung inside a blob, so a Bezier drawn across three blobs
 came back as three pieces and pasted with holes wherever the copy had crossed a gap or a consonant.
 A copy now takes one line per selected span: what each blob is heard singing, the detected pitch
-outside every blob whether or not it is shown, joined straight across anything unpitched, and held
-level to the span's edges. Pasting lays each line whole, so every blob it lands on takes its part.
-The Pitch-mode moves and the arrow keys read the same line.
+outside every blob while it is shown, any kept curve's own points across its span, joined straight
+across whatever is left unpitched, and held level to the span's edges. Pasting lays each line whole,
+so every blob it lands on takes its part. The Pitch-mode moves and the arrow keys read the same
+line. Outside pitch is left out while it is hidden, because unedited it is as often breath or bleed
+as it is singing, and copying it drew spikes wherever that line jumped.
 
-Where the stretch between two sung stretches was drawn rather than sung, the straight join is an
-approximation of what was drawn there, since only the part over a blob was ever stored.
+### A drawn curve is kept whole
+
+A stroke of the Draw or Bezier tool used to exist only as the anchors it wrote into each blob it
+crossed, so a Bezier across three blobs became three pieces with nothing between them, and copying
+it copied the pieces with the gaps filled from whatever was sung there. Every stroke is now also
+kept whole in the edit state as a `Stroke`: its line through time, and a Bezier's four points. It
+is not heard itself; the blobs it crosses are given their parts of it, each keeping the rest of what
+it sang, and pitch outside every blob makes a blob of its own only while it is shown.
+
+A kept curve is drawn dotted and faint wherever no blob carries it, so a line drawn over a gap still
+shows where it runs. The Select or Bezier tool picks one up: a Bezier opens with its handles for
+shaping again, and Enter keeps the new shape in place of the old one; a freehand curve is selected.
+Delete deletes the curve picked up, and each blob under it goes back to its own pitch with its
+offset kept, which is `PitchFill::Release`. Copying pitch takes the kept curves inside the span and
+reads their own points in place of what the blobs under them sing; pasting brings them along as
+new curves, and moving the line in Pitch mode moves them with it.
+
+A freehand stroke is kept as the points left once it has been reduced to within two pixels of what
+was drawn, and a Bezier as its samples reduced to within one, so both come back as drawn at the
+zoom they were drawn at.
 
 ### What a mode does not edit is drawn faint
 

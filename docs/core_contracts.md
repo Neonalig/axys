@@ -947,6 +947,8 @@ pub enum EditOp {
     ShiftBlob { blob: BlobId, seconds: f64 },
     ReplacePitch { blob: BlobId, start: f64, end: f64, fill: PitchFill },
     TrimClip { clip: ClipId, start: f64, end: f64 },
+    SetStroke { stroke: Stroke },
+    RemoveStroke { stroke: u32 },
     AddClip { clip: Clip, ripple: bool, exact: bool },
     MoveClip { clip: ClipId, position: f64, exact: bool },
     RemoveClip { clip: ClipId },
@@ -982,7 +984,13 @@ pub enum PitchFill {
     Sung,
     /// A level line at the span's median detected pitch, moved by the blob's offset.
     Flat,
+    /// Whatever was drawn across the span let go, the blob's offset kept.
+    Release,
 }
+
+/// A curve kept whole as it was drawn, in project output seconds and heard MIDI. Not rendered:
+/// what is heard is what it wrote into the blobs it crossed.
+pub struct Stroke { pub id: u32, pub points: Vec<StrokePoint>, pub bezier: Option<[StrokePoint; 4]> }
 
 /// Undo and redo stacks over a project's edit history.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
