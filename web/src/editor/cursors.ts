@@ -45,10 +45,10 @@ function glyphCursor(icon: IconName, hotspot: Hotspot, fallback: string): string
 /**
  * The pen's cursor, with its point at the nib.
  *
- * @remarks The nib is the glyph's bottom left corner, so the ink lands where the pointer is
- * rather than where the barrel is.
+ * @remarks The nib is the glyph's top left corner, so the ink lands where the pointer is rather
+ * than where the barrel is.
  */
-export const PEN_CURSOR = glyphCursor('pen', { x: 2, y: 22 }, 'crosshair');
+export const PEN_CURSOR = glyphCursor('pen', { x: 2, y: 2 }, 'crosshair');
 
 /** The band a marquee drag draws, while it is being dragged. */
 export const MARQUEE_CURSOR = 'crosshair';

@@ -906,17 +906,17 @@ export class AppShell {
     }
 
     // Following, looping and the metronome are switches, so each says whether it is on rather
-    // than only what pressing it would do. The first two swap their glyph with it; Lucide ships
-    // no off metronome, so that one carries its state in its pressed styling alone.
+    // than only what pressing it would do. The pressed styling carries the state, so each keeps
+    // one glyph.
     this.#setFace('view.followPlayhead', {
-      icon: state.follow ? STATE_ICONS.follow.on : STATE_ICONS.follow.off,
+      icon: 'follow',
       label: 'Follow',
       tooltip: state.follow ? 'Stop Following (F)' : 'Follow Playhead (F)',
       pressed: state.follow,
     });
     const looping = state.transport.loop !== null;
     this.#setFace('transport.loopSelection', {
-      icon: looping ? STATE_ICONS.loop.on : STATE_ICONS.loop.off,
+      icon: 'loop',
       label: 'Loop',
       tooltip: looping ? 'Stop Looping (L)' : 'Loop Selection (L)',
       pressed: looping,

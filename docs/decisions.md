@@ -1138,17 +1138,17 @@ from the set, which is what excluding a blob from analysis means.
 
 ### A toggle swaps its glyph, it does not dim one
 
-`STATE_ICONS` pairs a control with the two glyphs it picks between, and the transport, loop,
-follow, inspector fold, mixer fold and channel mute all swap. A dimmed icon reads as disabled
+`STATE_ICONS` pairs a control with the two glyphs it picks between, and the transport, inspector
+fold, mixer fold and channel mute all swap. A dimmed icon reads as disabled
 rather than off. `aria-pressed` carries the state either way, so the swap is decoration and no
 control depends on it.
 
-Where Lucide ships no off variant, the metronome and solo are the two here, the control keeps one
-glyph and carries its state in its pressed styling. A hand-drawn slashed variant beside real Lucide
+Where Lucide ships no off variant, the metronome, solo and follow, the control keeps one glyph and
+carries its state in its pressed styling. Loop keeps one glyph too: the pressed ground already says
+it is on, and a crossed-out repeat said the same thing twice. A hand-drawn slashed variant beside real Lucide
 pairs is immediately visible.
 
-Four pairs in the table have no control yet: loop-one-range, monitoring, blob excluded and
-diagnostics. They are in `STATE_ICONS` so the control that grows them has the pair already settled
+Three pairs in the table have no control yet: monitoring, blob excluded and diagnostics. They are in `STATE_ICONS` so the control that grows them has the pair already settled
 rather than picking a glyph on the day.
 
 ### Bravura, subset by codepoint
@@ -1275,7 +1275,7 @@ ground behind it. `editor/cursors.ts` draws each glyph twice, a heavy dark pass 
 over it, which is what keeps it legible over the waveform, a light surface and a selection fill
 alike. Every custom cursor is 24px with a declared hotspot and a stock fallback, so a host that
 refuses the image still shapes the pointer for what the tool does. The pen's hotspot is the nib, at
-the glyph's bottom left, so the ink lands where the pointer is rather than where the barrel is.
+the glyph's top left, so the ink lands where the pointer is rather than where the barrel is.
 
 A boundary drag is `col-resize` rather than `ew-resize`: it is a divider between two things that
 share a span, which is what `col-resize` means everywhere else.
@@ -1368,7 +1368,7 @@ the pair swapped so the glyph names what pressing it will do rather than where t
 The pitch tool takes `list-chevrons-up-down`, which is the axis it drags along, and hands its
 spline to the ramp tool, which is what a spline actually draws. Align Guide takes
 `ruler-dimension-line` rather than the time tool's arrows, and the keyboard cheatsheet takes a
-keyboard.
+keyboard. The slice tool takes `slice`, the time tool `timer` and follow `arrow-right-from-line`.
 
 ### Shortcuts on keys a browser leaves alone
 
