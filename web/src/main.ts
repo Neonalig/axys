@@ -566,6 +566,7 @@ class AxysWorkspace implements Workspace {
     openImportPanel({
       what: describeFiles(files),
       askRole: false,
+      fresh: true,
       importVocals: async (params) => {
         if (!(await this.#startProject(first, params))) return null;
         clips.push(0);

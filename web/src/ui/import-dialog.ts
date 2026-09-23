@@ -70,6 +70,8 @@ export interface ImportPanelHooks {
   what: string;
   /** Whether to ask vocal or reference first. Without it the import starts at once. */
   askRole: boolean;
+  /** Whether this starts a new project, which starts from Auto Threshold whatever was kept. */
+  fresh?: boolean;
   /** Imports the audio as vocals, analysed with `params`. `null` when nothing came in. */
   importVocals(params: F0Params): Promise<AnalysisOutcome | null>;
   /** Imports the audio as references. */
@@ -146,7 +148,8 @@ function analysisStep(
   back: boolean,
   onLeave: StepLeave,
 ): void {
-  const initial = storedAnalysis();
+  const stored = storedAnalysis();
+  const initial = hooks.fresh === true ? { ...stored, autoThreshold: true } : stored;
   // Each method reads its setting its own way, so each keeps its own value.
   let chosen: F0Method = initial.method ?? 'yin';
   let yinThreshold = chosen === 'pyin' ? DEFAULT_F0.threshold : initial.threshold;
@@ -224,7 +227,10 @@ function analysisStep(
   };
   auto.addEventListener('change', () => {
     // Turning Auto off keeps the value it chose, as the starting point to fine-tune from.
-    if (!auto.checked) yinThreshold = Number.parseFloat(threshold.input.value);
+    // Exactly, rather than as the slider rounds it to its step, so the vocals need no new pass.
+    if (!auto.checked) {
+      yinThreshold = lastOutcome?.threshold ?? Number.parseFloat(threshold.input.value);
+    }
     threshold.input.disabled = auto.checked;
     schedule();
   });
@@ -302,10 +308,34 @@ function analysisStep(
     if (on && chosen === 'yin') threshold.input.disabled = auto.checked;
   };
 
+  /**
+   * What an analysis with some settings comes to, as a key: Auto Threshold stands for the
+   * threshold it chose last time with the same other settings, when it has chosen one.
+   */
+  const chosenBy = new Map<string, number>();
+  const others = (params: F0Params): string =>
+    JSON.stringify({ ...params, threshold: 0, autoThreshold: false });
+  const effective = (params: F0Params): string | null => {
+    if (params.method !== 'yin' || params.autoThreshold !== true) return JSON.stringify(params);
+    const chose = chosenBy.get(others(params));
+    return chose === undefined
+      ? null
+      : JSON.stringify({ ...params, threshold: chose, autoThreshold: false });
+  };
+  /** The settings the vocals were last analysed with, as {@link effective} keys them. */
+  let analysed: string | null = null;
+  const remember = (params: F0Params, outcome: AnalysisOutcome): void => {
+    if (params.method === 'yin' && params.autoThreshold === true) {
+      chosenBy.set(others(params), outcome.threshold);
+    }
+    analysed = effective(params);
+  };
+
   const report = (outcome: AnalysisOutcome): void => {
     status.textContent = `${String(outcome.blobs)} ${outcome.blobs === 1 ? 'blob' : 'blobs'}`;
     if (chosen === 'yin') showAuto(outcome.threshold);
   };
+  let lastOutcome: AnalysisOutcome | null = null;
 
   let timer = 0;
   let running = false;
@@ -316,10 +346,20 @@ function analysisStep(
       queued = true;
       return;
     }
+    const params = current();
+    // Turning Auto Threshold off keeps the threshold it chose, and turning it back on chooses
+    // the same one again, so neither changes what the vocals would be analysed to.
+    const key = effective(params);
+    if (key !== null && key === analysed) {
+      if (lastOutcome !== null) report(lastOutcome);
+      return;
+    }
     running = true;
     status.textContent = 'Analysing';
     try {
-      const outcome = await hooks.analyse(current());
+      const outcome = await hooks.analyse(params);
+      remember(params, outcome);
+      lastOutcome = outcome;
       if (!settled) report(outcome);
     } catch {
       if (!settled) status.textContent = 'Analysis failed';
@@ -401,6 +441,8 @@ function analysisStep(
       return;
     }
     if (settled) return;
+    remember(initial, outcome);
+    lastOutcome = outcome;
     enable(true);
     report(outcome);
     showAuto(outcome.threshold);
