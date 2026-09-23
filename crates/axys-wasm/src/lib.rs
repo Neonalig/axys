@@ -22,7 +22,7 @@ use axys_core::analysis::f0::{
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
-use axys_core::clip::{renumber, Clip, ClipId, Reference, ReferenceId};
+use axys_core::clip::{fit_to_source, renumber, Clip, ClipId, Reference, ReferenceId};
 use axys_core::dsp::formant::FormantMode;
 use axys_core::edit::{apply_in, ClipSources, EditOp, History};
 use axys_core::midi::{
@@ -643,7 +643,8 @@ impl Session {
     ) -> Result<Session, JsValue> {
         let id = ClipId(0);
         let source = source_info(&name, sample_rate, &samples);
-        let analysed = renumber(&blobs, id).map_err(to_js)?;
+        let mut analysed = renumber(&blobs, id).map_err(to_js)?;
+        fit_to_source(&mut analysed, samples.len() as f64 / sample_rate);
         let state = EditState {
             name: project_name(&name),
             clips: vec![Clip::new(id, source.clone(), 0.0, analysed.clone())],
@@ -794,7 +795,8 @@ impl Session {
         check_fits_audio(&track, &blobs, self.sample_rate, samples.len())
             .map_err(|message| JsValue::from_str(&message))?;
         let id = ClipId(self.clips.iter().map(|r| r.id.0 + 1).max().unwrap_or(0));
-        let analysed = renumber(&blobs, id).map_err(to_js)?;
+        let mut analysed = renumber(&blobs, id).map_err(to_js)?;
+        fit_to_source(&mut analysed, samples.len() as f64 / self.sample_rate);
         let source = source_info(&name, self.sample_rate, &samples);
         let duration = source.duration;
         self.clips.push(ClipRuntime {

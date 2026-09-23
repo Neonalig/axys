@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::f0::PitchTrack;
 use crate::blob::{BlobId, BlobSet, Edge, Voicing};
 use crate::clip::{
-    clip_of, free_position, numbered_for, Clip, ClipId, Reference, ReferenceId, Span, MAX_CLIPS,
-    MAX_REFERENCES,
+    clip_of, fit_to_source, free_position, numbered_for, Clip, ClipId, Reference, ReferenceId,
+    Span, MAX_CLIPS, MAX_REFERENCES,
 };
 use crate::curve::{Anchor, PitchCurve};
 use crate::dsp::formant::FormantMode;
@@ -497,7 +497,10 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
         }
         EditOp::MoveBoundary { blob, edge, time } => {
             let clip = owner(state, *blob)?;
-            let at = finite(*time, "boundary time")? - clip.position;
+            // Held inside the clip's own audio, so an edge dragged past it cannot reach a blob of
+            // the clip beside it.
+            let at = (finite(*time, "boundary time")? - clip.position)
+                .clamp(0.0, clip.source.duration.max(0.0));
             clip.blobs.move_boundary(*blob, *edge, at)?;
         }
         EditOp::SetVoicing {
@@ -673,6 +676,7 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
                 return Err(AxysError::Invalid("a clip must have some duration".into()));
             }
             let mut clip = clip.clone();
+            fit_to_source(&mut clip.blobs, duration);
             clip.position = free_position(
                 &lane_spans(state, None),
                 duration,
@@ -2730,6 +2734,32 @@ mod tests {
             s.project_blobs().unwrap().blobs().last().unwrap().start,
             9.5
         );
+    }
+
+    #[test]
+    fn a_boundary_cannot_be_dragged_into_the_next_clip() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(2.0),
+            },
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveBoundary {
+                blob: BlobId(2),
+                edge: Edge::End,
+                time: 2.8,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blob(BlobId(2)).unwrap().end, 2.0);
+        assert!(s.project_blobs().is_ok());
     }
 
     #[test]

@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::blob::{Blob, BlobId, BlobSet};
+use crate::blob::{Blob, BlobId, BlobSet, Edge};
 use crate::project::SourceInfo;
 use crate::{AxysError, Result};
 
@@ -173,6 +173,29 @@ pub fn renumber(blobs: &BlobSet, clip: ClipId) -> Result<BlobSet> {
     BlobSet::from_blobs(renumbered)
 }
 
+/// Pulls any blob edge that lies outside `0..duration` back inside it.
+///
+/// Analysis may place a last edge a hop past the end of the audio. Kept there, it would overlap
+/// the first blob of a clip placed right after this one, so every clip's blobs are held inside its
+/// own source span.
+pub fn fit_to_source(blobs: &mut BlobSet, duration: f64) {
+    let spills: Vec<(BlobId, bool, bool)> = blobs
+        .blobs()
+        .iter()
+        .map(|blob| (blob.id, blob.start < 0.0, blob.end > duration))
+        .filter(|(_, early, late)| *early || *late)
+        .collect();
+    for (id, early, late) in spills {
+        // A blob lying wholly outside the audio cannot be pulled in, and is left as it was.
+        if early {
+            let _ = blobs.move_boundary(id, Edge::Start, 0.0);
+        }
+        if late {
+            let _ = blobs.move_boundary(id, Edge::End, duration);
+        }
+    }
+}
+
 /// Whether every blob in a set is numbered inside a clip's id range.
 pub fn numbered_for(blobs: &BlobSet, clip: ClipId) -> bool {
     blobs.blobs().iter().all(|blob| clip_of(blob.id) == clip)
@@ -319,6 +342,18 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn a_blob_past_the_audio_is_pulled_back_inside_it() {
+        let mut set = BlobSet::from_blobs(vec![
+            Blob::new(BlobId(0), 0.0, 1.0, 60.0),
+            Blob::new(BlobId(1), 1.0, 2.04, 62.0),
+        ])
+        .expect("set");
+        fit_to_source(&mut set, 2.0);
+        assert_eq!(set.get(BlobId(1)).expect("kept").end, 2.0);
+        assert_eq!(set.get(BlobId(0)).expect("kept").end, 1.0);
     }
 
     #[test]

@@ -167,8 +167,9 @@ export class MixerPanel {
     this.#element.inert = state.mixerCollapsed;
     if (state.mixerCollapsed) return;
     const wanted = lineup(state.edits);
-    const active = document.activeElement;
-    const dragging = active instanceof HTMLInputElement && this.#element.contains(active);
+    // Only a slider held under the pointer defers the rebuild. One that merely kept focus after
+    // it was let go must not, or a source imported afterwards never reached the desk.
+    const dragging = this.#element.querySelector('input:active') !== null;
     if (wanted !== this.#lineup && !dragging) {
       this.#rebuild(state.edits);
     }
