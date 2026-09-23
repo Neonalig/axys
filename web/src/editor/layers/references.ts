@@ -8,6 +8,7 @@ import { referenceColour } from '../../ui/theme.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
+import { LABEL_ALPHA, labelBaseline } from './label.js';
 import { fillEnvelope } from './waveform.js';
 
 /** Height in pixels of one reference's band along the foot of the plot. */
@@ -16,7 +17,7 @@ export const REFERENCE_BAND = 22;
 /** Opacity of a reference band, which is context rather than something being edited. */
 const BAND_ALPHA = 0.35;
 
-const TITLE_FONT = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
+const TITLE_FONT = '600 12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
 
 /** Key a reference's waveform envelope is cached under, apart from any clip of the same file. */
 export function referencePeaksKey(fingerprint: string): string {
@@ -65,6 +66,43 @@ export function drawReferences(
   references.forEach((reference, index) => {
     drawReferenceBand(ctx, viewport, theme, reference, index, reference.position, 1);
   });
+  ctx.restore();
+}
+
+/** Padding either side of a reference's name inside its tab, in pixels. */
+const TITLE_PADDING = 6;
+
+/**
+ * Draws a reference's name on a tab filled in its colour, at the visible start of its band.
+ *
+ * @remarks The tab is cut to the band, so a narrow band shows as much of it as fits.
+ */
+function drawBandTitle(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  title: string,
+  colour: string,
+  band: { left: number; right: number; top: number; bottom: number },
+): void {
+  if (band.right - band.left < TITLE_PADDING * 2) return;
+  ctx.font = TITLE_FONT;
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left';
+  const width = ctx.measureText(title).width + TITLE_PADDING * 2;
+  const right = Math.min(band.right, band.left + width);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(band.left, band.top, right - band.left, band.bottom - band.top);
+  ctx.clip();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = colour;
+  ctx.fillRect(band.left, band.top, right - band.left, band.bottom - band.top);
+  ctx.globalAlpha = LABEL_ALPHA;
+  ctx.fillStyle = theme.bg;
+  // On the device grid, so the name does not blur and sharpen as the band slides.
+  const x = Math.round((band.left + TITLE_PADDING) * viewport.ratio) / viewport.ratio;
+  ctx.fillText(title, x, labelBaseline(ctx, band.top, band.bottom, viewport.ratio));
   ctx.restore();
 }
 
@@ -124,12 +162,11 @@ export function drawReferenceBand(
   ctx.strokeStyle = colour;
   ctx.lineWidth = line;
   ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  ctx.font = TITLE_FONT;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = theme.text;
-  // On the device grid, so the name does not blur and sharpen as the band slides.
-  const titleX = Math.round((Math.max(rect.x, PITCH_LABEL_GUTTER) + 4) * viewport.ratio);
-  ctx.fillText(displayTitle(reference), titleX / viewport.ratio, rect.y + rect.height / 2);
+  drawBandTitle(ctx, viewport, theme, displayTitle(reference), colour, {
+    left: Math.max(x0 - line / 2, PITCH_LABEL_GUTTER),
+    right: x1 + line / 2,
+    top: y0 - line / 2,
+    bottom: y1 + line / 2,
+  });
   ctx.restore();
 }

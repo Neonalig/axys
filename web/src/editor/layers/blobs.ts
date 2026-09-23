@@ -14,6 +14,7 @@ import { clipOf, displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import { sourceTheme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
+import { LABEL_ALPHA, labelBaseline } from './label.js';
 
 /** Half-height in semitones of the smallest blob body. */
 const MIN_HALF_SEMITONES = 0.5;
@@ -499,11 +500,14 @@ function drawTitle(
   const bound = viewport.crispWidth(isSelected ? 2 : 1);
   const left = viewport.crisp(rect.x, bound) - bound / 2;
   const right = viewport.crisp(rect.x + Math.max(2, rect.width), bound) + bound / 2;
-  ctx.fillRect(left, Math.round(rect.y), right - left, rect.height);
+  const top = Math.round(rect.y);
+  ctx.fillRect(left, top, right - left, rect.height);
   ctx.font = TITLE_FONT;
-  ctx.textBaseline = 'middle';
+  ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
+  ctx.globalAlpha = alpha * LABEL_ALPHA;
   ctx.fillStyle = theme.bg;
+  const baseline = labelBaseline(ctx, top, top + rect.height, viewport.ratio);
   const title = displayTitle(clip);
   const room = rect.width - TITLE_PADDING * 2;
   const overflow = scrolled === null ? 0 : ctx.measureText(title).width - room;
@@ -512,13 +516,13 @@ function drawTitle(
     ctx.rect(rect.x + TITLE_PADDING, rect.y, room, rect.height);
     ctx.clip();
     const offset = marqueeOffset(overflow, scrolled);
-    ctx.fillText(title, rect.x + TITLE_PADDING + offset, rect.y + rect.height / 2 + 0.5);
+    ctx.fillText(title, rect.x + TITLE_PADDING + offset, baseline);
     ctx.restore();
     return true;
   }
   const text = fitText(ctx, title, room);
   if (text !== '') {
-    ctx.fillText(text, rect.x + TITLE_PADDING, rect.y + rect.height / 2 + 0.5);
+    ctx.fillText(text, rect.x + TITLE_PADDING, baseline);
   }
   ctx.restore();
   return false;
