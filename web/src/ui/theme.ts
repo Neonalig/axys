@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AccentName, AccentTokenName } from './accent.js';
-import { ACCENT_NAMES, DEFAULT_ACCENT, accentTokens } from './accent.js';
+import { ACCENT_NAMES, DEFAULT_ACCENT, accentTokens, maxChroma, oklchToHex } from './accent.js';
 
 /** Selectable colour scheme. */
 export type ThemeName = 'dark' | 'light' | 'contrast';
@@ -334,6 +334,33 @@ export function watchPreferredTheme(onChange: (name: ThemeName) => void): () => 
       query.removeEventListener('change', listener);
     }
   };
+}
+
+/** Each reference's colour per lightness scheme, made once per fingerprint. */
+const REFERENCE_COLOURS = new Map<string, string>();
+
+/**
+ * The colour a reference is drawn in, the same every time for the same audio.
+ *
+ * @remarks The hue comes from a hash of `fingerprint`, so two references read apart without either
+ * storing a colour, and a renamed or moved reference keeps its own.
+ */
+export function referenceColour(fingerprint: string): string {
+  const dark = isDarkTheme(currentTheme());
+  const key = `${dark ? 'dark' : 'light'}:${fingerprint}`;
+  const known = REFERENCE_COLOURS.get(key);
+  if (known !== undefined) return known;
+  // FNV-1a, for a hue that is spread evenly and stable across sessions.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < fingerprint.length; i += 1) {
+    hash ^= fingerprint.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const hue = hash % 360;
+  const lightness = dark ? 0.74 : 0.56;
+  const colour = oklchToHex(lightness, maxChroma(lightness, hue) * 0.7, hue);
+  REFERENCE_COLOURS.set(key, colour);
+  return colour;
 }
 
 /** Accents the clips after the first are drawn in, most distinct from the default first. */

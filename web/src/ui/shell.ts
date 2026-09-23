@@ -412,6 +412,7 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'file.saveProjectAs',
   // Deleting is done to what is under the hand: the key, or the menu over the blob.
   'edit.deleteBlobs',
+  'edit.deletePitch',
   'edit.deleteClip',
   // Both live in the Sources button's menu and on their keys.
   'view.previousSource',

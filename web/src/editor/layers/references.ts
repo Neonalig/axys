@@ -4,6 +4,7 @@ import type { AppState } from '../../app/store.js';
 import type { Reference } from '../../core/types.js';
 import { displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
+import { referenceColour } from '../../ui/theme.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
@@ -81,9 +82,10 @@ export function drawReferenceBand(
   if (rect.x + rect.width < 0 || rect.x > viewport.width) {
     return;
   }
+  const colour = referenceColour(reference.source.fingerprint);
   ctx.save();
   ctx.globalAlpha = BAND_ALPHA * alpha;
-  ctx.fillStyle = theme.midiNote;
+  ctx.fillStyle = colour;
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 
   const envelope = peaksFor(referencePeaksKey(reference.source.fingerprint));
@@ -104,7 +106,7 @@ export function drawReferenceBand(
   }
 
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = theme.midiNote;
+  ctx.strokeStyle = colour;
   ctx.lineWidth = viewport.crispWidth();
   // Both edges on the device grid, so neither blurs and sharpens as the band slides.
   const x0 = viewport.crisp(rect.x);

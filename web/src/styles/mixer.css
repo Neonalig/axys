@@ -137,6 +137,7 @@
 .axys-mixer-strip.is-standalone > .axys-mixer-name {
   contain: inline-size;
   width: 100%;
+  border-bottom: 2px solid var(--axys-source, transparent);
 }
 
 .axys-marquee {

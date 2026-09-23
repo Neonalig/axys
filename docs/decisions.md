@@ -637,7 +637,10 @@ beside it without overlapping, chosen in the order the project holds them
 all read the layer. A project whose clips never overlap has every clip in its layer, so it edits
 exactly as it did.
 
-Every clip outside the layer is drawn behind it, faded, in its own colour. A click on one brings
+Every clip outside the layer is drawn behind it, faded, in its own colour, as its waveform and
+blobs with no pitch track: two pitch tracks over one span read as one tangled line. Each reference
+takes a colour of its own too, its hue hashed from its fingerprint, on its band and its mixer strip.
+A click on one brings
 its clip forward, which rebuilds the layer around it; a click that lands on the layer acts on the
 layer, so dragging one source never disturbs the one it overlaps. Focus is also reached by the
 Sources menu, by `W` and `Shift+W`, and by clicking a clip's track on the desk. Dim Others and Hide

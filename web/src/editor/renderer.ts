@@ -307,8 +307,8 @@ export class EditorRenderer {
   /**
    * Draws every clip outside the editor's layer behind it, faded as a whole.
    *
-   * @remarks Each is drawn by the same layers as the active one, from its own blobs, track and
-   * plan, on a canvas of its own. Fading the finished picture rather than each stroke keeps the
+   * @remarks Each is drawn as its waveform and blobs, from its own blobs, track and plan, on a
+   * canvas of its own, with no pitch track. Fading the finished picture rather than each stroke keeps the
    * layers' own opacities where they overlap.
    */
   #drawOthers(
@@ -339,9 +339,9 @@ export class EditorRenderer {
         conflicts: [],
         selection: { blobs: [], anchors: [], ranges: [] },
       };
+      // Only the layer being edited draws a pitch track; the others are there to line up against.
       drawWaveform(layer, behind, viewport, theme);
       drawBlobs(layer, behind, viewport, theme);
-      drawPitch(layer, behind, viewport, theme);
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);

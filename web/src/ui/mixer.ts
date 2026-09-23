@@ -38,7 +38,7 @@ import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { setTooltip } from './tooltip.js';
-import { resolveTheme, sourceTheme } from './theme.js';
+import { referenceColour, resolveTheme, sourceTheme } from './theme.js';
 import type { AppState } from '../app/store.js';
 
 /** What the mixer needs in order to be heard and to be kept. */
@@ -197,6 +197,8 @@ export class MixerPanel {
   #strips: StripControls[] = [];
   /** Each clip's track, which says whether it is the source in front. */
   #tracks = new Map<ClipId, HTMLElement>();
+  /** Each reference's strip, by the fingerprint its colour comes from. */
+  #references = new Map<HTMLElement, string>();
   #lineup: string | null = null;
 
   #mixer: MixerSettings = DEFAULT_MIXER;
@@ -264,6 +266,9 @@ export class MixerPanel {
       track.classList.toggle('is-active', state.layer[0] === clip && this.#tracks.size > 1);
       track.style.setProperty('--axys-source', sourceTheme(theme, clip).blobBounds);
     }
+    for (const [strip, fingerprint] of this.#references) {
+      strip.style.setProperty('--axys-source', referenceColour(fingerprint));
+    }
     const ready = state.edits !== null;
     // While anything is soloed, the solos decide what is heard and the mutes wait, so the mutes
     // are drawn as out of play. They still take a press, which is what they come back to.
@@ -310,6 +315,7 @@ export class MixerPanel {
     this.#lineup = lineup(edits);
     this.#strips = [];
     this.#tracks = new Map();
+    this.#references = new Map();
     const sources = group('is-sources');
     const references = group('is-references');
     const outputs = group('is-outputs');
@@ -354,6 +360,7 @@ export class MixerPanel {
         title,
         true,
       );
+      this.#references.set(strip, reference.source.fingerprint);
       const head = strip.querySelector<HTMLElement>('.axys-mixer-name');
       if (head !== null) {
         this.#bindSourceName(strip, head, title, reference.source.name, (name) => ({
