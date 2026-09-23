@@ -600,6 +600,11 @@ ten. Ctrl or Cmd adds instead, which is how more than one strip is soloed at a t
 modifier that adds a span to a selection. A mute touches its own strip and nothing else: muting
 one strip used to unmute every other, which undid a mix someone had set up strip by strip.
 
+A solo masks the mutes rather than replacing them: while any strip is soloed only the soloed ones
+are heard, and once none is each strip's own mute decides again, as it was. So that a mute is not
+read as doing something it is not, every mute but the master's is drawn faint while a solo is on;
+it still takes a press, for when the solo ends.
+
 ### Compare has no button at all
 
 Which vocal is playing is two strips with their own mutes, so a toolbar button that says the same
@@ -861,6 +866,14 @@ new curves, and moving the line in Pitch mode moves them with it.
 A freehand stroke is kept as the points left once it has been reduced to within two pixels of what
 was drawn, and a Bezier as its samples reduced to within one, so both come back as drawn at the
 zoom they were drawn at.
+
+### A laid line is kept as curves
+
+Pasting or moving pitch laid the line into the blobs, but only the curves wholly inside the copy
+came back as curves; the rest was left to the target line, which breaks at every unpitched frame, so
+a paste showed gaps the copy never had. Whatever a paste, a Pitch-mode move or a stretch lays down
+is now kept whole as curves: the curves it carried where they run, a curve the copy only reached
+into cut to the part it reached, and the line's own points as freehand curves across the rest.
 
 ### One pitch track per clip
 

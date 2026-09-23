@@ -280,8 +280,80 @@ export function copyPitch(state: AppState): ClipboardContent | null {
   if (lines.length === 0) return null;
   const start = Math.min(...ranges.map((range) => range.start));
   const end = Math.max(...ranges.map((range) => range.end));
-  const strokes = structuredClone(strokesInside(state, ranges));
+  const strokes = structuredClone(strokesWithin(state, ranges));
   return { kind: 'pitch', lines, strokes, start, end };
+}
+
+/**
+ * The kept curves some spans reach, cut to them: whole where a curve lies inside a span, and the
+ * part inside where it runs past one, a Bezier still a Bezier.
+ */
+export function strokesWithin(state: AppState, ranges: readonly TimeRange[]): Stroke[] {
+  const parts: Stroke[] = [];
+  for (const stroke of strokesOf(state)) {
+    const own = strokeSpan(stroke);
+    for (const range of ranges) {
+      const from = Math.max(own.start, range.start);
+      const to = Math.min(own.end, range.end);
+      if (to - from < MIN_BLOB_SECONDS) continue;
+      const whole = from <= own.start + EPS && to >= own.end - EPS;
+      const part = whole ? stroke : strokePart(stroke, stroke.id, from, to);
+      if (part !== null) parts.push(part);
+    }
+  }
+  return parts;
+}
+
+/**
+ * The kept curves a line laid over the pitch track becomes: `curves` where they run, and the
+ * line's own points as freehand curves across the rest of it.
+ *
+ * @remarks A line laid down is drawn on the track, so it is kept whole like one, rather than left
+ * to the target line, which breaks wherever the frames under it have no pitch.
+ */
+function lineStrokes(
+  state: AppState,
+  lines: readonly (readonly PitchPoint[])[],
+  curves: readonly Stroke[],
+): Stroke[] {
+  const clip = frontClip(state);
+  const kept: Stroke[] = [...curves];
+  const covered = curves.map(strokeSpan).sort((a, b) => a.start - b.start);
+  for (const line of lines) {
+    const first = line[0];
+    const last = line[line.length - 1];
+    if (first === undefined || last === undefined || line.length < 2) continue;
+    let from = first.time;
+    const pieces: TimeRange[] = [];
+    for (const span of covered) {
+      if (span.end <= from + EPS || span.start >= last.time - EPS) continue;
+      if (span.start > from + EPS) pieces.push({ start: from, end: span.start });
+      from = Math.max(from, span.end);
+    }
+    if (last.time > from + EPS) pieces.push({ start: from, end: last.time });
+    for (const piece of pieces) {
+      const points = lineWithin(line, piece.start, piece.end);
+      if (points.length < 2 || piece.end - piece.start < MIN_BLOB_SECONDS) continue;
+      const stroke: Stroke = { id: freshStrokeId(state), points };
+      if (clip !== undefined) stroke.clip = clip;
+      kept.push(stroke);
+    }
+  }
+  return kept;
+}
+
+/** Edits keeping curves, one each. */
+function setStrokes(strokes: readonly Stroke[]): EditOp[] {
+  return strokes.map((stroke): EditOp => ({ type: 'setStroke', stroke }));
+}
+
+/** The front clip's claim on a curve placed into it, whichever clip it came from. */
+function intoFront(state: AppState, stroke: Stroke): Stroke {
+  const clip = frontClip(state);
+  const placed = { ...stroke };
+  if (clip === undefined) delete placed.clip;
+  else placed.clip = clip;
+  return placed;
 }
 
 /**
@@ -520,14 +592,12 @@ export function placeStrokes(
 ): EditOp[] {
   if (content.kind !== 'pitch') return [];
   const place = placement(content, target, playhead);
-  const clip = frontClip(state);
-  return content.strokes.map((stroke): EditOp => {
-    const placed = mapStroke(stroke, freshStrokeId(state), place);
-    // Pasted into the clip in front, whichever one it was copied from.
-    if (clip === undefined) delete placed.clip;
-    else placed.clip = clip;
-    return { type: 'setStroke', stroke: placed };
-  });
+  // Pasted into the clip in front, whichever one it was copied from, and kept whole: the copied
+  // curves as they were, and the rest of the line as freehand between them.
+  const curves = content.strokes.map((stroke) =>
+    intoFront(state, mapStroke(stroke, freshStrokeId(state), place)),
+  );
+  return setStrokes(lineStrokes(state, placePitch(content, target, playhead), curves));
 }
 
 /** The part of a line inside a span, with a point placed at each edge it crosses. */
@@ -639,12 +709,14 @@ export function pastePitchOps(
   state: AppState,
   lines: readonly (readonly PitchPoint[])[],
   keep: ReadonlySet<number> = new Set(),
+  trim = true,
 ): EditOp[] {
-  // The line replaces whatever the pitch track held under it, kept curves included.
+  // The line replaces whatever the pitch track held under it, kept curves included, unless the
+  // caller trims the track itself.
   const spans = lines
     .filter((line) => line.length >= 2)
     .map((line) => ({ start: line[0]?.time ?? 0, end: line[line.length - 1]?.time ?? 0 }));
-  const ops: EditOp[] = trimStrokesOps(state, spans, keep);
+  const ops: EditOp[] = trim ? trimStrokesOps(state, spans, keep) : [];
   const added: Blob[] = [];
   for (const run of lines) {
     const first = run[0];
@@ -689,12 +761,9 @@ export function cutPitchOps(
   ranges: readonly TimeRange[],
   fill: PitchCutFill,
 ): EditOp[] {
-  // The kept curves cut with the line go with it; what they wrote is replaced below.
-  const forgotten = strokesInside(state, ranges).map((stroke): EditOp => ({
-    type: 'removeStroke',
-    stroke: stroke.id,
-  }));
-  return [...spanPitchOps(state, ranges, { kind: fill }), ...forgotten];
+  // The kept curves go with the line: wholly where they lay inside it, and cut back to what lies
+  // outside where they ran past it.
+  return [...spanPitchOps(state, ranges, { kind: fill }), ...trimStrokesOps(state, ranges)];
 }
 
 /** Gives every blob's part of some spans a fill without a contour. */
@@ -763,17 +832,11 @@ export function movePitchOps(
 ): EditOp[] {
   const lines = samplePitch(state, ranges);
   if (lines.length === 0 || (seconds === 0 && semitones === 0)) return [];
-  const ops = seconds === 0 ? [] : cutPitchOps(state, ranges, fill);
-  // The kept curves inside the spans move with the line, keeping their ids.
-  const kept = strokesInside(state, ranges).map((stroke): EditOp => ({
-    type: 'setStroke',
-    stroke: mapStroke(stroke, stroke.id, (point) => ({
-      time: point.time + seconds,
-      midi: point.midi + semitones,
-    })),
-  }));
-  const moving = new Set(strokesInside(state, ranges).map((stroke) => stroke.id));
-  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones), moving), ...kept];
+  const map = (point: PitchPoint): PitchPoint => ({
+    time: point.time + seconds,
+    midi: point.midi + semitones,
+  });
+  return relayPitchOps(state, ranges, lines, map, seconds !== 0, fill);
 }
 
 /**
@@ -815,25 +878,11 @@ export function stretchOps(
     case 'pitch': {
       const lines = samplePitch(state, state.selection.ranges);
       if (lines.length === 0) return { ops: [], ranges };
-      const stretched = lines.map((line) =>
-        line.map((point) => ({ time: map(point.time), midi: point.midi })),
-      );
-      const kept = strokesInside(state, state.selection.ranges).map((stroke): EditOp => ({
-        type: 'setStroke',
-        stroke: mapStroke(stroke, stroke.id, (point) => ({
-          time: map(point.time),
-          midi: point.midi,
-        })),
-      }));
-      ops.push(
-        ...cutPitchOps(state, state.selection.ranges, fill),
-        ...pastePitchOps(
-          state,
-          stretched,
-          new Set(strokesInside(state, state.selection.ranges).map((stroke) => stroke.id)),
-        ),
-        ...kept,
-      );
+      const place = (point: PitchPoint): PitchPoint => ({
+        time: map(point.time),
+        midi: point.midi,
+      });
+      ops.push(...relayPitchOps(state, state.selection.ranges, lines, place, true, fill));
       return { ops, ranges };
     }
     case 'blob': {
@@ -879,6 +928,37 @@ export function stretchOps(
       return { ops, ranges };
     }
   }
+}
+
+/**
+ * Lays the pitch line of some spans down again through `map`, without moving any audio.
+ *
+ * @remarks The curves the spans reach go with the line, and the whole of it is kept as curves
+ * where it lands. With `retimed`, what it left is its sung pitch or flat, as `fill` says. The
+ * track is trimmed once, over where the line came from and where it lands together, so no curve
+ * is cut twice by one edit.
+ */
+function relayPitchOps(
+  state: AppState,
+  ranges: readonly TimeRange[],
+  lines: readonly (readonly PitchPoint[])[],
+  map: (point: PitchPoint) => PitchPoint,
+  retimed: boolean,
+  fill: PitchCutFill,
+): EditOp[] {
+  const moved = lines.map((line) => line.map(map));
+  const landed = moved
+    .filter((line) => line.length >= 2)
+    .map((line) => ({ start: line[0]?.time ?? 0, end: line[line.length - 1]?.time ?? 0 }));
+  const curves = strokesWithin(state, ranges).map((stroke) =>
+    mapStroke(stroke, freshStrokeId(state), map),
+  );
+  return [
+    ...(retimed ? spanPitchOps(state, ranges, { kind: fill }) : []),
+    ...trimStrokesOps(state, [...ranges, ...landed]),
+    ...pastePitchOps(state, moved, new Set(), false),
+    ...setStrokes(lineStrokes(state, moved, curves)),
+  ];
 }
 
 /**

@@ -391,6 +391,37 @@ describe('editing modes', () => {
     }
   });
 
+  it('keeps a pasted line whole as curves, with no gaps where the frames under it are unpitched', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped);
+      const [source, target] = [state.blobs[0]!, state.blobs[2]!];
+      const range = { start: source.start, end: source.end };
+      const copied = copyPitch({
+        ...state,
+        selection: { blobs: [], anchors: [], ranges: [range] },
+      });
+      if (copied?.kind !== 'pitch') throw new Error('nothing copied');
+      expect(copied.strokes).toHaveLength(0);
+      apply(scoped, [
+        ...pastePitchOps(state, placePitch(copied, null, target.start)),
+        ...placeStrokes(state, copied, null, target.start),
+      ]);
+      const strokes = stateOf(scoped).edits!.strokes!;
+      const spans = strokes
+        .map((stroke) => [stroke.points[0]!.time, stroke.points[stroke.points.length - 1]!.time])
+        .sort((a, b) => a[0]! - b[0]!);
+      // One run of curves from the paste point to the end of what was copied, end to end.
+      expect(spans[0]![0]!).toBeCloseTo(target.start, 6);
+      expect(spans[spans.length - 1]![1]!).toBeCloseTo(target.start + (range.end - range.start), 6);
+      for (let i = 1; i < spans.length; i += 1) {
+        expect(spans[i]![0]!).toBeCloseTo(spans[i - 1]![1]!, 6);
+      }
+    } finally {
+      scoped.free();
+    }
+  });
+
   it('cuts a Bezier into Beziers that keep its shape', () => {
     const scoped = session();
     try {

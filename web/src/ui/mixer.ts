@@ -28,6 +28,7 @@ import {
   DEFAULT_MIXER,
   MASTER_NAME,
   referenceStrip,
+  soloed,
   VOCAL_NAMES,
   withClipStrip,
   withReferenceStrip,
@@ -264,7 +265,11 @@ export class MixerPanel {
       track.style.setProperty('--axys-source', sourceTheme(theme, clip).blobBounds);
     }
     const ready = state.edits !== null;
+    // While anything is soloed, the solos decide what is heard and the mutes wait, so the mutes
+    // are drawn as out of play. They still take a press, which is what they come back to.
+    const masked = soloed(this.#mixer);
     for (const controls of this.#strips) {
+      controls.mute.classList.toggle('is-masked', masked && controls.key.kind !== 'master');
       const strip = stripOf(this.#mixer, controls.key);
       for (const control of [controls.gain, controls.pan, controls.mute, controls.solo]) {
         if (control) control.disabled = !ready;

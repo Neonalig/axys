@@ -423,3 +423,9 @@
   color: var(--axys-text);
   background: var(--axys-surface-sunken);
 }
+
+/* A mute a solo is overriding: drawn as disabled, still pressable for when the solo ends */
+
+.axys-mixer-switch.is-masked {
+  opacity: 0.45;
+}
