@@ -42,21 +42,22 @@ A toolbar button's tooltip is its label and shortcut, `Save Project (Ctrl+S)`, a
 
 ## Standard words
 
-Use the conventional term, never a paraphrase of it.
+Use the term most mainstream programs use for the same thing, never a paraphrase of it. A label
+names what it does, never what it does not: no "Don't" or "No" labels.
 
-| Use                      | Not                           |
-| ------------------------ | ----------------------------- |
-| Apply, Cancel            | Keep it, Drop it, Throw away  |
-| Save, Don't Save, Cancel | Save First, Discard and Start |
-| Discard                  | Throw away, Lose              |
-| Delete, Remove           | Take away, Get rid of         |
-| Reset                    | Go back, Restore as sung      |
-| Open, Import, Export     | Bring in, Write out           |
-| Relink                   | Find again, Point at          |
-| Mute, Solo               | Silence, Hear alone           |
-| Unsaved changes          | Edits that are not saved      |
-| Not found, Missing       | Could not be found anywhere   |
-| Enter, Esc               | the Return key, Escape        |
+| Use                   | Not                          |
+| --------------------- | ---------------------------- |
+| Apply, Cancel         | Keep it, Drop it, Abort      |
+| Save, Discard, Cancel | Don't Save, Save First       |
+| Discard               | Throw away, Lose, Don't Keep |
+| Delete, Remove        | Take away, Get rid of        |
+| Reset                 | Go back, Restore as sung     |
+| Open, Import, Export  | Bring in, Write out          |
+| Relink                | Find again, Point at         |
+| Mute, Solo            | Silence, Hear alone          |
+| Unsaved changes       | Edits that are not saved     |
+| Not found, Missing    | Could not be found anywhere  |
+| Enter, Esc            | the Return key, Escape       |
 
 Name things by their label in the UI, in Title Case where the UI writes them that way: "Open
 Correction", "Choose a Guide Track".
@@ -71,7 +72,7 @@ Correction", "Choose a Guide Track".
 - **Narrating the consequence in prose.** State the consequence as a fact, once.
   - No: "Phrase has edits that are not saved. Starting a new project discards them."
   - Yes: title "Save Changes to Phrase?", body "Unsaved changes will be lost.", buttons Save,
-    Don't Save, Cancel.
+    Discard, Cancel.
 - **Pronouns for things with names.** No "it", "them", "this one" where the object has a name. A
   string is read out of context.
 - **Second sentences that restate the first.**
@@ -92,7 +93,7 @@ button that does the asked-for thing names the action; Cancel is always Cancel.
 
 | Case            | Title                   | Body                                     | Buttons                  |
 | --------------- | ----------------------- | ---------------------------------------- | ------------------------ |
-| Unsaved changes | Save Changes to {Name}? | Unsaved changes will be lost.            | Save, Don't Save, Cancel |
+| Unsaved changes | Save Changes to {Name}? | Unsaved changes will be lost.            | Save, Discard, Cancel    |
 | Delete          | Delete {Name}?          | This cannot be undone. (only if true)    | Delete, Cancel           |
 | Choice          | Import Audio            | Import {Name} as a vocal or a reference? | Vocal, Reference, Cancel |
 
