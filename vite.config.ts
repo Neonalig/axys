@@ -22,6 +22,13 @@ function sourceRevision(): string {
   }
 }
 
+/** Cross-origin isolation, matching what `web/public/_headers` sends in production. */
+const ISOLATION_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+};
+
 /** Files a host serves that are not resources the page loads. */
 const NOT_PRECACHED: ReadonlySet<string> = new Set(['_headers']);
 
@@ -104,9 +111,11 @@ export default defineConfig(() => ({
   server: {
     port: 5173,
     strictPort: false,
+    headers: ISOLATION_HEADERS,
   },
   preview: {
     port: 4173,
     strictPort: false,
+    headers: ISOLATION_HEADERS,
   },
 }));

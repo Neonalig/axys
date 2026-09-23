@@ -4,6 +4,8 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
   Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: data:; font-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
 
 /assets/*
@@ -19,10 +21,3 @@
 
 /version.json
   Cache-Control: no-cache
-
-# Cross-origin isolation is OPTIONAL. Axys works without it and uses neither
-# SharedArrayBuffer nor WASM threads. Uncommenting these enables isolation for
-# future measurement, at the cost of blocking non-CORP cross-origin subresources.
-#/*
-#  Cross-Origin-Embedder-Policy: require-corp
-#  Cross-Origin-Resource-Policy: same-origin

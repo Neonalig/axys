@@ -89,12 +89,11 @@ the tab is focused again, and offers a reload rather than taking one.
 ### `_headers`
 
 `web/public/_headers` is copied into `dist/` and applied by Cloudflare Pages. It sets a strict
-Content-Security-Policy, `nosniff`, `no-referrer` and the cache rules above.
+Content-Security-Policy, `nosniff`, `no-referrer`, cross-origin isolation (COOP, COEP and CORP)
+and the cache rules above. The Vite dev and preview servers send the same isolation headers.
 
-Cross-origin isolation headers are present but **commented out**. Axys does not use
-`SharedArrayBuffer` or WASM threads, works without isolation, and enabling it would block
-non-CORP cross-origin subresources for no current benefit. Uncomment only to measure a future
-threaded path.
+Axys works without isolation. A host that cannot send it loses only the isolation itself;
+`require-corp` blocks cross-origin subresources without a CORP header, and Axys loads none.
 
 Netlify reads `_headers` in the same format. Other hosts need the equivalent expressed their own
 way; the file is the reference.
