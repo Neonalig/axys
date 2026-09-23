@@ -1782,8 +1782,16 @@ function lostConnection(error: unknown): boolean {
   );
 }
 
-/** Tells the user once, on first run, which optional capabilities are missing here. */
-function noteDegradedCapabilities(caps: Capability[], toast: ToastHost): void {
+/**
+ * Tells the user once, on first run, which optional capabilities are missing here.
+ *
+ * @remarks `openHelp` opens the panel the notice points to.
+ */
+function noteDegradedCapabilities(
+  caps: Capability[],
+  toast: ToastHost,
+  openHelp: () => void,
+): void {
   const missing = caps.filter((cap) => !cap.required && !cap.available);
   if (missing.length === 0) return;
   let seen: boolean;
@@ -1799,7 +1807,10 @@ function noteDegradedCapabilities(caps: Capability[], toast: ToastHost): void {
     // A browser that refuses storage shows the notice again next time, which is harmless.
   }
   const names = missing.map((cap) => cap.label).join(', ');
-  toast.warn(`Unavailable Features: ${names}. See Help and Diagnostics for details.`);
+  toast.warn(`Unavailable Features: ${names}. See Help and Diagnostics for details.`, {
+    text: 'Help and Diagnostics',
+    run: openHelp,
+  });
 }
 
 /** Resolves with the opened store, or `null` when this browser will not provide it. */
@@ -2222,7 +2233,9 @@ async function start(): Promise<void> {
   });
 
   await restoreLastProject(workspace, projects, toast);
-  noteDegradedCapabilities(caps, toast);
+  noteDegradedCapabilities(caps, toast, () => {
+    hooks.runCommand('help.showDiagnostics');
+  });
 }
 
 await start();

@@ -108,6 +108,22 @@
   border-left-color: var(--axys-danger);
 }
 
+.axys-toast-link {
+  display: inline;
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--axys-accent);
+  font-weight: var(--axys-weight-strong);
+  text-decoration: underline;
+}
+
+.axys-toast-link:hover:not(:disabled) {
+  background: transparent;
+}
+
 .axys-toast > button {
   margin-left: auto;
   height: 20px;
