@@ -603,9 +603,10 @@ class AxysWorkspace implements Workspace {
    * Takes audio dropped on an open project: a relink when the project is waiting for it, and
    * otherwise a vocal or a reference, whichever the user answers.
    *
-   * @remarks One question for everything dropped at once. The first file goes at `position`,
+   * @remarks One question for everything dropped at once. The first vocal goes at `position`,
    * and each after it follows the one before. A vocal dropped at a position is inserted there,
-   * moving the clips after it later rather than landing wherever there happens to be room.
+   * moving the clips after it later rather than landing wherever there happens to be room. Every
+   * reference goes at `position`.
    */
   async dropAudio(files: readonly File[], position: number | null): Promise<void> {
     if (this.#hasMissing()) {
@@ -615,11 +616,11 @@ class AxysWorkspace implements Workspace {
     const role = await this.#askRole(files);
     if (role === null) return;
     let next = position;
-    for (const [index, file] of files.entries()) {
+    for (const file of files) {
       if (role === 'vocal') {
         next = (await this.importClipFile(file, next ?? undefined, next !== null)) ?? next;
       } else {
-        await this.importReferenceFile(file, index === 0 ? (position ?? 0) : 0);
+        await this.importReferenceFile(file, position ?? 0);
       }
     }
   }
