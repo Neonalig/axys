@@ -21,7 +21,9 @@ import { drawRuler } from './layers/ruler.js';
 import { clipPeaks, drawWaveform } from './layers/waveform.js';
 import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
 import { clipOf } from '../core/types.js';
-import type { BezierCurve, BezierHandle, EditorPreview } from './tools.js';
+import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
+import { peaksFor } from './peaks.js';
+import type { PeakEnvelope } from './peaks.js';
 import type { Viewport } from './view.js';
 import { RULER_HEIGHT } from './view.js';
 
@@ -47,6 +49,7 @@ export class EditorRenderer {
   #state: AppState | null = null;
   #viewport: Viewport | null = null;
   #preview: EditorPreview | null = null;
+  #pending: PendingClip | null = null;
   #hover: HoverReadout | null = null;
   #themeName: ThemeName | null = null;
   #theme: Theme | null = null;
@@ -84,6 +87,14 @@ export class EditorRenderer {
   setPreview(preview: EditorPreview | null): void {
     if (this.#preview !== preview) {
       this.#preview = preview;
+      this.invalidate();
+    }
+  }
+
+  /** Sets the clip being imported, drawn where it will land until its blobs arrive. */
+  setPending(pending: PendingClip | null): void {
+    if (this.#pending !== pending) {
+      this.#pending = pending;
       this.invalidate();
     }
   }
@@ -128,6 +139,7 @@ export class EditorRenderer {
     this.#state = null;
     this.#viewport = null;
     this.#preview = null;
+    this.#pending = null;
     this.#hover = null;
   }
 
@@ -157,6 +169,10 @@ export class EditorRenderer {
     drawRuler(ctx, state, viewport, theme);
     drawOverlay(ctx, state, viewport, theme);
     this.#drawHoverGuides(ctx, state, viewport, theme);
+    const pending = this.#pending;
+    if (pending !== null) {
+      drawPending(ctx, viewport, theme, pending);
+    }
     this.#drawPreview(ctx, state, viewport, theme);
     this.#drawHover(ctx, viewport, theme);
     ctx.restore();
@@ -647,17 +663,70 @@ function drawClipDrag(
     low = Math.min(low, extent.low);
     high = Math.max(high, extent.high);
   }
-  const bandHeight = viewport.plotHeight * CLIP_BAND_FRACTION;
   const middle =
     Number.isFinite(low) && Number.isFinite(high)
       ? viewport.midiToY((low + high) / 2)
       : viewport.plotTop + viewport.plotHeight / 2;
+  drawWaveBand(
+    ctx,
+    viewport,
+    theme,
+    position,
+    entry.source.duration,
+    clipPeaks(state, clip)?.envelope ?? null,
+    middle,
+  );
+
+  for (const blob of blobs) {
+    drawBlobGhost(ctx, state, viewport, theme, blob, shift, 0);
+  }
+}
+
+/** Draws a clip being imported where it will land: its waveform band, titled. */
+function drawPending(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  pending: PendingClip,
+): void {
+  const middle = viewport.plotTop + viewport.plotHeight / 2;
+  drawWaveBand(
+    ctx,
+    viewport,
+    theme,
+    pending.position,
+    pending.duration,
+    peaksFor(pending.fingerprint),
+    middle,
+  );
+  labelAt(ctx, viewport, theme, `Analysing ${pending.title}`, {
+    x: viewport.timeToX(pending.position) + 6,
+    y: viewport.plotTop + 24,
+  });
+}
+
+/**
+ * Draws a dashed band across a clip's span, carrying its waveform when the envelope is known.
+ *
+ * @remarks `position` and `duration` are project seconds, and the band is centred on `middle`
+ * as far as the plot allows.
+ */
+function drawWaveBand(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  position: number,
+  duration: number,
+  envelope: PeakEnvelope | null,
+  middle: number,
+): void {
+  const bandHeight = viewport.plotHeight * CLIP_BAND_FRACTION;
   const top = Math.min(
     Math.max(viewport.plotTop, middle - bandHeight / 2),
     viewport.height - bandHeight,
   );
   const x0 = viewport.timeToX(position);
-  const x1 = viewport.timeToX(position + entry.source.duration);
+  const x1 = viewport.timeToX(position + duration);
 
   ctx.save();
   ctx.globalAlpha = GHOST_ALPHA * 0.45;
@@ -675,14 +744,13 @@ function drawClipDrag(
   );
   ctx.setLineDash([]);
 
-  const peaks = clipPeaks(state, clip);
   const left = Math.max(x0, 0);
   const right = Math.min(x1, viewport.width);
-  if (peaks !== null && right > left) {
+  if (envelope !== null && right > left) {
     const columns = Math.max(1, Math.round(right - left));
     const from = viewport.xToTime(left) - position;
     const to = viewport.xToTime(right) - position;
-    const span = peaks.envelope.sample(from, to, columns);
+    const span = envelope.sample(from, to, columns);
     const centre = top + bandHeight / 2;
     const half = bandHeight / 2 - 2;
     ctx.globalAlpha = 0.8;
@@ -695,10 +763,6 @@ function drawClipDrag(
     }
   }
   ctx.restore();
-
-  for (const blob of blobs) {
-    drawBlobGhost(ctx, state, viewport, theme, blob, shift, 0);
-  }
 }
 
 /** Draws where audio dragged in from outside would land. */

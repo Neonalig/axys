@@ -592,6 +592,8 @@ export interface MixerSettings {
   references: ReferenceStrip[];
   /** The metronome. */
   click: MixerStrip;
+  /** Everything the desk sends to the output. Only its level and mute apply. */
+  master: MixerStrip;
 }
 
 /** Whether the ruler reads in clock time or in bars and beats. */

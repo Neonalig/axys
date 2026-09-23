@@ -206,7 +206,7 @@ export const MIDI_KIND: readonly FileKind[] = [
 ];
 
 /** The audio kinds a vocal or a reference is imported from. */
-export const AUDIO_KIND: readonly FileKind[] = [
+const AUDIO_KIND: readonly FileKind[] = [
   {
     description: 'Audio',
     accept: {
@@ -215,10 +215,8 @@ export const AUDIO_KIND: readonly FileKind[] = [
   },
 ];
 
-/**
- * What Import Reference offers: a MIDI guide or an audio reference, as the picker's two types.
- */
-export const REFERENCE_KIND: readonly FileKind[] = [...MIDI_KIND, ...AUDIO_KIND];
+/** What Import offers: audio for a vocal or a reference, or a MIDI guide. */
+export const IMPORTABLE: readonly FileKind[] = [...AUDIO_KIND, ...MIDI_KIND];
 
 /** The project document kind, for saving. */
 export const PROJECT_KIND: readonly FileKind[] = [

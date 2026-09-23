@@ -99,11 +99,12 @@ export interface AxysCore {
 `redo(): boolean`, `state(): EditState`, `track(): PitchTrackArrays`, `blobs(): Blob[]`,
 `plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `guideOverlaps(): GuideOverlap[]`,
 `proposeMappingsPreview(): MappingProposal`, `history(): { undo: string | null; redo:
-string | null }`, `project(name: string, view: ViewState): string`, `exportPreview(range): ExportPreview`,
-`exportWav(range, depth, sampleRate?): { bytes: Uint8Array; report: ExportReport }`,
+string | null }`, `project(name: string, view: ViewState): string`,
+`exportPreview(range, withReferences?): ExportPreview`,
+`exportWav(range, depth, sampleRate?, withReferences?): { bytes: Uint8Array; report: ExportReport }`,
 `free(): void`, and for the lane: `clipPlans(): ClipPlan[]`, `clipTrackJson(clip)`,
-`clipSamples(clip)`, `media(): MediaList`, `attachClip(clip, samples)`, `addClip(input): ClipId`
-and `addReference(source, position): ReferenceId`.
+`clipSamples(clip)`, `media(): MediaList`, `attachClip(clip, samples)`, `addClip(input): ClipId`,
+`addReference(source, position): ReferenceId` and `attachReference(reference, channels)`.
 
 `plan()` is one plan for the whole lane in project seconds, which the editor draws from; with one
 clip at zero it is that clip's own plan. Playback and export read `clipPlans()`, each clip's plan
@@ -124,7 +125,8 @@ which is what lets it be an operation rather than a button that has already happ
 can report duration, frames, peak, clipping, timing conflicts and silent spans before a file is
 written. `range` is in output seconds and `null` covers the whole output. `exportWav` takes the
 same range plus an explicit bit depth and sample rate, resampling when the rate differs from the
-source.
+source. `withReferences` mixes every attached, unmuted reference in at its desk level and pan and
+writes stereo, and a whole-project range then runs to the end of the last reference.
 
 Every method that can fail throws an `AxysError` carrying the Rust message. Wrap the raw
 wasm-bindgen calls so nothing outside this file touches generated bindings.
@@ -256,18 +258,18 @@ export function buildCommands(): Command[];
 export function findCommand(commands: Command[], id: string): Command | undefined;
 ```
 
-Commands must cover, at minimum: Open, Save Project, Save As, Import Vocal, Import Reference,
-Export Audio, Cancel Import, Undo, Redo, Delete Blobs, Delete Clip, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
+Commands must cover, at minimum: Open, Save Project, Save As, Import, Export Audio, Cancel Import, Undo, Redo, Delete Blobs, Delete Clip, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
 Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Mixer, Zoom In, Zoom Out, Zoom Fit,
 Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics. New Project empties the
 editor and comes before Open, asking the same question about unsaved work.
 
 Not every command is drawn where its group is: the mixer is opened from the footer, beside the zoom.
 
-One Open covers a project or a vocal, and replaces what is open. Import Vocal puts another vocal
-on the open project's lane, after the last clip. Import Reference takes a MIDI file as the guide
-or audio as a reference, told apart by what the file is; its picker offers both types. The Import
-button's press opens a menu of the two rather than running either. Delete Blobs is `Delete` or
+One Open covers a project or a vocal, and replaces what is open. Import adds to the open project:
+a MIDI file becomes the guide, and audio is asked about, Import Vocal putting it on the lane after
+the last clip and Import Reference beside it. With nothing open, audio starts a project as the
+vocal. Audio dropped on an open project asks the same question once for the whole drop, and lands
+where it was let go. Delete Blobs is `Delete` or
 `Backspace` and Delete Clip `Shift+Delete`; both are in the blob menu. Reset is one command whose extent comes from the selected span. A command that addresses a
 blob addresses every selected blob, so its key does what its menu entry does whether or not the
 menu is open. Splitting is the Slice tool's alone, and Join Blobs takes two or more selected
@@ -366,7 +368,7 @@ rate instead, which is how a second vocal or a reference joins a project.
 `workers/analysis.worker.ts` runs `detect_f0`, `analyse_energy` and `segment` off the main thread,
 posting `{ stage, progress }` messages and honouring a cancel message. `workers/render.worker.ts`
 runs offline rendering and WAV encoding at `Quality.Offline`, with progress and cancel, taking the
-chosen `depth` and `sampleRate` on its `exportWav` request. The import path runs through the
+chosen `depth`, `sampleRate`, `references` and `withReferences` on its `exportWav` request. The import path runs through the
 analysis worker rather than the main thread, reports its real stage and progress, and is
 cancellable by the Cancel Import command. Both are typed by `workers/protocol.ts`, which exports the request and response unions.
 
@@ -496,12 +498,17 @@ selection. Affects whole project.` Nothing else goes in it.
 WAV panel: a range choice of whole project or selection defaulting to the selection when there is
 one, a sample rate, and a bit depth of 16-bit, 24-bit or 32-bit float. Measuring a range renders
 it, so the `exportPreview` figures and their warnings are shown on request rather than on every
-change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `onExport`.
+change. It commits an `ExportChoice` of `{ range, sampleRate, depth, withReferences }` through
+`onExport`. Include References is offered only when the project has references and starts off;
+ticked, the file is stereo with every unmuted reference at its desk level and pan.
 
 `ui/mixer.ts` exports `class MixerPanel`, the desk across the bottom of the editor: a track per
 clip, in lane order and headed with the clip's name, carrying a Processed and an Original strip;
-a strip per reference; and one Metronome strip. Each strip is laid out the way a desk lays one out, with the name, the pan above the fader, a
-vertical fader and mute and solo under it. Pressing a mute or a solo settles the desk on that strip
+a strip per reference; one Metronome strip; and a Master strip at the far end with a level and a
+mute only. Each strip is laid out the way a desk lays one out, with the name, the pan above the
+fader, a vertical fader and mute and solo under it. The fader's fill darkens as far as the strip
+is sounding, from the `meters` hook, which reads `AudioEngine.meters` while the transport runs:
+each strip's loudest sample after its fader since the last position report. Pressing a mute or a solo settles the desk on that strip
 alone and Ctrl or Cmd adds to what is already on, so more than one strip can be muted or soloed at a
 time. A fader is heard as it moves, through `previewMixer`, and committed as one `setMixer` edit
 when it is let go, so one drag is one undo step, and a control under the hand is never rewritten
@@ -509,7 +516,8 @@ from the state behind it. Pan lands on centre when it is dragged within a detent
 arrow keys step past. The panel is opened from the footer, beside the zoom, and whether it is open
 is a device preference like the inspector's fold.
 
-The mixer is monitoring and never reaches the render plan, so an export is unchanged by it. It
+The mixer is monitoring and never reaches the render plan, so an export is unchanged by it but
+for the references it includes. It
 supersedes Compare outright: which vocal is playing is the processed and original strips with their
 own mutes, and there is no command or button beside them. `audio/mixer.ts` is the one place the desk
 is turned into amplitudes, read by the worklet and by the blob layer that draws what is audible.
@@ -577,8 +585,9 @@ reference by fingerprint. `MediaStore` keys a reference's channels, one after th
 fingerprint with a `-reference` suffix. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
 
-`persistence/restore.ts` exports `restoreNewest(source, open)`, which picks the newest stored copy
-this build can still read. A copy is written only after passing the project contract, so one that
+`persistence/restore.ts` exports `restoreNewest(source, open, preferred)`, which picks the stored
+copy `preferred` names, the one open when the page closed, and otherwise the newest this build can
+still read. A copy is written only after passing the project contract, so one that
 no longer opens was written under an earlier contract and has no version to migrate from. It is
 discarded and the next is tried, because keeping it is a failure on every launch for a document
 nothing can open.

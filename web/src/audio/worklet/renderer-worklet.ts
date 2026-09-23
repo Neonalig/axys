@@ -82,6 +82,18 @@ export type EngineMessage =
   | { type: 'dispose' };
 
 /**
+ * The loudest sample each strip sent to the output since the last report, after its fader.
+ *
+ * @remarks Linear amplitude, the larger of the two sides. A source that was not heard reads 0.
+ */
+export interface MeterReport {
+  clips: { clip: number; processed: number; original: number }[];
+  references: { reference: number; peak: number }[];
+  click: number;
+  master: number;
+}
+
+/**
  * What the renderer reports back.
  *
  * @remarks `seq` echoes the newest transport command the renderer has applied. A report is in
@@ -98,6 +110,7 @@ export type RendererMessage =
       underruns: number;
       failure: string | null;
       seq: number;
+      meters: MeterReport;
     }
   | { type: 'ended'; position: number; seq: number; reason: EndReason };
 
@@ -404,6 +417,9 @@ interface ClipVoice {
   offset: number;
   /** Whether the clip is on the lane, which an undo of its import takes it off. */
   onLane: boolean;
+  /** Loudest processed and original samples since the last report. */
+  peakProcessed: number;
+  peakOriginal: number;
 }
 
 /** One reference the processor plays unwarped: its channels and where it starts. */
@@ -417,6 +433,8 @@ interface ReferenceVoice {
   /** Balance gains, resolved from the desk when it arrives. */
   gainLeft: number;
   gainRight: number;
+  /** Loudest sample since the last report. */
+  peak: number;
 }
 
 /**
@@ -456,6 +474,9 @@ class RendererProcessor extends AudioWorkletProcessor {
   #prerollBeat = 0;
   #prerollNext = 0;
 
+  #clickPeak = 0;
+  #masterPeak = 0;
+
   #underruns = 0;
   #failure: string | null = null;
   #sinceReport = 0;
@@ -490,6 +511,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     } else if (this.#clickLeft > 0) {
       this.#mixClicks(output, frames, null);
     }
+    this.#applyMaster(output, frames);
 
     this.#sinceReport += frames;
     if (this.#sinceReport >= REPORT_INTERVAL_FRAMES) {
@@ -594,6 +616,8 @@ class RendererProcessor extends AudioWorkletProcessor {
       outputFrames: 0,
       offset: Math.round(message.position * this.#sourceRate),
       onLane: true,
+      peakProcessed: 0,
+      peakOriginal: 0,
     };
     this.#clips = [...this.#clips.filter((entry) => entry.id !== message.id), voice];
     this.#build(voice);
@@ -661,6 +685,7 @@ class RendererProcessor extends AudioWorkletProcessor {
       onLane: true,
       gainLeft: 0,
       gainRight: 0,
+      peak: 0,
     };
     this.#references = [...this.#references.filter((entry) => entry.id !== message.id), voice];
     this.#balanceReferences();
@@ -880,17 +905,22 @@ class RendererProcessor extends AudioWorkletProcessor {
         ? this.#renderProcessed(voice, start, span)
         : false;
 
+    let peakProcessed = voice.peakProcessed;
+    let peakOriginal = voice.peakOriginal;
     for (let i = 0; i < count; i += 1) {
       const position = local + i * ratio;
       const wet = processedOk ? sampleAt(this.#scratch, position - start) : 0;
       const dry = original.audible ? sampleAt(voice.source, position) : 0;
-      this.#write(
-        output,
-        offset + i,
-        wet * processed.left + dry * original.left,
-        wet * processed.right + dry * original.right,
-      );
+      const wetLeft = wet * processed.left;
+      const wetRight = wet * processed.right;
+      const dryLeft = dry * original.left;
+      const dryRight = dry * original.right;
+      peakProcessed = Math.max(peakProcessed, Math.abs(wetLeft), Math.abs(wetRight));
+      peakOriginal = Math.max(peakOriginal, Math.abs(dryLeft), Math.abs(dryRight));
+      this.#write(output, offset + i, wetLeft + dryLeft, wetRight + dryRight);
     }
+    voice.peakProcessed = peakProcessed;
+    voice.peakOriginal = peakOriginal;
   }
 
   /** Mixes one reference into a segment, straight from its channels and never warped. */
@@ -904,15 +934,36 @@ class RendererProcessor extends AudioWorkletProcessor {
     const ratio = this.#ratio;
     const local = this.#position - voice.offset;
     if (local + (count - 1) * ratio < 0 || local >= voice.left.length) return;
+    let peak = voice.peak;
     for (let i = 0; i < count; i += 1) {
       const position = local + i * ratio;
-      this.#write(
-        output,
-        offset + i,
-        sampleAt(voice.left, position) * voice.gainLeft,
-        sampleAt(voice.right, position) * voice.gainRight,
-      );
+      const left = sampleAt(voice.left, position) * voice.gainLeft;
+      const right = sampleAt(voice.right, position) * voice.gainRight;
+      peak = Math.max(peak, Math.abs(left), Math.abs(right));
+      this.#write(output, offset + i, left, right);
     }
+    voice.peak = peak;
+  }
+
+  /** Scales the whole block by the master strip, and meters what leaves. */
+  #applyMaster(output: Float32Array[], frames: number): void {
+    const gain = this.#levels.master;
+    let peak = this.#masterPeak;
+    for (let c = 0; c < Math.min(output.length, 2); c += 1) {
+      const channel = output[c];
+      if (!channel) continue;
+      for (let i = 0; i < frames; i += 1) {
+        const value = (channel[i] ?? 0) * gain;
+        channel[i] = value;
+        peak = Math.max(peak, Math.abs(value));
+      }
+    }
+    for (let c = 2; c < output.length; c += 1) {
+      const channel = output[c];
+      if (!channel) continue;
+      for (let i = 0; i < frames; i += 1) channel[i] = (channel[i] ?? 0) * gain;
+    }
+    this.#masterPeak = peak;
   }
 
   /**
@@ -989,6 +1040,11 @@ class RendererProcessor extends AudioWorkletProcessor {
       this.#clickPhase += this.#clickStep;
       if (this.#clickPhase > TWO_PI) this.#clickPhase -= TWO_PI;
       this.#clickLeft -= 1;
+      this.#clickPeak = Math.max(
+        this.#clickPeak,
+        Math.abs(value * level.left),
+        Math.abs(value * level.right),
+      );
       this.#write(output, i, value * level.left, value * level.right);
     }
   }
@@ -1029,7 +1085,30 @@ class RendererProcessor extends AudioWorkletProcessor {
       underruns: this.#underruns,
       failure: this.#failure,
       seq: this.#seq,
+      meters: this.#takeMeters(),
     });
+  }
+
+  /** The peaks since the last report, starting the next interval from silence. */
+  #takeMeters(): MeterReport {
+    const meters: MeterReport = {
+      clips: this.#clips.map((voice) => ({
+        clip: voice.id,
+        processed: voice.peakProcessed,
+        original: voice.peakOriginal,
+      })),
+      references: this.#references.map((voice) => ({ reference: voice.id, peak: voice.peak })),
+      click: this.#clickPeak,
+      master: this.#masterPeak,
+    };
+    for (const voice of this.#clips) {
+      voice.peakProcessed = 0;
+      voice.peakOriginal = 0;
+    }
+    for (const voice of this.#references) voice.peak = 0;
+    this.#clickPeak = 0;
+    this.#masterPeak = 0;
+    return meters;
   }
 
   #post(message: RendererMessage): void {

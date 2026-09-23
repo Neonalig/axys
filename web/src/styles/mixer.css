@@ -3,6 +3,8 @@
 /* The mixer: a bottom panel of desk strips, opened from the footer */
 
 .axys-mixer {
+  --axys-meter-fill: color-mix(in srgb, var(--axys-accent) 45%, black);
+
   grid-area: mixer;
   display: flex;
   gap: var(--axys-space-2);
@@ -112,13 +114,76 @@
   min-height: 0;
 }
 
-.axys-mixer-fader {
+/*
+ * The fader draws its own track: the fill up to the level it is set at, darkened as far as the
+ * strip is sounding. The meter never passes the fill, because it reads what the fader lets out.
+ */
+
+.axys-mixer .axys-mixer-fader {
+  --axys-fader-fill: 0;
+  --axys-meter-level: 0;
+  --axys-fader-track: linear-gradient(
+    to top,
+    var(--axys-meter-fill) 0 calc(min(var(--axys-meter-level), var(--axys-fader-fill)) * 100%),
+    var(--axys-accent) 0 calc(var(--axys-fader-fill) * 100%),
+    var(--axys-border) 0
+  );
+
   width: 24px;
   height: 100%;
-  /* The modern spelling, and the one older WebKit and Blink answer to */
+  margin: 0;
   writing-mode: vertical-lr;
   direction: rtl;
-  appearance: slider-vertical;
+  appearance: none;
+  background: transparent;
+  cursor: ns-resize;
+}
+
+.axys-mixer-fader::-webkit-slider-runnable-track {
+  inline-size: 100%;
+  block-size: 6px;
+  border-radius: 3px;
+  background: var(--axys-fader-track);
+}
+
+.axys-mixer-fader::-moz-range-track {
+  inline-size: 100%;
+  block-size: 6px;
+  border-radius: 3px;
+  background: var(--axys-fader-track);
+}
+
+.axys-mixer-fader::-webkit-slider-thumb {
+  inline-size: 10px;
+  block-size: 22px;
+  margin-block-start: -8px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: 3px;
+  background: var(--axys-text);
+  appearance: none;
+}
+
+.axys-mixer-fader::-moz-range-thumb {
+  inline-size: 10px;
+  block-size: 22px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: 3px;
+  background: var(--axys-text);
+}
+
+.axys-mixer-fader:focus-visible {
+  outline: 2px solid var(--axys-accent);
+  outline-offset: 2px;
+}
+
+/* The master sits at the far end of the desk, apart from the sources it sums */
+
+.axys-mixer-strip.is-master {
+  margin-left: auto;
+}
+
+.axys-mixer .is-placeholder {
+  visibility: hidden;
 }
 
 .axys-mixer-switches {

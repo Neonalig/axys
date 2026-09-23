@@ -17,9 +17,12 @@ import { wasmModuleUrl } from '../core/wasm-url.js';
 import type {
   ClipPlacement,
   EngineMessage,
+  MeterReport,
   OutputRange,
   RendererMessage,
 } from './worklet/renderer-worklet.js';
+
+export type { MeterReport } from './worklet/renderer-worklet.js';
 
 /** Whether the engine can play, and why not when it cannot. */
 export type EngineStatus = 'idle' | 'blocked' | 'running' | 'failed';
@@ -64,6 +67,7 @@ export class AudioEngine {
   #status: EngineStatus = 'idle';
   #message: string | null = null;
   #underruns = 0;
+  #meters: MeterReport | null = null;
   #listeners = new Set<(report: EngineReport) => void>();
 
   #encoder = new TextEncoder();
@@ -352,6 +356,15 @@ export class AudioEngine {
     return this.#playing;
   }
 
+  /**
+   * Each strip's loudest recent sample after its fader, or `null` before the renderer reports.
+   *
+   * @remarks Refreshed about twenty times a second while the transport runs.
+   */
+  get meters(): MeterReport | null {
+    return this.#meters;
+  }
+
   /** Output length of the current plan, in seconds. */
   get duration(): number {
     return this.#duration;
@@ -499,6 +512,7 @@ export class AudioEngine {
         break;
       case 'status':
         this.#underruns = message.underruns;
+        this.#meters = message.meters;
         if (message.failure !== null && message.failure !== this.#message) {
           this.#publish(this.#status, `Playback fell back to silence: ${message.failure}`);
         }

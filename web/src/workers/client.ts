@@ -23,6 +23,7 @@ import type {
   ExportWavRequest,
   FailedMessage,
   ProgressMessage,
+  ReferenceAudio,
   RenderRangeRequest,
   RenderedMessage,
   RenderedRange,
@@ -58,6 +59,10 @@ export interface ExportJob {
   projectJson: string;
   /** Every clip's mono samples at the project rate, each transferred to the worker. */
   clips: ClipAudio[];
+  /** Every reference's channels at the project rate, each transferred to the worker. */
+  references: ReferenceAudio[];
+  /** Whether the file mixes the references in, which makes it stereo. */
+  withReferences: boolean;
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
@@ -257,7 +262,8 @@ export class RenderClient extends WorkerClient {
   /**
    * Renders a saved project and encodes it as a WAV file.
    *
-   * @remarks Every buffer in `job.clips` is transferred to the worker and not returned.
+   * @remarks Every buffer in `job.clips` and `job.references` is transferred to the worker and
+   * not returned.
    */
   exportWav(job: ExportJob, onProgress?: ProgressListener): Promise<EncodedWav> {
     return this.start<EncodedWav>(
@@ -268,11 +274,16 @@ export class RenderClient extends WorkerClient {
           id,
           projectJson: job.projectJson,
           clips: job.clips,
+          references: job.references,
+          withReferences: job.withReferences,
           range: job.range,
           depth: job.depth,
           sampleRate: job.sampleRate,
         },
-        transfer: job.clips.map((clip) => bufferOf(clip.samples)),
+        transfer: [
+          ...job.clips.map((clip) => bufferOf(clip.samples)),
+          ...job.references.flatMap((reference) => reference.channels.map(bufferOf)),
+        ],
       }),
       (message) => (message.type === 'encoded' ? message.result : null),
       onProgress,

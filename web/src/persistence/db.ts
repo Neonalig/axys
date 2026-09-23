@@ -292,6 +292,12 @@ export class ProjectStore {
     }
   }
 
+  /** Deletes every project but the `keep` most recently saved. */
+  async prune(keep: number): Promise<void> {
+    const stored = await this.list();
+    for (const old of stored.slice(Math.max(0, keep))) await this.remove(old.id);
+  }
+
   /** Releases the database connection. */
   close(): void {
     this.#db.close();

@@ -108,8 +108,16 @@ async function exportWav(request: ExportWavRequest): Promise<void> {
     const session = core.openSession(request.projectJson);
     try {
       for (const clip of request.clips) session.attachClip(clip.clip, clip.samples);
+      for (const reference of request.references) {
+        session.attachReference(reference.reference, reference.channels);
+      }
       if (abandon(id)) return;
-      const encoded = session.exportWav(request.range, request.depth, request.sampleRate);
+      const encoded = session.exportWav(
+        request.range,
+        request.depth,
+        request.sampleRate,
+        request.withReferences,
+      );
       const result: EncodedWav = { bytes: encoded.bytes, report: encoded.report };
       report(id, 'Encode WAV', 1);
       scope.postMessage({ type: 'encoded', id, result }, encodedTransfers(result));

@@ -638,7 +638,8 @@ export function isMixerSettings(value: unknown): value is MixerSettings {
     value.clips.every(isClipStrips) &&
     Array.isArray(value.references) &&
     value.references.every(isReferenceStrip) &&
-    isMixerStrip(value.click)
+    isMixerStrip(value.click) &&
+    isMixerStrip(value.master)
   );
 }
 

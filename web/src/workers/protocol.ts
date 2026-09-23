@@ -127,6 +127,10 @@ export interface ExportWavRequest {
   projectJson: string;
   /** Every clip's mono samples at the project rate, keyed by clip id. */
   clips: ClipAudio[];
+  /** Every reference's channels at the project rate, used when `withReferences` is set. */
+  references: ReferenceAudio[];
+  /** Whether the file mixes the references in, which makes it stereo. */
+  withReferences: boolean;
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
@@ -138,6 +142,12 @@ export interface ExportWavRequest {
 export interface ClipAudio {
   clip: number;
   samples: Float32Array;
+}
+
+/** One reference's channels, keyed by the reference they belong to. */
+export interface ReferenceAudio {
+  reference: number;
+  channels: Float32Array[];
 }
 
 /** Everything the render worker accepts. */

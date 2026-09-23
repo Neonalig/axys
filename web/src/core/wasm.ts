@@ -366,6 +366,22 @@ export class Session {
   }
 
   /**
+   * Hands the session a reference's channels at the project rate, so an export can include it.
+   *
+   * @remarks Copies the channels; the caller keeps its own.
+   */
+  attachReference(reference: ReferenceId, channels: readonly Float32Array[]): void {
+    const frames = channels[0]?.length ?? 0;
+    const joined = new Float32Array(frames * channels.length);
+    channels.forEach((channel, index) => {
+      joined.set(channel.subarray(0, frames), index * frames);
+    });
+    call('Export WAV', () => {
+      this.#alive().attachReference(reference, joined, channels.length);
+    });
+  }
+
+  /**
    * Puts another analysed vocal on the lane as one undoable edit, returning its clip id.
    *
    * @remarks The samples must be mono at the project rate.
@@ -440,14 +456,18 @@ export class Session {
    * Describes what exporting an output range would produce, without encoding a file.
    *
    * @remarks `range` is in output seconds and `null` covers the whole output. The figures are
-   * measured at the source sample rate.
+   * measured at the source sample rate. `withReferences` measures the export with every attached,
+   * unmuted reference mixed in.
    */
-  exportPreview(range: { start: number; end: number } | null): ExportPreview {
+  exportPreview(
+    range: { start: number; end: number } | null,
+    withReferences = false,
+  ): ExportPreview {
     const start = range ? Math.max(0, range.start) : 0;
     const end = range ? range.end : -1;
     return this.#read(
       'Export WAV',
-      () => this.#alive().exportPreview(start, end),
+      () => this.#alive().exportPreview(start, end, withReferences),
       isExportPreview,
       'export preview',
     );
@@ -458,16 +478,21 @@ export class Session {
    *
    * @remarks `range` is in output seconds and `null` exports the whole output. The file keeps the
    * source sample rate unless `sampleRate` asks for another, which the core resamples to.
+   * `withReferences` writes stereo with every attached, unmuted reference at its desk level and
+   * pan.
    */
   exportWav(
     range: { start: number; end: number } | null,
     depth: BitDepth,
     sampleRate?: number,
+    withReferences = false,
   ): ExportResult {
     const start = range ? Math.max(0, range.start) : 0;
     const end = range ? range.end : -1;
     const rate = sampleRate ?? this.sampleRate();
-    const bytes = call('Export WAV', () => this.#alive().exportWav(start, end, rate, depth));
+    const bytes = call('Export WAV', () =>
+      this.#alive().exportWav(start, end, rate, depth, withReferences),
+    );
     const report = this.lastExportReport();
     if (!report) {
       throw new AxysError('Export WAV', 'the core encoded a file but reported no peak figures');

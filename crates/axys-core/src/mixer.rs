@@ -3,9 +3,10 @@
 //! Monitor levels for everything the transport plays.
 //!
 //! The desk has a track per vocal clip carrying two strips, the take as edited and the take as
-//! sung, a strip per reference, and one for the click. Each strip has the controls a desk has:
-//! level, pan, mute and solo. The mixer is monitoring rather than an edit to the take, so it never
-//! reaches the render plan and an export is unchanged by it. It lives in the project document
+//! sung, a strip per reference, one for the click, and a master over all of them. Each strip has
+//! the controls a desk has: level, pan, mute and solo. The mixer is monitoring rather than an edit
+//! to the take, so it never reaches the render plan, and an export reads only the strips of the
+//! references it includes. It lives in the project document
 //! because how a take is listened to is part of the work, and it is set by an edit operation like
 //! anything else, so it undoes.
 
@@ -116,6 +117,10 @@ pub struct MixerSettings {
     pub references: Vec<ReferenceStrip>,
     /// The metronome.
     pub click: MixerStrip,
+    /// Everything the desk sends to the output. Only its level and mute apply: it is never
+    /// panned and never soloed.
+    #[serde(default)]
+    pub master: MixerStrip,
 }
 
 impl Default for MixerSettings {
@@ -124,6 +129,7 @@ impl Default for MixerSettings {
             clips: Vec::new(),
             references: Vec::new(),
             click: MixerStrip::new(DEFAULT_CLICK_DB, false),
+            master: MixerStrip::default(),
         }
     }
 }
@@ -202,6 +208,11 @@ impl MixerSettings {
             clips,
             references,
             click: self.click.validated()?,
+            master: MixerStrip {
+                pan: 0.0,
+                solo: false,
+                ..self.master.validated()?
+            },
         })
     }
 }
@@ -258,6 +269,33 @@ mod tests {
         let checked = mixer.validated().expect("valid");
         assert_eq!(checked.clips.len(), 1);
         assert_eq!(checked.clip(ClipId(1)).processed.gain_db, -6.0);
+    }
+
+    #[test]
+    fn the_master_is_never_panned_or_soloed() {
+        let mixer = MixerSettings {
+            master: MixerStrip {
+                gain_db: -3.0,
+                pan: 0.5,
+                mute: false,
+                solo: true,
+            },
+            ..MixerSettings::default()
+        };
+        let checked = mixer.validated().expect("valid");
+        assert_eq!(checked.master.gain_db, -3.0);
+        assert_eq!(checked.master.pan, 0.0);
+        assert!(!checked.master.solo);
+        assert!(!checked.soloed());
+    }
+
+    #[test]
+    fn a_desk_saved_without_a_master_reads_it_at_unity() {
+        let mixer: MixerSettings = serde_json::from_str(
+            r#"{"click":{"gainDb":-11.0,"pan":0.0,"mute":false,"solo":false}}"#,
+        )
+        .expect("parses");
+        assert_eq!(mixer.master, MixerStrip::default());
     }
 
     #[test]

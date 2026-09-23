@@ -21,7 +21,7 @@ import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
-import type { EngineReport } from '../audio/engine.js';
+import type { EngineReport, MeterReport } from '../audio/engine.js';
 import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { button as control, swapGlyph } from './controls/index.js';
@@ -80,6 +80,8 @@ export interface ShellHooks {
   setSpan(seconds: number): void;
   /** Hands the engine a desk that has not been committed yet, so a dragged fader is audible. */
   previewMixer(mixer: MixerSettings): void;
+  /** Each strip's recent peak, or `null` while nothing is playing. */
+  meters(): MeterReport | null;
   /** Sets the concert reference in Hz. */
   setTuning(a4Hz: number): void;
   /** Sets how accidentals are spelled. */
@@ -153,7 +155,6 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'file.newProject': 'New',
   'file.saveProject': 'Save',
   'file.exportWav': 'Export',
-  'file.importReference': 'Import',
   'edit.joinBlobs': 'Join',
   'edit.reset': 'Reset',
   'edit.excludeBlob': 'Exclude',
@@ -170,8 +171,6 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
 interface ButtonMenu {
   /** Second tooltip line saying the menu is there. */
   hint: string;
-  /** Whether pressing the button opens the menu instead of running the command. */
-  onPress?: boolean;
   entries(shell: AppShell): MenuEntry[];
 }
 
@@ -179,8 +178,7 @@ interface ButtonMenu {
  * The menus toolbar buttons carry.
  *
  * @remarks Save is one button because saving is one action; where the file goes is the variation,
- * and a variation belongs under the button rather than beside it. Import opens its menu on press
- * because there is no one import to default to.
+ * and a variation belongs under the button rather than beside it.
  */
 const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
   'file.saveProject': {
@@ -202,30 +200,6 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
         enabled: shell.can('file.saveProjectAs'),
         run: () => {
           shell.run('file.saveProjectAs');
-        },
-      },
-    ],
-  },
-  'file.importReference': {
-    hint: 'Choose what to import',
-    onPress: true,
-    entries: (shell) => [
-      {
-        label: 'Import Vocal',
-        icon: 'openAudio',
-        key: 'Ctrl+Shift+I',
-        enabled: shell.can('file.importClip'),
-        run: () => {
-          shell.run('file.importClip');
-        },
-      },
-      {
-        label: 'Import Reference',
-        icon: 'openMidi',
-        key: 'Ctrl+I',
-        enabled: shell.can('file.importReference'),
-        run: () => {
-          shell.run('file.importReference');
         },
       },
     ],
@@ -308,8 +282,6 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'view.toggleMixer',
   // Where a save goes is a variation on Save, so it lives in that button's own menu.
   'file.saveProjectAs',
-  // A second vocal is one of the things Import offers, so it lives in that button's menu.
-  'file.importClip',
   // Deleting is done to what is under the hand: the key, or the menu over the blob.
   'edit.deleteBlobs',
   'edit.deleteClip',
@@ -354,8 +326,7 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Open: 'openProject',
   'Save Project': 'save',
   'Save As': 'save',
-  'Import Reference': 'openMidi',
-  'Import Vocal': 'openAudio',
+  Import: 'import',
   'Delete Blob(s)': 'delete',
   'Delete Clip': 'delete',
   'Export Audio': 'export',
@@ -807,6 +778,7 @@ export class AppShell {
       previewMixer: (mixer) => {
         this.#hooks.previewMixer(mixer);
       },
+      meters: () => this.#hooks.meters(),
     });
 
     const footer = document.createElement('footer');
@@ -1184,13 +1156,9 @@ export class AppShell {
     // the command's, so a screen reader and the menus never disagree about what it is called.
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
     const menu = BUTTON_MENUS[command.id];
-    // A button whose press opens its menu leaves the choice to the menu: running its own command
-    // as well would act before anything had been chosen.
-    if (menu?.onPress !== true) {
-      button.addEventListener('click', () => {
-        this.#hooks.runCommand(command.id);
-      });
-    }
+    button.addEventListener('click', () => {
+      this.#hooks.runCommand(command.id);
+    });
     if (menu !== undefined) {
       setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
       const open = (event: Event): void => {
@@ -1198,9 +1166,6 @@ export class AppShell {
         this.#openButtonMenu(button, menu.entries);
       };
       button.addEventListener('contextmenu', open);
-      if (menu.onPress) {
-        button.addEventListener('click', open);
-      }
     }
     this.#commandButtons.set(command.id, {
       button,

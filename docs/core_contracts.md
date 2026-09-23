@@ -1058,13 +1058,14 @@ pub struct EditState {
     pub mappings: Vec<NoteMapping>,
     pub tuning: Tuning,
     pub accidentals: AccidentalStyle,
-    /// Monitor levels for everything the transport plays. Never read by the plan compiler, so
-    /// an export is unchanged by it.
+    /// Monitor levels for everything the transport plays. Never read by the plan compiler; an
+    /// export reads only the reference strips, and only when it includes references.
     #[serde(default)]
     pub mixer: MixerSettings,
 }
 
-/// The monitor desk, in `mixer.rs`: a track per clip, a strip per reference, one click.
+/// The monitor desk, in `mixer.rs`: a track per clip, a strip per reference, one click and a
+/// master.
 ///
 /// A clip or reference with no entry reads as the strips it starts with.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1073,6 +1074,9 @@ pub struct MixerSettings {
     pub clips: Vec<ClipStrips>,
     pub references: Vec<ReferenceStrip>,
     pub click: MixerStrip,
+    /// Level and mute only; never panned or soloed. Unity when a document has none.
+    #[serde(default)]
+    pub master: MixerStrip,
 }
 
 /// A clip's track: the take as edited and as sung.

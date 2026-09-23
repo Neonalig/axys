@@ -78,6 +78,16 @@ describe('restoring the newest readable copy', () => {
     expect(store.loaded).toEqual(['project-new']);
   });
 
+  it('opens the preferred copy ahead of a newer one', async () => {
+    const older: Stored = { id: 'project-open', json: '{"open":true}', readable: true };
+    const copies = [READABLE, older];
+    const store = storage(copies);
+    const result = await restoreNewest(store, opener(copies, store), 'project-open');
+
+    expect(result).toEqual({ opened: 'project-open', discarded: 0 });
+    expect(store.loaded).toEqual(['project-open']);
+  });
+
   it('opens nothing and discards nothing when nothing is stored', async () => {
     const store = storage([]);
     const result = await restoreNewest(store, opener([], store));

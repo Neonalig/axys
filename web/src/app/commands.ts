@@ -121,24 +121,19 @@ export interface Workspace {
   openAny(): Promise<void>;
 
   /**
-   * Asks for a vocal and puts it on the lane of the open project, or starts a project with it.
+   * Asks for a file and imports it into the open project, or starts a project with it.
    *
-   * @remarks One undo step. The clip goes after the last one on the lane.
+   * @remarks A MIDI file becomes the guide. Audio on an open project is a vocal or a reference,
+   * whichever the user answers; with nothing open it starts a project as the vocal.
    */
-  importClip(): Promise<void>;
-
-  /**
-   * Asks for a reference and imports it: a MIDI file becomes the guide, and audio a reference
-   * track heard beside the vocal.
-   */
-  importReference(): Promise<void>;
+  importAny(): Promise<void>;
 
   /**
    * Measures what exporting an output range would produce, before any file is written.
    *
    * @remarks `null` when there is no session, or when the core could not measure the range.
    */
-  exportPreview(range: ExportRange): ExportPreview | null;
+  exportPreview(range: ExportRange, withReferences: boolean): ExportPreview | null;
 
   /** Renders and encodes a WAV file at offline quality. */
   exportWav(choice: ExportChoice): Promise<void>;
@@ -468,27 +463,15 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      // Its own button rather than one more thing behind Open: a reference is imported into an
-      // open project instead of replacing it, which is the opposite of what Open does. One
-      // command for a MIDI guide and for audio, because both are placed against the vocal
-      // rather than edited.
-      id: 'file.importReference',
-      label: 'Import Reference',
+      // Its own button rather than one more thing behind Open: an import adds to the open
+      // project instead of replacing it, which is the opposite of what Open does.
+      id: 'file.import',
+      label: 'Import',
       group: 'File',
       shortcut: 'Ctrl+I',
-      enabled: (ctx) => ready(ctx) && !ctx.workspace.importing,
-      run: async (ctx) => {
-        await ctx.workspace.importReference();
-      },
-    },
-    {
-      id: 'file.importClip',
-      label: 'Import Vocal',
-      group: 'File',
-      shortcut: 'Ctrl+Shift+I',
       enabled: (ctx) => !ctx.workspace.importing,
       run: async (ctx) => {
-        await ctx.workspace.importClip();
+        await ctx.workspace.importAny();
       },
     },
     {
@@ -509,7 +492,8 @@ export function buildCommands(): Command[] {
                   end: ctx.workspace.outputAt(selection.end),
                 },
           sourceRate: projectRate(state) ?? 48_000,
-          preview: (range) => ctx.workspace.exportPreview(range),
+          references: (state.edits?.references.length ?? 0) > 0,
+          preview: (range, withReferences) => ctx.workspace.exportPreview(range, withReferences),
           onExport: (choice) => {
             void ctx.workspace.exportWav(choice);
           },

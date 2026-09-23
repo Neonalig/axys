@@ -19,6 +19,9 @@ export const VOCAL_NAMES: Readonly<Record<VocalStrip, string>> = {
   original: 'Original',
 };
 
+/** What the master strip is called. */
+export const MASTER_NAME = 'Master';
+
 /**
  * What the click strip is called.
  *
@@ -51,6 +54,8 @@ export interface MixLevels {
   clips: ReadonlyMap<ClipId, ClipLevels>;
   references: ReadonlyMap<ReferenceId, StripLevel>;
   click: StripLevel;
+  /** Gain on everything the desk sends out, mute already resolved. Never soloed. */
+  master: number;
   /** What a clip with no entry on the desk contributes. */
   defaultClip: ClipLevels;
   /** What a reference with no entry on the desk contributes. */
@@ -80,6 +85,7 @@ export const DEFAULT_MIXER: MixerSettings = {
   clips: [],
   references: [],
   click: { gainDb: DEFAULT_CLICK_DB, pan: 0, mute: false, solo: false },
+  master: UNITY_STRIP,
 };
 
 /**
@@ -164,6 +170,7 @@ export function mixLevels(mixer: MixerSettings): MixLevels {
     clips,
     references,
     click: levelOf(mixer.click, solo),
+    master: mixer.master.mute ? 0 : amplitude(mixer.master.gainDb),
     defaultClip: {
       processed: levelOf(fresh.processed, solo),
       original: levelOf(fresh.original, solo),

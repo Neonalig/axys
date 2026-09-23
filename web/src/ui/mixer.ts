@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The mixer: a track per vocal clip, a strip per reference and one for the metronome, in a panel
- * across the bottom of the editor.
+ * The mixer: a track per vocal clip, a strip per reference, one for the metronome and the master,
+ * in a panel across the bottom of the editor.
  *
  * A clip's track groups its two strips, the take as edited and as sung, under the clip's name,
  * so each clip reads as one source with two faders. A strip is laid out the way a desk lays one
- * out: the name, the pan above the fader, the fader itself, and mute and solo under it. The desk
- * is monitoring rather than an edit to the take, so nothing here changes what an export writes.
+ * out: the name, the pan above the fader, the fader itself, and mute and solo under it. Each
+ * fader's fill darkens as far as the strip is sounding, so what each source adds to the mix reads
+ * at a glance. The desk is monitoring rather than an edit to the take, so an export takes from it
+ * only the levels of the references it includes.
  */
 
 import { MAX_GAIN_DB, MIN_GAIN_DB, sourceTitle } from '../core/types.js';
@@ -24,12 +26,14 @@ import {
   clipStrips,
   DEFAULT_CLICK_DB,
   DEFAULT_MIXER,
+  MASTER_NAME,
   referenceStrip,
   VOCAL_NAMES,
   withClipStrip,
   withReferenceStrip,
 } from '../audio/mixer.js';
 import type { VocalStrip } from '../audio/mixer.js';
+import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { setTooltip } from './tooltip.js';
@@ -41,13 +45,16 @@ export interface MixerHooks {
   applyEdit(op: EditOp): void;
   /** Hands the engine a desk that has not been committed yet, so a dragged fader is audible. */
   previewMixer(mixer: MixerSettings): void;
+  /** Each strip's recent peak, or `null` while nothing is playing. */
+  meters(): MeterReport | null;
 }
 
 /** Which strip on the desk a control belongs to. */
 type StripKey =
   | { kind: 'clip'; clip: ClipId; which: VocalStrip }
   | { kind: 'reference'; reference: ReferenceId }
-  | { kind: 'click' };
+  | { kind: 'click' }
+  | { kind: 'master' };
 
 /** The controls one strip owns. */
 interface StripControls {
@@ -59,7 +66,10 @@ interface StripControls {
   pan: HTMLInputElement;
   panReadout: HTMLElement;
   mute: HTMLButtonElement;
-  solo: HTMLButtonElement;
+  /** `null` on the master, which is never soloed. */
+  solo: HTMLButtonElement | null;
+  /** How far the meter inside the fader's fill reaches, from 0 to 1 of the fader's travel. */
+  meter: number;
 }
 
 /**
@@ -70,6 +80,40 @@ interface StripControls {
  * still reach every value inside it.
  */
 const PAN_DETENT = 0.06;
+
+/**
+ * How fast a meter falls back once its source quietens, in fader travel per second.
+ *
+ * @remarks Rises instantly and falls at this rate, as a desk's peak meter does, so a transient is
+ * seen rather than lost between two reports.
+ */
+const METER_FALL = 1.5;
+
+/** Where a level in decibels sits along a fader, from 0 at the floor to 1 at the top. */
+function travel(decibels: number): number {
+  return Math.min(Math.max((decibels - MIN_GAIN_DB) / (MAX_GAIN_DB - MIN_GAIN_DB), 0), 1);
+}
+
+/** Where a peak amplitude sits along a fader. */
+function peakTravel(peak: number): number {
+  return peak > 0 ? travel(20 * Math.log10(peak)) : 0;
+}
+
+/** A strip's peak in a meter report, or 0 for a strip the report does not carry. */
+function peakOf(meters: MeterReport, key: StripKey): number {
+  switch (key.kind) {
+    case 'clip': {
+      const entry = meters.clips.find((candidate) => candidate.clip === key.clip);
+      return entry === undefined ? 0 : entry[key.which];
+    }
+    case 'reference':
+      return meters.references.find((entry) => entry.reference === key.reference)?.peak ?? 0;
+    case 'click':
+      return meters.click;
+    case 'master':
+      return meters.master;
+  }
+}
 
 /** How a level reads, with the floor named rather than printed as a number. */
 function levelText(decibels: number): string {
@@ -93,6 +137,8 @@ function stripOf(mixer: MixerSettings, key: StripKey): MixerStrip {
       return referenceStrip(mixer, key.reference);
     case 'click':
       return mixer.click;
+    case 'master':
+      return mixer.master;
   }
 }
 
@@ -105,6 +151,8 @@ function withStrip(mixer: MixerSettings, key: StripKey, strip: MixerStrip): Mixe
       return withReferenceStrip(mixer, key.reference, strip);
     case 'click':
       return { ...mixer, click: strip };
+    case 'master':
+      return { ...mixer, master: { ...strip, pan: 0, solo: false } };
   }
 }
 
@@ -140,6 +188,8 @@ export class MixerPanel {
   #lineup: string | null = null;
 
   #mixer: MixerSettings = DEFAULT_MIXER;
+  #collapsed = true;
+  #lastFrame = 0;
 
   constructor(hooks: MixerHooks) {
     this.#hooks = hooks;
@@ -148,7 +198,29 @@ export class MixerPanel {
     element.setAttribute('aria-label', 'Mixer');
     this.#element = element;
     this.#rebuild(null);
+    requestAnimationFrame(this.#meterFrame);
   }
+
+  /**
+   * Moves every meter towards its strip's latest peak, once a frame.
+   *
+   * @remarks Touches the page only for a meter that moved, so an idle desk costs a comparison
+   * per strip. A folded or detached panel is skipped.
+   */
+  #meterFrame = (time: number): void => {
+    const elapsed = this.#lastFrame === 0 ? 0 : (time - this.#lastFrame) / 1000;
+    this.#lastFrame = time;
+    requestAnimationFrame(this.#meterFrame);
+    if (this.#collapsed || !this.#element.isConnected) return;
+    const meters = this.#hooks.meters();
+    for (const controls of this.#strips) {
+      const target = meters === null ? 0 : peakTravel(peakOf(meters, controls.key));
+      const next = Math.max(target, controls.meter - METER_FALL * Math.min(elapsed, 0.1));
+      if (next === controls.meter) continue;
+      controls.meter = next;
+      controls.gain.style.setProperty('--axys-meter-level', next.toFixed(3));
+    }
+  };
 
   /** The panel element, ready to append to the shell. */
   get element(): HTMLElement {
@@ -165,6 +237,7 @@ export class MixerPanel {
   update(state: AppState): void {
     this.#element.classList.toggle('is-collapsed', state.mixerCollapsed);
     this.#element.inert = state.mixerCollapsed;
+    this.#collapsed = state.mixerCollapsed;
     if (state.mixerCollapsed) return;
     const wanted = lineup(state.edits);
     // Only a slider held under the pointer defers the rebuild. One that merely kept focus after
@@ -178,13 +251,14 @@ export class MixerPanel {
     for (const controls of this.#strips) {
       const strip = stripOf(this.#mixer, controls.key);
       for (const control of [controls.gain, controls.pan, controls.mute, controls.solo]) {
-        control.disabled = !ready;
+        if (control) control.disabled = !ready;
       }
       // The whole strip, readouts included, is left alone while it is being dragged: the store
       // updates on every animation frame the transport runs, and rewriting the control under
       // the hand from the committed value is what makes a fader fight the hand holding it.
       if (document.activeElement !== controls.gain) {
         setValue(controls.gain, String(strip.gainDb));
+        setFill(controls.gain, strip.gainDb);
         controls.gainReadout.textContent = levelText(strip.gainDb);
       }
       if (document.activeElement !== controls.pan) {
@@ -195,12 +269,17 @@ export class MixerPanel {
       swapGlyph(controls.mute, stateIcon('mute', !strip.mute));
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
       setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', controls.label));
-      controls.solo.setAttribute('aria-pressed', String(strip.solo));
-      setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', controls.label));
+      if (controls.solo) {
+        controls.solo.setAttribute('aria-pressed', String(strip.solo));
+        setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', controls.label));
+      }
     }
   }
 
-  /** Builds a track per clip in lane order, a strip per reference, and the metronome last. */
+  /**
+   * Builds a track per clip in lane order, a strip per reference, the metronome, and the master
+   * at the far end.
+   */
   #rebuild(edits: EditState | null): void {
     this.#lineup = lineup(edits);
     this.#strips = [];
@@ -237,6 +316,9 @@ export class MixerPanel {
       );
     }
     parts.push(this.#buildStrip({ kind: 'click' }, CLICK_NAME, CLICK_NAME, true));
+    const master = this.#buildStrip({ kind: 'master' }, MASTER_NAME, MASTER_NAME, true);
+    master.classList.add('is-master');
+    parts.push(master);
     this.#element.replaceChildren(...parts);
   }
 
@@ -258,10 +340,19 @@ export class MixerPanel {
     heading.className = 'axys-mixer-name';
     heading.textContent = name;
 
+    // The master has no pan and no solo. Its pan row is kept but hidden, so its fader lines up
+    // with every other strip's.
+    const master = key.kind === 'master';
     const pan = rangeInput(-1, 1, 0.01);
     pan.className = 'axys-mixer-pan';
     pan.setAttribute('aria-label', `${label} Pan`);
     const panReadout = readout('axys-mixer-pan-readout');
+    if (master) {
+      pan.classList.add('is-placeholder');
+      pan.tabIndex = -1;
+      pan.setAttribute('aria-hidden', 'true');
+      panReadout.classList.add('is-placeholder');
+    }
 
     const gain = rangeInput(MIN_GAIN_DB, MAX_GAIN_DB, 0.5);
     gain.className = 'axys-mixer-fader';
@@ -270,10 +361,11 @@ export class MixerPanel {
     const gainReadout = readout('axys-mixer-level');
 
     const mute = this.#buildSwitch(key, 'mute', label);
-    const solo = this.#buildSwitch(key, 'solo', label);
+    const solo = master ? null : this.#buildSwitch(key, 'solo', label);
     const switches = document.createElement('div');
     switches.className = 'axys-mixer-switches';
-    switches.append(mute, solo);
+    switches.append(mute);
+    if (solo) switches.append(solo);
 
     const faderRow = document.createElement('div');
     faderRow.className = 'axys-mixer-fader-row';
@@ -283,7 +375,7 @@ export class MixerPanel {
     // readout beside a slider takes the room the slider needs to be worth dragging.
     heading.htmlFor = gain.id;
     strip.append(heading, pan, panReadout, faderRow, gainReadout, switches);
-    this.#strips.push({ key, label, gain, gainReadout, pan, panReadout, mute, solo });
+    this.#strips.push({ key, label, gain, gainReadout, pan, panReadout, mute, solo, meter: 0 });
 
     const current = (): MixerStrip => stripOf(this.#mixer, key);
     // Heard as it moves, kept when it is let go: one drag is one undo step rather than one per
@@ -291,6 +383,7 @@ export class MixerPanel {
     gain.addEventListener('input', () => {
       const gainDb = readNumber(gain, current().gainDb);
       gainReadout.textContent = levelText(gainDb);
+      setFill(gain, gainDb);
       this.#hooks.previewMixer(this.#with(key, { gainDb }));
     });
     gain.addEventListener('change', () => {
@@ -358,8 +451,15 @@ export class MixerPanel {
 
   #toggle(key: StripKey, field: 'mute' | 'solo', additive: boolean): void {
     const wanted = !stripOf(this.#mixer, key)[field];
+    // The master is not one of the sources a switch settles the desk on, so it is toggled alone
+    // and left alone by every other strip's switch.
+    if (key.kind === 'master') {
+      this.#commit(key, { [field]: wanted });
+      return;
+    }
     let mixer = this.#mixer;
     for (const controls of this.#strips) {
+      if (controls.key.kind === 'master') continue;
       const strip = stripOf(mixer, controls.key);
       const on = controls.key === key ? wanted : additive ? strip[field] : false;
       mixer = withStrip(mixer, controls.key, { ...strip, [field]: on });
@@ -397,6 +497,11 @@ function readout(className: string): HTMLElement {
 function readNumber(input: HTMLInputElement, fallback: number): number {
   const value = Number.parseFloat(input.value);
   return Number.isFinite(value) ? value : fallback;
+}
+
+/** Sets how far a fader's fill reaches, which its meter never passes. */
+function setFill(gain: HTMLInputElement, decibels: number): void {
+  gain.style.setProperty('--axys-fader-fill', travel(decibels).toFixed(4));
 }
 
 function setValue(input: HTMLInputElement, value: string): void {

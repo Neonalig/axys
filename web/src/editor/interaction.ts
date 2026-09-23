@@ -32,6 +32,7 @@ import type {
   GesturePoint,
   Hit,
   Modifiers,
+  PendingClip,
   PitchSnap,
   SnapContext,
 } from './tools.js';
@@ -927,9 +928,14 @@ export class EditorController {
     this.#renderer?.setPreview({
       kind: 'drop',
       time,
-      label: `Drop Vocal ${formatClock(time, 0.001)}`,
+      label: `Import At ${formatClock(time, 0.001)}`,
     });
     return time;
+  }
+
+  /** Shows a clip being imported where it will land, or takes it away with `null`. */
+  showPending(pending: PendingClip | null): void {
+    this.#renderer?.setPending(pending);
   }
 
   /** Takes the drop marker away. */

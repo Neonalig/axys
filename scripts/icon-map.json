@@ -4,6 +4,7 @@
     "newProject": "file-plus",
     "openAudio": "file-audio",
     "openMidi": "file-music",
+    "import": "import",
     "openProject": "folder-open",
     "save": "save",
     "export": "download",

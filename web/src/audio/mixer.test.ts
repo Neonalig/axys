@@ -66,6 +66,16 @@ describe('mixLevels', () => {
     expect(clipLevels(levels, 0).processed.audible).toBe(true);
     expect(clipStrips(desk, 1).original.mute).toBe(true);
   });
+
+  it('scales the output by the master, which a mute closes and a solo elsewhere leaves open', () => {
+    expect(mixLevels(DEFAULT_MIXER).master).toBe(1);
+    const quiet = { ...DEFAULT_MIXER, master: { ...UNITY_STRIP, gainDb: -6 } };
+    expect(mixLevels(quiet).master).toBeCloseTo(amplitude(-6));
+    const muted = { ...DEFAULT_MIXER, master: { ...UNITY_STRIP, mute: true } };
+    expect(mixLevels(muted).master).toBe(0);
+    const soloed = { ...DEFAULT_MIXER, click: { ...DEFAULT_MIXER.click, solo: true } };
+    expect(mixLevels(soloed).master).toBe(1);
+  });
 });
 
 describe('vocalMonitor', () => {

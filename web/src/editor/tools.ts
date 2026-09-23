@@ -432,6 +432,18 @@ export function freePosition(
   return best ?? Math.max(0, ...others.map(([, end]) => end));
 }
 
+/** A clip being imported, shown where it will land until the core has its blobs. */
+export interface PendingClip {
+  /** Project seconds the clip starts at. */
+  position: number;
+  /** Seconds of source audio. */
+  duration: number;
+  /** Fingerprint its waveform envelope is cached under. */
+  fingerprint: string;
+  /** What its title tab will read. */
+  title: string;
+}
+
 /** A point of a {@link BezierCurve} that can be dragged. */
 export type BezierHandle = 'from' | 'c1' | 'c2' | 'to';
 

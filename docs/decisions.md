@@ -635,12 +635,28 @@ segmentation.
 A reference is audio in output time, so it has no analysis, no plan and no warp: the worklet reads
 its channels at the transport position less its own. It is decoded at the project's rate and kept
 in stereo, and its pan is a balance, so a centred reference plays both channels at the strip's
-level. It is monitoring, like the desk, and is never written to an export.
+level. An export leaves it out unless Include References is ticked, which writes the file in stereo
+with every unmuted reference at its desk level and pan beside the vocal. That is the one place the
+desk reaches an export, because a backing track mixed in at unity is rarely the balance anybody
+wanted. References sit on a lane of bands along the foot of the plot, where they are dragged to
+move and right-clicked to delete, and each has a strip on the desk.
 
-A MIDI guide and an audio reference are both things placed against the vocal, so one Import
-Reference command takes either and tells them apart by the file; the picker offers MIDI and Audio
-as its two types. References sit on a lane of bands along the foot of the plot, where they are
-dragged to move and right-clicked to delete, and each has a strip on the desk.
+### One Import, and the file says what it is when it can
+
+Import takes audio or MIDI. MIDI is only ever the guide, and audio with nothing open only ever
+starts a project as its vocal, so neither is asked about. Audio on an open project could be a take
+to edit or a backing track to hear, which nothing in the file says, so a question asks once for
+everything imported or dropped together: Import Vocal or Import Reference.
+
+Rejected: an Import menu with an entry per kind. It asked the same question before the file was
+chosen, and a drop had no menu to ask it with, so dropped audio was always taken as a vocal.
+
+### A dropped file shows where it lands once it is read
+
+A browser does not let a page read a dragged file until it is dropped: during the drag only its
+kind is known, not its length or its audio. The drag shows a marker at the time the file will land.
+Once dropped and decoded, the clip's waveform is drawn where it lands, against the nearer free edge
+if it would overlap, while it is analysed, and the view moves to show it when it lands out of sight.
 
 ### A track per clip on the desk
 
@@ -649,6 +665,18 @@ clip's name as one track, so a clip reads as one source with two faders. A refer
 strip and the metronome keeps its one. A source with no entry on the desk reads as the strips it
 starts with, processed up and original muted, so importing needs no edit to put it there. Solo
 spans the whole desk.
+
+A master strip at the far end scales everything the desk sends out. It has a level and a mute but
+no pan and no solo, and a mute or solo pressed on any other strip leaves it alone. A document
+saved before it existed reads it at unity.
+
+### The fader fill is the meter
+
+Each fader's fill darkens from the bottom as far as its strip is sounding, so a desk of meters
+costs no extra width and a level reads against the fader that sets it. The worklet reports the
+loudest sample each strip sent out, after its fader, with every position report; the panel rises
+to a new peak at once and falls back at a fixed rate, as a peak meter does. The meter never passes
+the fill, because it reads what the fader lets out.
 
 ### A reopened project opens with what is there
 
@@ -998,6 +1026,21 @@ Project documents are small JSON and live in IndexedDB with explicit schema vers
 source audio is large and lives in OPFS, keyed by fingerprint. Explicit project import and export
 write a single `.axys.json` file, so the only recoverable copy of a user's work is never trapped in
 an opaque browser cache. Autosave writes the document, not the media.
+
+### A reload reopens what was open
+
+Every project gets a recovery copy of its own, under an id made when it is created, and a new
+project writes one as soon as it opens. The device records which copy is open, and startup
+reopens that one, or nothing after New Project. The newest eight copies are kept.
+
+Rejected: an id derived from the first clip's fingerprint. Two projects started from the same file
+shared one copy, and one that had not been edited yet had written nothing, so a reload brought the
+older project back over the new one.
+
+Because a reload reopens the recovery copy, leaving the page warns only about what has not reached
+it yet: an import still running, an edit autosave has not written, or audio still being cached.
+Starting the write as the warning shows usually lands it before the answer. Without device storage
+there is no recovery copy, and any unsaved edit warns.
 
 ### Import and persistence implementation
 
@@ -1607,6 +1650,8 @@ once, and a leaving panel takes no pointer events so the page is usable immediat
   with another's.
 - A reference plays at the project rate as decoded, is never analysed and has no MIDI or pitch
   display.
+- A dragged file's waveform cannot be shown before it is dropped, because the browser does not
+  expose its contents until then.
 - Format 2 MIDI files are read as if their tracks were parallel, and SMPTE timecode divisions are
   rejected outright.
 - WAV import does not support RF64/BW64, ADPCM, A-law or mu-law; export writes 16-bit, 24-bit and

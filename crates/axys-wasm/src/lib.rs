@@ -587,6 +587,8 @@ pub struct Session {
     midi_bytes: Option<Vec<u8>>,
     plan_hop: f64,
     last_report: Option<ExportReport>,
+    /// Each attached reference's channels at the project rate, for an export that includes them.
+    reference_audio: Vec<(ReferenceId, Vec<Vec<f32>>)>,
 }
 
 #[wasm_bindgen]
@@ -684,6 +686,7 @@ impl Session {
             midi_bytes: None,
             plan_hop: 0.005,
             last_report: None,
+            reference_audio: Vec::new(),
         };
         session.recompile()?;
         Ok(session)
@@ -741,6 +744,7 @@ impl Session {
             midi_bytes,
             plan_hop: 0.005,
             last_report: None,
+            reference_audio: Vec::new(),
         };
         session.recompile()?;
         Ok(session)
@@ -822,8 +826,8 @@ impl Session {
 
     /// Brings in a reference as one undoable edit, returning its id.
     ///
-    /// `source_json` is the reference's `SourceInfo`. Its audio never enters the core: it is
-    /// heard in the worklet and never exported.
+    /// `source_json` is the reference's `SourceInfo`. Its audio is heard in the worklet, and
+    /// reaches the core only through [`Session::attach_reference`] for an export.
     #[wasm_bindgen(js_name = addReference)]
     pub fn add_reference(&mut self, source_json: &str, position: f64) -> Result<u32, JsValue> {
         let source: SourceInfo = parse(source_json)?;
@@ -844,6 +848,22 @@ impl Session {
         })?;
         self.references.push(reference);
         Ok(id.0)
+    }
+
+    /// Hands the session a reference's audio at the project rate, for an export that includes it.
+    ///
+    /// `joined` holds `channels` channels one after the other, each the same length. A mono
+    /// reference is heard on both sides.
+    #[wasm_bindgen(js_name = attachReference)]
+    pub fn attach_reference(&mut self, reference: u32, joined: Vec<f32>, channels: u32) {
+        let count = channels.clamp(1, 2) as usize;
+        let frames = joined.len() / count;
+        let split = (0..count)
+            .map(|channel| joined[channel * frames..(channel + 1) * frames].to_vec())
+            .collect();
+        let id = ReferenceId(reference);
+        self.reference_audio.retain(|(existing, _)| *existing != id);
+        self.reference_audio.push((id, split));
     }
 
     /// Every clip and reference the project can need, and which clips have audio attached.
@@ -1338,16 +1358,98 @@ impl Session {
         (self.output_seconds() * self.sample_rate).round() as u32
     }
 
-    /// Renders every clip on the lane at export quality and mixes them into one buffer.
+    /// Each reference an export includes: its channels, where it starts in project seconds, and
+    /// its gain per side from the desk.
     ///
-    /// `range` is project output seconds, or the whole lane. A clip without audio attached
-    /// renders as silence.
-    fn render_mix(&mut self, range: Option<(f64, f64)>) -> Vec<f32> {
-        let rate = self.sample_rate;
+    /// A muted reference is left out. Its pan is a balance, as the worklet plays it.
+    fn export_references(&self) -> Vec<(&[Vec<f32>], f64, f32, f32)> {
+        let mixer = &self.state.mixer;
+        self.state
+            .references
+            .iter()
+            .filter_map(|reference| {
+                let (_, channels) = self
+                    .reference_audio
+                    .iter()
+                    .find(|(id, _)| *id == reference.id)?;
+                let strip = mixer.reference(reference.id);
+                if strip.mute || channels.is_empty() {
+                    return None;
+                }
+                let gain = strip.amplitude();
+                let angle = (strip.pan.clamp(-1.0, 1.0) + 1.0) * std::f64::consts::FRAC_PI_4;
+                let left = gain.min(std::f64::consts::SQRT_2 * gain * angle.cos());
+                let right = gain.min(std::f64::consts::SQRT_2 * gain * angle.sin());
+                Some((
+                    channels.as_slice(),
+                    reference.position,
+                    left as f32,
+                    right as f32,
+                ))
+            })
+            .collect()
+    }
+
+    /// Project seconds a whole export covers: the lane, and every included reference.
+    fn export_seconds(&self, with_references: bool) -> f64 {
+        let mut end = self.output_seconds();
+        if with_references {
+            for (channels, position, _, _) in self.export_references() {
+                end = end.max(position + channels[0].len() as f64 / self.sample_rate);
+            }
+        }
+        end
+    }
+
+    /// Renders an export's channels: the lane in mono, or in stereo when references are included
+    /// and at least one is heard.
+    ///
+    /// `range` is project output seconds, or the whole export. The vocal sits in the centre at
+    /// unity, as it does without references.
+    fn render_mix(&mut self, range: Option<(f64, f64)>, with_references: bool) -> Vec<Vec<f32>> {
         let (from, to) = match range {
             Some((start, end)) => (start.max(0.0), end.max(start.max(0.0))),
-            None => (0.0, self.output_seconds()),
+            None => (0.0, self.export_seconds(with_references)),
         };
+        let vocal = self.render_lane(from, to);
+        let references = if with_references {
+            self.export_references()
+        } else {
+            Vec::new()
+        };
+        if references.is_empty() {
+            return vec![vocal];
+        }
+        let rate = self.sample_rate;
+        let first = (from * rate).round() as i64;
+        let mut left = vocal.clone();
+        let mut right = vocal;
+        for (channels, position, gain_left, gain_right) in references {
+            let second = channels.get(1).unwrap_or(&channels[0]);
+            let offset = (position * rate).round() as i64 - first;
+            for (side, source, gain) in [
+                (&mut left, &channels[0], gain_left),
+                (&mut right, second, gain_right),
+            ] {
+                for (index, slot) in side.iter_mut().enumerate() {
+                    let at = index as i64 - offset;
+                    if at >= 0 {
+                        if let Some(sample) = source.get(at as usize) {
+                            *slot += *sample * gain;
+                        }
+                    }
+                }
+            }
+        }
+        vec![left, right]
+    }
+
+    /// Renders every clip on the lane at export quality and mixes them into one buffer.
+    ///
+    /// `from` and `to` are project output seconds. A clip without audio attached renders as
+    /// silence.
+    fn render_lane(&mut self, from: f64, to: f64) -> Vec<f32> {
+        let rate = self.sample_rate;
         let first = (from * rate).round() as i64;
         let last = (to * rate).round() as i64;
         let mut out = vec![0.0f32; (last - first).max(0) as usize];
@@ -1393,8 +1495,9 @@ impl Session {
     /// Renders and encodes a WAV file at export quality.
     ///
     /// `start` and `end` are project output seconds; pass a negative `end` for the whole
-    /// lane. Returns the encoded bytes; call [`Session::last_export_report`] for the peak and
-    /// clipping figures.
+    /// lane. `with_references` writes stereo with every attached, unmuted reference at its desk
+    /// level and pan. Returns the encoded bytes; call [`Session::last_export_report`] for the
+    /// peak and clipping figures.
     #[wasm_bindgen(js_name = exportWav)]
     pub fn export_wav(
         &mut self,
@@ -1402,6 +1505,7 @@ impl Session {
         end: f64,
         sample_rate: u32,
         depth: &str,
+        with_references: bool,
     ) -> Result<Vec<u8>, JsValue> {
         let depth = match depth {
             "pcm16" => BitDepth::Pcm16,
@@ -1415,18 +1519,23 @@ impl Session {
         } else {
             None
         };
-        let rendered = self.render_mix(range);
-        let resampled = if f64::from(sample_rate) == self.sample_rate {
+        let rendered = self.render_mix(range, with_references);
+        let resampled: Vec<Vec<f32>> = if f64::from(sample_rate) == self.sample_rate {
             rendered
         } else {
-            axys_core::dsp::resample::resample(
-                &rendered,
-                self.sample_rate,
-                f64::from(sample_rate),
-                16,
-            )
+            rendered
+                .iter()
+                .map(|channel| {
+                    axys_core::dsp::resample::resample(
+                        channel,
+                        self.sample_rate,
+                        f64::from(sample_rate),
+                        16,
+                    )
+                })
+                .collect()
         };
-        let (bytes, report) = encode_wav(&[resampled], sample_rate, depth).map_err(to_js)?;
+        let (bytes, report) = encode_wav(&resampled, sample_rate, depth).map_err(to_js)?;
         self.last_report = Some(report);
         Ok(bytes)
     }
@@ -1448,16 +1557,23 @@ impl Session {
     ///
     /// `start` and `end` are project output seconds; pass a negative `end` for the whole lane.
     /// Returns an [`ExportPreview`] as JSON so the range can be reviewed before the user
-    /// commits to a file.
+    /// commits to a file. `with_references` measures the export as
+    /// [`Session::export_wav`] would write it with them.
     #[wasm_bindgen(js_name = exportPreview)]
-    pub fn export_preview(&mut self, start: f64, end: f64) -> Result<String, JsValue> {
+    pub fn export_preview(
+        &mut self,
+        start: f64,
+        end: f64,
+        with_references: bool,
+    ) -> Result<String, JsValue> {
         let ranged = end > start && end > 0.0;
         let range = if ranged {
             Some((start.max(0.0), end))
         } else {
             None
         };
-        let rendered = self.render_mix(range);
+        let channels = self.render_mix(range, with_references);
+        let rendered = &channels[0];
         let rate = self.sample_rate;
         let first = if ranged {
             (start.max(0.0) * rate).round().max(0.0)
@@ -1469,7 +1585,7 @@ impl Session {
         let to = from + duration;
 
         let mut peak = 0.0f32;
-        for sample in &rendered {
+        for sample in channels.iter().flatten() {
             peak = peak.max(sample.abs());
         }
 
@@ -1478,17 +1594,29 @@ impl Session {
             .filter(|(_, runtime)| runtime.samples.is_some())
             .map(|(clip, runtime)| (clip.position, &runtime.plan, runtime.source.duration))
             .collect();
+        let heard: Vec<(f64, f64)> = if with_references {
+            self.export_references()
+                .iter()
+                .map(|(audio, position, _, _)| (*position, position + audio[0].len() as f64 / rate))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let silent = (0..rendered.len())
             .filter(|i| {
                 let seconds = from + *i as f64 / rate;
-                !placements.iter().any(|(position, plan, length)| {
-                    let local = seconds - position;
-                    if local < 0.0 || local > plan.time_map.output_duration() {
-                        return false;
-                    }
-                    let source = plan.time_map.source_at(local);
-                    source.is_finite() && source >= 0.0 && source < *length
-                })
+                let referenced = heard
+                    .iter()
+                    .any(|(start, end)| seconds >= *start && seconds < *end);
+                !referenced
+                    && !placements.iter().any(|(position, plan, length)| {
+                        let local = seconds - position;
+                        if local < 0.0 || local > plan.time_map.output_duration() {
+                            return false;
+                        }
+                        let source = plan.time_map.source_at(local);
+                        source.is_finite() && source >= 0.0 && source < *length
+                    })
             })
             .count();
 
@@ -1723,15 +1851,55 @@ mod analysis_handoff_tests {
     fn the_export_mixes_every_clip_at_its_position() {
         let (mut session, _) = two_clips(2.0);
         let bytes = session
-            .export_wav(0.0, -1.0, 16_000, "float32")
+            .export_wav(0.0, -1.0, 16_000, "float32", false)
             .expect("wav");
         let report = json(session.last_export_report().expect("report"));
         assert_eq!(report["frames"], serde_json::json!(3 * 16_000));
         assert!(bytes.len() > 3 * 16_000 * 4);
-        let preview = json(session.export_preview(0.0, -1.0).expect("preview"));
+        let preview = json(session.export_preview(0.0, -1.0, false).expect("preview"));
         // The second between the clips has nothing under it.
         let silent = preview["silent"].as_f64().expect("silent");
         assert!((silent - 1.0).abs() < 0.01, "{silent}");
+    }
+
+    #[test]
+    fn an_export_with_references_is_stereo_and_runs_to_the_last_reference() {
+        let (mut session, _) = two_clips(2.0);
+        let frames = (5.0 * SAMPLE_RATE) as usize;
+        let source = SourceInfo {
+            name: "band.wav".into(),
+            sample_rate: SAMPLE_RATE as u32,
+            channels: 2,
+            frames,
+            duration: 5.0,
+            fingerprint: "0123456789abcdef".into(),
+            mime: None,
+        };
+        let id = session
+            .add_reference(&serde_json::to_string(&source).expect("source"), 0.0)
+            .expect("reference");
+        let mut joined = vec![0.25f32; frames];
+        joined.extend(vec![-0.25f32; frames]);
+        session.attach_reference(id, joined, 2);
+
+        let mono = session
+            .export_wav(0.0, -1.0, SAMPLE_RATE as u32, "float32", false)
+            .expect("mono");
+        let report = json(session.last_export_report().expect("report"));
+        assert_eq!(
+            report["frames"],
+            serde_json::json!(3 * SAMPLE_RATE as usize)
+        );
+
+        let stereo = session
+            .export_wav(0.0, -1.0, SAMPLE_RATE as u32, "float32", true)
+            .expect("stereo");
+        let report = json(session.last_export_report().expect("report"));
+        assert_eq!(report["frames"], serde_json::json!(frames));
+        // Four bytes a sample: the stereo file carries two channels of the longer length.
+        assert!(stereo.len() - mono.len() >= (2 * frames - 3 * SAMPLE_RATE as usize) * 4);
+        let preview = json(session.export_preview(0.0, -1.0, true).expect("preview"));
+        assert_eq!(preview["silent"], serde_json::json!(0.0));
     }
 
     #[test]
@@ -1747,7 +1915,9 @@ mod analysis_handoff_tests {
         reopened.attach_clip(1, samples).expect("second");
         let media = json(reopened.media_json().expect("media"));
         assert_eq!(media["clips"][1]["attached"], serde_json::json!(true));
-        assert!(reopened.export_wav(0.0, -1.0, 16_000, "pcm16").is_ok());
+        assert!(reopened
+            .export_wav(0.0, -1.0, 16_000, "pcm16", false)
+            .is_ok());
     }
 
     #[test]
@@ -2003,7 +2173,7 @@ mod export_preview_tests {
     }
 
     fn preview(session: &mut Session, start: f64, end: f64) -> serde_json::Value {
-        let json = session.export_preview(start, end).expect("preview");
+        let json = session.export_preview(start, end, false).expect("preview");
         serde_json::from_str(&json).expect("preview json")
     }
 

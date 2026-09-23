@@ -421,7 +421,7 @@ describe('core workflow acceptance (design bible 13.4)', () => {
     originalRender = renderAll(originalSession);
     originalSession.free();
 
-    exportedBytes = editedSession.exportWav(0, -1, fixture.sampleRate, 'pcm16');
+    exportedBytes = editedSession.exportWav(0, -1, fixture.sampleRate, 'pcm16', false);
     const decoded = decodeWavBytes(exportedBytes);
     exportedSamples = decoded.samples;
     exportedTrack = await measureF0(decoded.samples, decoded.sampleRate);
