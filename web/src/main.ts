@@ -200,7 +200,6 @@ class AxysWorkspace implements Workspace {
   readonly #render = new RenderClient();
 
   #session: Session | null = null;
-  #plan: RenderPlan | null = null;
   #projectId: string | null = null;
   #autosave: Autosave | null = null;
   #missing: MissingMedia = { clips: [], references: [] };
@@ -290,7 +289,6 @@ class AxysWorkspace implements Workspace {
     this.#missing = { clips: [], references: [] };
     this.#references.clear();
     this.#clipTracks.clear();
-    this.#plan = null;
     this.#projectId = null;
     clearPeaks();
     this.#audio.unloadSource();
@@ -1106,14 +1104,6 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  outputAt(sourceSeconds: number): number {
-    return mapTime(this.#plan, sourceSeconds, 1, 0);
-  }
-
-  sourceAt(outputSeconds: number): number {
-    return mapTime(this.#plan, outputSeconds, 0, 1);
-  }
-
   /**
    * Starts the analysis and render workers and has them load their core now.
    *
@@ -1488,7 +1478,6 @@ class AxysWorkspace implements Workspace {
   ): Pick<AppState, 'blobs' | 'track' | 'conflicts' | 'layer' | 'others'> & { plan: RenderPlan } {
     session.setFocus(view.activeClip ?? null, othersOf(view) !== 'show');
     const plan = session.plan();
-    this.#plan = plan;
     const layer = session.layer();
     const others = otherSources(
       edits,
@@ -1626,26 +1615,6 @@ function highestCentre(blobs: readonly { detectedCenter: number }[]): number {
  * @remarks The map is ascending in both columns, so the same piecewise-linear walk converts
  * either way; `from` and `to` pick which column is searched.
  */
-function mapTime(plan: RenderPlan | null, value: number, from: 0 | 1, to: 0 | 1): number {
-  const points = plan?.timeMap.points;
-  if (!points || points.length < 2) return value;
-  let low = 0;
-  let high = points.length - 1;
-  while (low < high - 1) {
-    const middle = (low + high) >> 1;
-    const point = points[middle];
-    if (!point) break;
-    if (point[from] <= value) low = middle;
-    else high = middle;
-  }
-  const first = points[low];
-  const second = points[high];
-  if (!first || !second) return value;
-  const span = second[from] - first[from];
-  if (!(span > 0)) return first[to];
-  return first[to] + ((value - first[from]) / span) * (second[to] - first[to]);
-}
-
 function toBytes(bytes: Uint8Array): ArrayBuffer {
   const copy = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(copy).set(bytes);
@@ -1978,23 +1947,18 @@ async function restoreLastProject(
 }
 
 /** Keeps the editor playhead in step with the audio engine, playing or seeking. */
-function startPlayheadLoop(
-  store: AppStore,
-  audio: AudioEngine,
-  workspace: AxysWorkspace,
-): () => void {
+function startPlayheadLoop(store: AppStore, audio: AudioEngine): () => void {
   let running = true;
   const frame = (): void => {
     if (!running) return;
     const state = store.state;
+    // The canvas, the selection and the transport all measure output time, so the playhead does.
     const output = audio.position;
-    const playhead = workspace.sourceAt(output);
-    const movedPlayhead = Math.abs(playhead - state.view.playhead) > PLAYHEAD_EPSILON;
+    const movedPlayhead = Math.abs(output - state.view.playhead) > PLAYHEAD_EPSILON;
     const movedTransport =
       Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
       audio.playing !== state.transport.playing;
-    const view = movedPlayhead ? { ...state.view, playhead } : state.view;
-    // The playing playhead is drawn at the output position, so that is what the view follows.
+    const view = movedPlayhead ? { ...state.view, playhead: output } : state.view;
     const followed =
       state.follow && audio.playing ? followView(view, output, state.followMode) : null;
     if (movedPlayhead || movedTransport || followed !== null) {
@@ -2324,7 +2288,7 @@ async function start(): Promise<void> {
 
   const releaseShortcuts = bindShortcuts(window, commands, context);
   const releaseDrop = bindDragAndDrop(window, workspace, toast, shell, editor);
-  const stopPlayhead = startPlayheadLoop(store, audio, workspace);
+  const stopPlayhead = startPlayheadLoop(store, audio);
 
   // A reload reopens the recovery copy, so only work that has not reached it yet is worth a
   // warning. Starting the write here usually lands it while the warning is still up.

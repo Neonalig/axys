@@ -162,12 +162,6 @@ export interface Workspace {
 
   /** Source time a source time snaps to on the musical grid. */
   snapTime(seconds: number): number;
-
-  /** Output time the current plan puts a source time at. */
-  outputAt(sourceSeconds: number): number;
-
-  /** Source time the current plan reads at an output time. */
-  sourceAt(outputSeconds: number): number;
 }
 
 /** Everything a command may reach. */
@@ -503,13 +497,7 @@ export function buildCommands(): Command[] {
         const state = ctx.store.state;
         const selection = selectedRange(state);
         showExportDialog({
-          selection:
-            selection === null
-              ? null
-              : {
-                  start: ctx.workspace.outputAt(selection.start),
-                  end: ctx.workspace.outputAt(selection.end),
-                },
+          selection,
           sourceRate: projectRate(state) ?? 48_000,
           references: (state.edits?.references.length ?? 0) > 0,
           preview: (range, withReferences) => ctx.workspace.exportPreview(range, withReferences),
@@ -750,14 +738,8 @@ export function buildCommands(): Command[] {
         selectedRange(ctx.store.state) !== null || ctx.store.state.transport.loop !== null,
       run: (ctx) => {
         const state = ctx.store.state;
-        const range = selectedRange(state);
-        const wanted =
-          range === null
-            ? null
-            : {
-                start: ctx.workspace.outputAt(range.start),
-                end: ctx.workspace.outputAt(range.end),
-              };
+        // A selection is already in output time, which is what the transport loops.
+        const wanted = selectedRange(state);
         const loop = state.transport.loop;
         if (loop !== null && (wanted === null || sameRange(loop, wanted))) {
           ctx.audio.setLoop(null);

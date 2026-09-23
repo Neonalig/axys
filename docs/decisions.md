@@ -463,9 +463,12 @@ that method is dead by construction rather than by accident.
 
 ### Time domains
 
-The store's `view.playhead` is in source seconds; the engine's position and loop range are in
-output seconds. The workspace converts between them through the plan's time map, so a loop set from
-a selection follows timing edits instead of drifting off them.
+The canvas draws blobs at their edited positions, so its time axis is output time, and so are
+`view.playhead`, a selection's spans, the loop range and the engine's position. Nothing converts
+between them. Converting through the plan's time map, as the playhead, Loop Selection and Export
+once did, turned a span already in output time into a later one wherever blobs had been moved in
+time: the loop and the exported range drifted off the selection, and a stopped playhead jumped
+away from where it had been playing.
 
 ### Bypass is gone
 
