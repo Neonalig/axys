@@ -392,7 +392,7 @@ export type EditOp =
   | { type: 'setGain'; blob: BlobId; gainDb: number }
   | { type: 'deleteBlobs'; blobs: BlobId[] }
   | { type: 'addClip'; clip: Clip; ripple?: boolean; exact?: boolean }
-  | { type: 'moveClip'; clip: ClipId; position: number; exact?: boolean }
+  | { type: 'moveClip'; clip: ClipId; position: number; exact?: boolean; ripple?: boolean }
   | { type: 'removeClip'; clip: ClipId }
   | { type: 'addReference'; reference: Reference }
   | { type: 'moveReference'; reference: ReferenceId; position: number }

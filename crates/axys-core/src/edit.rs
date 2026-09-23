@@ -223,10 +223,14 @@ pub enum EditOp {
         clip: ClipId,
         /// Wanted position in project seconds.
         position: f64,
-        /// Places the clip at `position`, over any clip already there. Without it, an
+        /// Places the clip at `position`, over any clip already there. Without it or `ripple`, an
         /// overlapping position lands on the nearest free one.
         #[serde(default, skip_serializing_if = "is_false")]
         exact: bool,
+        /// Inserts the clip at `position`, moving every other clip at or after it later to make
+        /// room, as [`ripple_insert`] describes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        ripple: bool,
     },
     /// Takes a clip off the lane.
     RemoveClip {
@@ -750,17 +754,31 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             clip,
             position,
             exact,
+            ripple,
         } => {
             let wanted = finite(*position, "clip position")?;
             let others = lane_spans(state, Some(*clip));
-            let target = state
-                .clip_mut(*clip)
-                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?;
-            target.position = if *exact {
+            let duration = state
+                .clip(*clip)
+                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?
+                .source
+                .duration;
+            let at = if *ripple {
+                let (at, shift) = ripple_insert(&others, duration, wanted);
+                for other in state.clips.iter_mut().filter(|other| other.id != *clip) {
+                    if other.position >= at - 1e-9 {
+                        other.position += shift;
+                    }
+                }
+                at
+            } else if *exact {
                 wanted.max(0.0)
             } else {
-                free_position(&others, target.source.duration, wanted)
+                free_position(&others, duration, wanted)
             };
+            if let Some(target) = state.clip_mut(*clip) {
+                target.position = at;
+            }
         }
         EditOp::RemoveClip { clip } => {
             let before = state.clips.len();
@@ -2918,6 +2936,7 @@ mod tests {
             &EditOp::MoveClip {
                 clip: ClipId(1),
                 position: 9.0,
+                ripple: false,
                 exact: false,
             },
         )
@@ -2973,6 +2992,7 @@ mod tests {
             &EditOp::MoveClip {
                 clip: ClipId(1),
                 position: 0.5,
+                ripple: false,
                 exact: false,
             },
         )
@@ -3102,6 +3122,7 @@ mod tests {
         let place = |position: f64| EditOp::MoveClip {
             clip: ClipId(1),
             position,
+            ripple: false,
             exact: true,
         };
         apply(&mut s, None, &place(0.25)).unwrap();
@@ -3120,10 +3141,30 @@ mod tests {
         let json = serde_json::to_string(&EditOp::MoveClip {
             clip: ClipId(1),
             position: 1.0,
+            ripple: false,
             exact: false,
         })
         .unwrap();
         assert!(!json.contains("exact"));
+    }
+
+    #[test]
+    fn a_clip_moved_with_ripple_pushes_the_clips_after_it() {
+        // Clip 0 at 0..2 and clip 1 at 5..7; clip 0 moved to 4.0 needs 1 s of room.
+        let mut s = two_clips();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveClip {
+                clip: ClipId(0),
+                position: 4.0,
+                exact: false,
+                ripple: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.clip(ClipId(0)).unwrap().position, 4.0);
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 6.0);
     }
 
     #[test]

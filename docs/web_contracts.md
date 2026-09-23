@@ -433,7 +433,8 @@ range, hover readout, drag preview).
   dragged along the lane, previewing as a band with the clip's waveform and its blobs as ghosts
   where it would land. A click on the tab selects the clip. A clip lands exactly where it is let
   go, over any clip there, snapping to the grid but not to blob edges. Ctrl puts a dragged clip
-  or reference at the start and Shift at the playhead.
+  or reference at the start. Shift inserts a dragged or dropped vocal instead, moving every clip
+  after it later, and the two stack.
 - Clips outside the layer are drawn behind it from `state.others`, faded as a whole and in their
   own colours, and hidden under Hide Others. Where nothing of the layer is hit and Show Others is
   on, a press on one of their blobs calls `focus(clip)` first and then acts on what it hits.

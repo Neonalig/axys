@@ -188,9 +188,9 @@ export function describeHit(hit: Hit, state: AppState): string {
     case 'blob':
       return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
-      return 'Move Clip  Ctrl Start  Shift Playhead';
+      return 'Move Clip  Ctrl Start  Shift Insert';
     case 'reference':
-      return 'Move Reference  Ctrl Start  Shift Playhead';
+      return 'Move Reference  Ctrl Start';
     case 'conflict': {
       const conflict = hit.conflict;
       if (conflict === null) {

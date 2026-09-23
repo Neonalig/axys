@@ -624,10 +624,12 @@ class AxysWorkspace implements Workspace {
    * otherwise a vocal or a reference, whichever the user answers.
    *
    * @remarks One question for everything dropped at once. Every file dropped at a position goes
-   * there, over whatever is already there, so stems dropped together line up. With no position
-   * each vocal follows the one before, from the end of the project.
+   * there, over whatever is already there, so stems dropped together line up. With `ripple` the
+   * first vocal is inserted there, moving the clips after it later, and each after it is inserted
+   * after the one before. With no position each vocal follows the one before, from the end of the
+   * project.
    */
-  async dropAudio(files: readonly File[], position: number | null): Promise<void> {
+  async dropAudio(files: readonly File[], position: number | null, ripple = false): Promise<void> {
     if (this.#hasMissing()) {
       for (const file of files) await this.#relink(file);
       return;
@@ -637,8 +639,9 @@ class AxysWorkspace implements Workspace {
     let next = position;
     for (const file of files) {
       if (role === 'vocal') {
-        if (position !== null) await this.importClipFile(file, position, 'exact');
-        else next = (await this.importClipFile(file, next ?? undefined)) ?? next;
+        if (position !== null && !ripple) await this.importClipFile(file, position, 'exact');
+        else if (next !== null) next = (await this.importClipFile(file, next, 'ripple')) ?? next;
+        else next = (await this.importClipFile(file)) ?? next;
       } else {
         await this.importReferenceFile(file, position ?? 0);
       }
@@ -1730,14 +1733,13 @@ function bindDragAndDrop(
   const onDrop = (event: DragEvent): void => {
     depth = 0;
     shell.setDropTarget(null);
-    const at = workspace.ready
-      ? editor.previewDrop(event.clientX, event.clientY, modifiersOf(event))
-      : null;
+    const modifiers = modifiersOf(event);
+    const at = workspace.ready ? editor.previewDrop(event.clientX, event.clientY, modifiers) : null;
     editor.endDrop();
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
     event.preventDefault();
-    void openDropped([...files], workspace, toast, at);
+    void openDropped([...files], workspace, toast, at, modifiers.constrain);
   };
   target.addEventListener('dragenter', onDragEnter);
   target.addEventListener('dragover', onDragOver);
@@ -1764,6 +1766,7 @@ async function openDropped(
   workspace: AxysWorkspace,
   toast: ToastHost,
   at: number | null,
+  ripple: boolean,
 ): Promise<void> {
   const project = files.find((file) => kindOf(file) === 'project');
   const audio = files.filter((file) => kindOf(file) === 'audio');
@@ -1776,7 +1779,7 @@ async function openDropped(
       await workspace.openAudioFile(first, true);
       for (const file of rest) await workspace.importClipFile(file);
     } else {
-      await workspace.dropAudio(audio, at);
+      await workspace.dropAudio(audio, at, ripple);
     }
   }
   if (midi) {

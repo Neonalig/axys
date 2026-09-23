@@ -51,6 +51,7 @@ import {
   extendStroke,
   gestureAnchors,
   modifiersOf,
+  rippleInsert,
   moveBezierHandle,
   sampleBezier,
   simplifyGesture,
@@ -109,6 +110,8 @@ type Gesture =
       grab: number;
       duration: number;
       position: number;
+      /** Whether it is inserted, moving every clip after it later to make room. */
+      ripple: boolean;
     }
   | { kind: 'reference'; reference: number; from: number; grab: number; position: number };
 
@@ -983,6 +986,7 @@ export class EditorController {
       grab: time - clip.position,
       duration: clip.source.duration,
       position: clip.position,
+      ripple: false,
     };
   }
 
@@ -990,8 +994,8 @@ export class EditorController {
    * Shows where audio dragged in from outside would land, and returns that time.
    *
    * @remarks Client coordinates, as a drag event carries them. `null` when the pointer is not over
-   * the canvas, which also takes the marker away. Ctrl puts it at the start and Shift at the
-   * playhead, as they do for a clip being moved.
+   * the canvas, which also takes the marker away. Ctrl puts it at the start, and Shift inserts a
+   * vocal there, moving the clips after it later, as they do for a clip being moved.
    */
   previewDrop(clientX: number, clientY: number, modifiers = NO_MODIFIERS): number | null {
     const rect = this.#canvas.getBoundingClientRect();
@@ -1002,11 +1006,12 @@ export class EditorController {
       return null;
     }
     const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false }, false);
-    // A vocal and a reference both land where they are let go, over whatever is there.
+    // A vocal and a reference both land where they are let go, over whatever is there, unless
+    // Shift inserts the vocal instead.
     this.#renderer?.setPreview({
       kind: 'drop',
       time,
-      label: `Import At ${formatClock(time, 0.001)}`,
+      label: `${modifiers.constrain ? 'Insert' : 'Import'} At ${formatClock(time, 0.001)}`,
     });
     return time;
   }
@@ -1176,8 +1181,13 @@ export class EditorController {
         break;
       }
       case 'clip': {
-        // Lands where it is let go, over any clip already there; only the grid pulls on it.
-        gesture.position = this.#placeTime(time - gesture.grab, modifiers, false);
+        // Lands where it is let go, over any clip already there, and only the grid pulls on it.
+        // Shift inserts it there instead, moving the clips after it later.
+        const wanted = this.#placeTime(time - gesture.grab, modifiers, false);
+        gesture.ripple = modifiers.constrain;
+        gesture.position = gesture.ripple
+          ? rippleInsert(this.#otherSpans(gesture.clip), gesture.duration, wanted).position
+          : wanted;
         break;
       }
       case 'reference':
@@ -1264,7 +1274,7 @@ export class EditorController {
               kind: 'clipDrag',
               clip: gesture.clip,
               position: gesture.position,
-              label: `Move Clip ${formatClock(gesture.position, 0.001)}`,
+              label: `${gesture.ripple ? 'Insert' : 'Move'} Clip ${formatClock(gesture.position, 0.001)}`,
             }
           : null;
       case 'reference':
@@ -1406,9 +1416,15 @@ export class EditorController {
         break;
       case 'clip':
         if (this.#moved) {
-          if (gesture.position !== gesture.from) {
+          if (gesture.position !== gesture.from || gesture.ripple) {
             this.#commit(
-              { type: 'moveClip', clip: gesture.clip, position: gesture.position, exact: true },
+              {
+                type: 'moveClip',
+                clip: gesture.clip,
+                position: gesture.position,
+                exact: !gesture.ripple,
+                ripple: gesture.ripple,
+              },
               `Move Clip ${formatClock(gesture.position, 0.001)}`,
             );
           }
@@ -1610,14 +1626,14 @@ export class EditorController {
   }
 
   /**
-   * Where a clip, a reference or a dropped file is put: the start with Ctrl, the playhead with
-   * Shift, and otherwise `seconds` snapped. Never negative.
+   * Where a clip, a reference or a dropped file is put: the start with Ctrl, and otherwise
+   * `seconds` snapped. Never negative.
    *
    * @remarks Without `edges`, only the grid pulls on it, not the edges of the blobs already there.
+   * Shift is left to the caller, which inserts a vocal with it.
    */
   #placeTime(seconds: number, modifiers: Modifiers, edges = true): number {
     if (modifiers.snap) return 0;
-    if (modifiers.constrain) return this.#playhead();
     if (modifiers.fine) return Math.max(0, seconds);
     const context = edges ? this.#snapContext() : { ...this.#snapContext(), blobs: [] };
     return Math.max(0, snapTime(seconds, context));
@@ -1723,6 +1739,13 @@ export class EditorController {
 
   #accidentals(): 'sharps' | 'flats' {
     return this.#store.state.edits?.accidentals ?? 'sharps';
+  }
+
+  /** The project spans of every clip but `clip`. */
+  #otherSpans(clip: number): [number, number][] {
+    return (this.#store.state.edits?.clips ?? [])
+      .filter((entry) => entry.id !== clip)
+      .map((entry): [number, number] => [entry.position, entry.position + entry.source.duration]);
   }
 
   #playhead(): number {
