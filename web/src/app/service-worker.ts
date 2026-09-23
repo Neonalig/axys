@@ -67,11 +67,12 @@ scope.addEventListener('fetch', (event) => {
  */
 async function answer(request: Request): Promise<Response> {
   const cache = await caches.open(__AXYS_CACHE__);
+  const navigate = request.mode === 'navigate';
   const cached = await cache.match(request, { ignoreSearch: true });
-  if (cached) return cached;
-  if (request.mode === 'navigate') {
+  if (cached) return navigate ? unredirect(cached) : cached;
+  if (navigate) {
     const page = await cache.match('index.html');
-    if (page) return page;
+    if (page) return unredirect(page);
   }
   try {
     return await fetch(request);
@@ -82,4 +83,19 @@ async function answer(request: Request): Promise<Response> {
       headers: { 'content-type': 'text/plain; charset=utf-8' },
     });
   }
+}
+
+/**
+ * Copies a response without its redirected flag.
+ *
+ * @remarks Browsers reject a redirected response as the answer to a navigation. A host that
+ * redirects `index.html` to `/` leaves the precached page flagged that way.
+ */
+function unredirect(response: Response): Response {
+  if (!response.redirected) return response;
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
