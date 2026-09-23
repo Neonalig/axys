@@ -2101,7 +2101,9 @@ mod analysis_handoff_tests {
         session
             .reanalyse(clip, &track, &blobs, swipe)
             .expect("reanalysed");
-        session.reanalyse(0, &track, &blobs, swipe).expect("first clip");
+        session
+            .reanalyse(0, &track, &blobs, swipe)
+            .expect("first clip");
         assert!(session.undo().expect("undo"));
         assert!(session.redo().expect("redo"));
         let state = json(session.state_json().expect("state"));
