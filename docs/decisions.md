@@ -717,6 +717,16 @@ everything imported or dropped together: Vocal or Reference.
 Rejected: an Import menu with an entry per kind. It asked the same question before the file was
 chosen, and a drop had no menu to ask it with, so dropped audio was always taken as a vocal.
 
+### Importing a vocal previews its analysis
+
+The question is a floating panel. Choosing Vocal imports the audio with the settings last applied
+and turns the panel into the analysis step: the pitch method and its setting, and the pitch range.
+Each change analyses the imported vocals again and replaces their blobs where they came in, so the
+editor and playback show the result while the panel is open, as Correction does. Apply remembers
+the settings on the device for the next import, closing the panel keeps the import, and Cancel
+takes it back. A clip is analysed again only while no edit touches it, since later edits name
+blobs the new analysis does not have.
+
 ### A dropped file shows where it lands once it is read
 
 A browser does not let a page read a dragged file until it is dropped: during the drag only its
