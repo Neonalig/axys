@@ -332,8 +332,8 @@ cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void;
 
 Pure functions from the state to what is copied and to the edits Cut and Paste commit, shared by
 the commands, the gestures and the arrow keys. `copyClips`, `copyBlobs` and `copyPitch` take the
-selection in each mode; `cutClipSpans`, `cutBlobOps` and `cutPitchOps` take it out; `pasteBlobOps`
-and `pastePitchOps` lay it down, `placePitch` placing a copied line at the playhead or over a span.
+selection in each mode, `copyBlobs` as the clip parts under the selected blobs; `cutClipSpans`,
+`blobClipSpans` and `cutPitchOps` take it out; `pastePitchOps` lays pitch down, `placePitch` placing a copied line at the playhead or over a span.
 `movePitchOps` moves the pitch line across spans without moving audio, and `outsideRuns` and
 `liftRunOps` find pitch outside every blob and make blobs of it. Every edit a function returns is
 meant to be committed as one group.

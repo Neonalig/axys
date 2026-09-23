@@ -9,13 +9,12 @@
  */
 
 import {
+  blobClipSpans,
   copyBlobs,
   copyClips,
   copyPitch,
-  cutBlobOps,
   cutClipSpans,
   cutPitchOps,
-  pasteBlobOps,
   pastePitchOps,
   placePitch,
   placeStrokes,
@@ -405,9 +404,9 @@ function fitToContent(store: AppStore): void {
   });
 }
 
-/** The edit mode a clipboard holding `content` pastes in. */
-function modeFor(content: ClipboardContent): EditMode {
-  return content.kind === 'clips' ? 'both' : content.kind === 'blobs' ? 'blob' : 'pitch';
+/** Whether a clipboard holding `content` pastes in `mode`: audio in Blob and Pitch or Blob. */
+function pastesIn(content: ClipboardContent, mode: EditMode): boolean {
+  return content.kind === 'pitch' ? mode === 'pitch' : mode !== 'pitch';
 }
 
 /** What the clipboard commands act on in a mode, as a message names it. */
@@ -449,8 +448,8 @@ function clipAtPlayhead(state: AppState): NonNullable<AppState['edits']>['clips'
 /**
  * Cuts what the edit mode edits from the selection.
  *
- * @remarks With `ripple`, clips after a cut move earlier by its length. Blobs and pitch lines have
- * no gap to close, so they cut the same either way.
+ * @remarks With `ripple`, clips after a cut move earlier by its length, in Blob mode as in Blob
+ * and Pitch. A pitch line has no gap to close, so it cuts the same either way.
  */
 function cutSelection(ctx: CommandContext, ripple: boolean): void {
   const state = ctx.store.state;
@@ -460,14 +459,12 @@ function cutSelection(ctx: CommandContext, ripple: boolean): void {
     return;
   }
   ctx.store.update({ clipboard: content });
-  if (state.editMode === 'both') {
-    ctx.workspace.cutClips(cutClipSpans(state), ripple);
-  } else {
-    const ops =
-      state.editMode === 'blob'
-        ? cutBlobOps(state)
-        : cutPitchOps(state, state.selection.ranges, state.pitchCutFill);
+  if (state.editMode === 'pitch') {
+    const ops = cutPitchOps(state, state.selection.ranges, state.pitchCutFill);
     if (ops.length > 0) ctx.workspace.apply(grouped(ops));
+  } else {
+    const spans = state.editMode === 'blob' ? blobClipSpans(state) : cutClipSpans(state);
+    ctx.workspace.cutClips(spans, ripple);
   }
   ctx.editor.clearSelection();
 }
@@ -475,15 +472,16 @@ function cutSelection(ctx: CommandContext, ripple: boolean): void {
 /**
  * Pastes the clipboard at the playhead.
  *
- * @remarks Clips and blobs land over what is there, move what starts after the playhead later, or
- * replace what is under them, as `mode` says. Pitch always replaces the line it lands on.
+ * @remarks Audio, copied as clips or as blobs, lands over what is there, moves what starts after
+ * the playhead later, or replaces what is under it, as `mode` says. Pitch always replaces the line
+ * it lands on.
  */
 function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
   const state = ctx.store.state;
   const content = state.clipboard;
   if (content === null) return;
-  const wanted = modeFor(content);
-  if (wanted !== state.editMode) {
+  if (!pastesIn(content, state.editMode)) {
+    const wanted: EditMode = content.kind === 'pitch' ? 'pitch' : 'both';
     ctx.toast.warn(`Switch to ${editModeLabel(wanted)} to paste ${modeNoun(wanted)}`);
     return;
   }
@@ -492,19 +490,12 @@ function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
     ctx.workspace.pasteClips(content.parts, at, mode);
     return;
   }
-  const ops =
-    content.kind === 'blobs'
-      ? pasteBlobOps(state, content, at, mode)
-      : [
-          ...pastePitchOps(state, placePitch(content, selectedRange(state), at)),
-          ...placeStrokes(state, content, selectedRange(state), at),
-        ];
+  const ops = [
+    ...pastePitchOps(state, placePitch(content, selectedRange(state), at)),
+    ...placeStrokes(state, content, selectedRange(state), at),
+  ];
   if (ops.length === 0) {
-    ctx.toast.warn(
-      content.kind === 'blobs'
-        ? 'Move the playhead over a clip to paste blobs'
-        : 'Move the playhead over a blob to paste pitch',
-    );
+    ctx.toast.warn('Move the playhead over a blob to paste pitch');
     return;
   }
   ctx.workspace.apply(grouped(ops));

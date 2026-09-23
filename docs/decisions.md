@@ -936,11 +936,16 @@ tool keeps one meaning in every mode.
 Paste lays clips over what is there, Paste Insert on `Ctrl+Shift+V` moves every clip starting at or
 after the playhead later by the length pasted, and Paste Replace on `Ctrl+Alt+V` cuts the pasted
 span out of every clip it reaches first. Ripple Cut on `Ctrl+Shift+X` closes the gap a cut leaves by
-moving every later clip earlier by its length. Blobs paste the same three ways. Blobs cannot lie
-over each other, so a plain paste trims or splits the blobs it lands on back to where it does not
-reach, Paste Insert moves the blobs from the playhead on later first, splitting one across it, and
-Paste Replace removes every blob it touches. Pitch always replaces the line it lands on. Each is one
-undo step.
+moving every later clip earlier by its length. Pitch always replaces the line it lands on. Each is
+one undo step.
+
+### A blob is a part of the audio
+
+In Blob mode Copy and Cut take the audio under the selected blobs, touching blobs as one stretch,
+as clip parts with their edits and analysis, and Paste lays them down as clips the same three ways
+Blob and Pitch does. Only moving and resizing a blob in Blob mode leaves the audio where it is.
+Rejected: pasting only a blob's outline over the audio already at the playhead. It heard nothing
+new, which is not what copying a blob means once blobs are the parts sources are cut from.
 
 In Pitch mode Delete resets the selected span to the detected pitch and removes the curves drawn
 over it. It is Cut with nothing copied and the Cut Fill setting ignored.

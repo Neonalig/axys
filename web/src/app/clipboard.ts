@@ -4,8 +4,8 @@
  * What Cut, Copy and Paste carry in each edit mode, and the edits they make.
  *
  * Blob and Pitch takes the audio itself: the clips under the selection, with their blobs, edits
- * and analysis. Blob takes blobs alone and leaves the audio where it is. Pitch takes the pitch
- * line as it is heard and leaves both the audio and the blobs. Every function here is pure: it
+ * and analysis. Blob takes the same, but only the audio under the selected blobs. Pitch takes the
+ * pitch line as it is heard and leaves both the audio and the blobs. Every function here is pure: it
  * reads the state and returns what to copy or which edits to commit.
  */
 
@@ -13,7 +13,7 @@ import type { AppState, EditMode } from './store.js';
 import type { TimeRange } from './selection.js';
 import type { Anchor, Blob, ClipId, EditOp, Stroke, StrokePoint } from '../core/types.js';
 import { CLIP_ID_BITS, clipEnd, clipOf, clipStart, MIN_BLOB_SECONDS } from '../core/types.js';
-import type { ClipPart, PasteMode } from '../core/wasm.js';
+import type { ClipPart } from '../core/wasm.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -31,12 +31,11 @@ export interface PitchPoint {
 /**
  * What the clipboard holds.
  *
- * @remarks `start` and `end` bound what was copied: output seconds for pitch, project seconds for
- * blobs. Clips carry their own spans in each part.
+ * @remarks `start` and `end` bound the pitch copied, in output seconds. Clips carry their own
+ * spans in each part.
  */
 export type ClipboardContent =
   | { kind: 'clips'; parts: ClipPart[] }
-  | { kind: 'blobs'; blobs: Blob[]; start: number; end: number }
   | { kind: 'pitch'; lines: PitchPoint[][]; strokes: Stroke[]; start: number; end: number };
 
 /** What a span of pitch is left at once its line is cut away. */
@@ -117,28 +116,44 @@ export function cutClipSpans(state: AppState): { clip: ClipId; start: number; en
   return clipSpans(state);
 }
 
-/** The blobs of the layer the selection covers. */
-function selectedBlobs(state: AppState): Blob[] {
+/**
+ * The audio under the selected blobs, as the part of each clip it lies in, in project seconds.
+ *
+ * @remarks Blobs that touch make one part, so a run of them is copied and cut as one stretch of
+ * audio; a gap between blobs stays a gap.
+ */
+export function blobClipSpans(state: AppState): { clip: ClipId; start: number; end: number }[] {
   const wanted = new Set(state.selection.blobs);
-  return state.blobs.filter((blob) => wanted.has(blob.id));
+  const chosen = state.blobs
+    .filter((blob) => wanted.has(blob.id))
+    .map((blob) => ({
+      clip: clipOf(blob.id),
+      start: blobOutputStart(blob),
+      end: blobOutputEnd(blob),
+    }))
+    .sort((a, b) => a.clip - b.clip || a.start - b.start);
+  const spans: { clip: ClipId; start: number; end: number }[] = [];
+  for (const span of chosen) {
+    const last = spans[spans.length - 1];
+    if (last !== undefined && last.clip === span.clip && span.start <= last.end + EPS) {
+      last.end = Math.max(last.end, span.end);
+    } else {
+      spans.push({ ...span });
+    }
+  }
+  return spans;
 }
 
-/** Copies the selected blobs' shapes and levels, or `null` with none selected. */
+/** Copies the audio under the selected blobs as clip parts, or `null` with none selected. */
 export function copyBlobs(state: AppState): ClipboardContent | null {
-  const blobs = selectedBlobs(state);
-  if (blobs.length === 0) return null;
-  return {
-    kind: 'blobs',
-    blobs: structuredClone(blobs),
-    start: Math.min(...blobs.map((blob) => blob.start)),
-    end: Math.max(...blobs.map((blob) => blob.end)),
-  };
-}
-
-/** Removes the selected blobs and leaves their audio playing as sung. */
-export function cutBlobOps(state: AppState): EditOp[] {
-  const blobs = selectedBlobs(state).map((blob) => blob.id);
-  return blobs.length === 0 ? [] : [{ type: 'deleteBlobs', blobs, keepAudio: true }];
+  const clips = new Map(layerClips(state).map((clip) => [clip.id, clip]));
+  const parts: ClipPart[] = [];
+  for (const span of blobClipSpans(state)) {
+    const clip = clips.get(span.clip);
+    if (clip !== undefined)
+      parts.push({ clip: structuredClone(clip), start: span.start, end: span.end });
+  }
+  return parts.length === 0 ? null : { kind: 'clips', parts };
 }
 
 /** A blob for the core to place in a clip, numbered only by the clip it goes to. */
@@ -157,165 +172,6 @@ function newBlob(clip: ClipId, start: number, end: number, fields: Partial<Blob>
     gainDb: 0,
     ...fields,
   };
-}
-
-/**
- * Lays copied blobs over the audio at `at`.
- *
- * @remarks The audio does not move: each blob lands over whatever the clip heard at its new time
- * holds, keeping its offset, level and exclusion. Its drawn curve belonged to the audio it came
- * from, so it is left behind. A blob landing outside every clip is dropped. What is already there
- * is trimmed back to where the paste does not reach with `overlap`, moved later by the length of
- * the paste from `at` on with `ripple`, and removed wherever the paste touches it with `replace`.
- */
-export function pasteBlobOps(
-  state: AppState,
-  content: ClipboardContent,
-  at: number,
-  mode: PasteMode = 'overlap',
-): EditOp[] {
-  if (content.kind !== 'blobs') return [];
-  const shift = at - content.start;
-  const landed: Blob[] = [];
-  for (const blob of content.blobs) {
-    const wanted = { start: blob.start + shift, end: blob.end + shift };
-    const clip = clipAt(state, (wanted.start + wanted.end) / 2);
-    if (clip === undefined) continue;
-    const start = Math.max(wanted.start, clipStart(clip));
-    const end = Math.min(wanted.end, clipEnd(clip));
-    if (end - start < MIN_BLOB_SECONDS) continue;
-    const fields = { pitchOffset: blob.pitchOffset, gainDb: blob.gainDb, excluded: blob.excluded };
-    landed.push(newBlob(clip.id, start, end, fields));
-  }
-  if (landed.length === 0) return [];
-  const ops: EditOp[] = [];
-  let there = [...state.blobs];
-  if (mode === 'ripple') {
-    const rippled = rippleBlobOps(state, at, content.end - content.start);
-    ops.push(...rippled.ops);
-    there = rippled.blobs;
-  }
-  const removed: number[] = [];
-  for (const existing of there) {
-    const hit = landed.filter(
-      (blob) =>
-        clipOf(blob.id) === clipOf(existing.id) &&
-        blob.end > existing.start + EPS &&
-        blob.start < existing.end - EPS,
-    );
-    if (hit.length === 0) continue;
-    const pieces = mode === 'replace' ? [] : outside(existing, hit);
-    if (pieces.length === 0) {
-      removed.push(existing.id);
-      continue;
-    }
-    ops.push(...trimOps(existing, pieces));
-  }
-  if (removed.length > 0) ops.unshift({ type: 'deleteBlobs', blobs: removed, keepAudio: true });
-  ops.push({ type: 'addBlobs', blobs: landed });
-  return ops;
-}
-
-/**
- * The edits moving every blob from `at` on later by `seconds`, and the blobs as they are after.
- *
- * @remarks A blob across `at` keeps its part before it; the rest becomes a new blob after the
- * paste, with the same offset, level and exclusion. Each blob stays inside its own clip.
- */
-function rippleBlobOps(
-  state: AppState,
-  at: number,
-  seconds: number,
-): { ops: EditOp[]; blobs: Blob[] } {
-  const ops: EditOp[] = [];
-  const blobs: Blob[] = [];
-  const moving: Blob[] = [];
-  const added: Blob[] = [];
-  const clip = clipAt(state, at);
-  for (const blob of state.blobs) {
-    if (clip === undefined || clipOf(blob.id) !== clip.id) {
-      blobs.push(blob);
-      continue;
-    }
-    if (blob.start >= at - EPS) {
-      moving.push(blob);
-      continue;
-    }
-    if (blob.end - at >= MIN_BLOB_SECONDS && at - blob.start >= MIN_BLOB_SECONDS) {
-      ops.push({ type: 'moveBoundary', blob: blob.id, edge: 'end', time: at });
-      blobs.push({ ...blob, end: at });
-      const end = Math.min(blob.end + seconds, clipEnd(clip));
-      if (end - (at + seconds) >= MIN_BLOB_SECONDS) {
-        added.push(
-          newBlob(clip.id, at + seconds, end, {
-            pitchOffset: blob.pitchOffset,
-            gainDb: blob.gainDb,
-            excluded: blob.excluded,
-          }),
-        );
-      }
-      continue;
-    }
-    blobs.push(blob);
-  }
-  // From the far end, so each blob moves into room the one after it has already left. What is
-  // pushed past the end of the clip is cut off there.
-  const limit = clip === undefined ? Number.POSITIVE_INFINITY : clipEnd(clip);
-  const dropped: number[] = [];
-  const shifts: EditOp[] = [];
-  for (const blob of [...moving].sort((a, b) => b.start - a.start)) {
-    if (limit - (blob.start + seconds) < MIN_BLOB_SECONDS) {
-      dropped.push(blob.id);
-      continue;
-    }
-    const end = Math.min(blob.end, limit - seconds);
-    if (end < blob.end - EPS) {
-      shifts.push({ type: 'moveBoundary', blob: blob.id, edge: 'end', time: end });
-    }
-    shifts.push({ type: 'shiftBlob', blob: blob.id, seconds });
-    blobs.push({ ...blob, start: blob.start + seconds, end: end + seconds });
-  }
-  if (dropped.length > 0) ops.push({ type: 'deleteBlobs', blobs: dropped, keepAudio: true });
-  ops.push(...shifts);
-  if (added.length > 0) ops.push({ type: 'addBlobs', blobs: added });
-  return { ops, blobs };
-}
-
-/** What is left of a blob outside some spans, as the stretches long enough to be blobs. */
-function outside(blob: Blob, spans: readonly TimeRange[]): TimeRange[] {
-  const pieces: TimeRange[] = [];
-  let from = blob.start;
-  for (const span of [...spans].sort((a, b) => a.start - b.start)) {
-    if (span.start - from >= MIN_BLOB_SECONDS) pieces.push({ start: from, end: span.start });
-    from = Math.max(from, span.end);
-  }
-  if (blob.end - from >= MIN_BLOB_SECONDS) pieces.push({ start: from, end: blob.end });
-  return pieces;
-}
-
-/**
- * The edits cutting a blob back to `pieces`, in time order and inside it.
- *
- * @remarks Split from the right, so the blob keeps its id and each split-off part is already its
- * own piece and needs no further edit.
- */
-function trimOps(blob: Blob, pieces: readonly TimeRange[]): EditOp[] {
-  const ops: EditOp[] = [];
-  const last = pieces[pieces.length - 1];
-  if (last !== undefined && last.end < blob.end - EPS) {
-    ops.push({ type: 'moveBoundary', blob: blob.id, edge: 'end', time: last.end });
-  }
-  for (let i = pieces.length - 1; i >= 1; i -= 1) {
-    ops.push(
-      { type: 'splitBlob', blob: blob.id, time: pieces[i]!.start },
-      { type: 'moveBoundary', blob: blob.id, edge: 'end', time: pieces[i - 1]!.end },
-    );
-  }
-  const first = pieces[0];
-  if (first !== undefined && first.start > blob.start + EPS) {
-    ops.push({ type: 'moveBoundary', blob: blob.id, edge: 'start', time: first.start });
-  }
-  return ops;
 }
 
 /** The blob whose source span holds a project time, scanning from a hint in time order. */

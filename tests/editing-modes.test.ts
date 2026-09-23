@@ -14,14 +14,12 @@ import {
   copyBlobs,
   copyClips,
   copyPitch,
-  cutBlobOps,
   cutClipSpans,
   cutPitchOps,
   deleteStrokeOps,
   drawStrokeOps,
   liftRunOps,
   outsideRuns,
-  pasteBlobOps,
   pastePitchOps,
   placePitch,
   placeStrokes,
@@ -85,12 +83,12 @@ describe('editing modes', () => {
     return core.Session.create(fixture.samples, fixture.sampleRate, 'phrase', fixture.analysis, '');
   }
 
-  it('cuts a blob in Blob mode without silencing its audio, and edits the pitch left behind', () => {
+  it('removes a blob without silencing its audio, and edits the pitch left behind', () => {
     const scoped = session();
     try {
       const before = stateOf(scoped);
       const target = before.blobs[1]!;
-      apply(scoped, cutBlobOps(selecting(before, target)));
+      apply(scoped, [{ type: 'deleteBlobs', blobs: [target.id], keepAudio: true }]);
       const after = stateOf(scoped);
       expect(after.blobs).toHaveLength(before.blobs.length - 1);
       expect(after.edits?.clips[0]?.silenced).toEqual([]);
@@ -110,30 +108,27 @@ describe('editing modes', () => {
     }
   });
 
-  it('pastes a blob over others by trimming them, and ripples the blobs after it with Insert', () => {
-    for (const mode of ['overlap', 'ripple'] as const) {
-      const scoped = session();
-      try {
-        const state = stateOf(scoped, { editMode: 'blob' });
-        const [source, under] = [state.blobs[0]!, state.blobs[2]!];
-        const copied = copyBlobs(selecting(state, source))!;
-        const at = (under.start + under.end) / 2;
-        const later = state.blobs.find((blob) => blob.start >= at)!;
-        apply(scoped, pasteBlobOps(state, copied, at, mode));
-        const after = stateOf(scoped).blobs;
-        const pasted = after.find((blob) => Math.abs(blob.start - at) < 1e-6);
-        expect(pasted?.end).toBeCloseTo(at + (source.end - source.start), 6);
-        // The blob it landed on keeps its part before the paste, and nothing overlaps.
-        expect(after.find((blob) => blob.id === under.id)!.end).toBeCloseTo(at, 6);
-        for (let i = 1; i < after.length; i += 1) {
-          expect(after[i]!.start).toBeGreaterThanOrEqual(after[i - 1]!.end - 1e-6);
-        }
-        const next = after.find((blob) => blob.id === later.id)!;
-        if (mode === 'overlap') expect(next.start).toBeCloseTo(pasted!.end, 6);
-        else expect(next.start).toBeCloseTo(later.start + (source.end - source.start), 6);
-      } finally {
-        scoped.free();
-      }
+  it('copies the audio under the selected blobs in Blob mode and pastes it as a clip', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped, { editMode: 'blob' });
+      const [source, under] = [state.blobs[0]!, state.blobs[2]!];
+      const picked = {
+        ...state,
+        selection: { blobs: [source.id, state.blobs[1]!.id], anchors: [], ranges: [] },
+      };
+      const copied = copyBlobs(picked);
+      if (copied?.kind !== 'clips') throw new Error('nothing copied');
+      // Two touching blobs are one stretch of audio.
+      expect(copied.parts).toHaveLength(1);
+      expect(copied.parts[0]!.start).toBeCloseTo(source.start, 9);
+      expect(copied.parts[0]!.end).toBeCloseTo(state.blobs[1]!.end, 9);
+      scoped.pasteClips(JSON.stringify(copied.parts), under.start, 'overlap');
+      const clips = (JSON.parse(scoped.stateJson()) as EditState).clips;
+      expect(clips).toHaveLength(2);
+      expect(clips[1]!.position + clips[1]!.window!.start).toBeCloseTo(under.start, 9);
+    } finally {
+      scoped.free();
     }
   });
 
