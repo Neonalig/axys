@@ -86,9 +86,9 @@ export const TOOLS: readonly ToolDefinition[] = [
     cursor: PEN_CURSOR,
   },
   {
-    id: 'line',
-    label: 'Draw Ramp',
-    hint: 'Drag a ramp, Alt curves it',
+    id: 'bezier',
+    label: 'Draw Bezier',
+    hint: 'Drag a line, then shape it by its handles',
     key: 'N',
     cursor: 'crosshair',
   },
@@ -390,6 +390,115 @@ export function gestureAnchors(points: readonly GesturePoint[], interp: Interp):
   return anchors;
 }
 
+/** A point of a {@link BezierCurve} that can be dragged. */
+export type BezierHandle = 'from' | 'c1' | 'c2' | 'to';
+
+/**
+ * A cubic Bezier pitch transition, in output seconds and fractional MIDI.
+ *
+ * @remarks `c1` is the control point pulling the curve out of `from` and `c2` the one pulling it
+ * into `to`. `from` is never later than `to`.
+ */
+export interface BezierCurve {
+  from: GesturePoint;
+  c1: GesturePoint;
+  c2: GesturePoint;
+  to: GesturePoint;
+}
+
+/** A straight Bezier between two points, with its controls a third of the way in from each end. */
+export function straightBezier(a: GesturePoint, b: GesturePoint): BezierCurve {
+  const [from, to] = a.time <= b.time ? [a, b] : [b, a];
+  return {
+    from,
+    c1: lerpPoint(from, to, 1 / 3),
+    c2: lerpPoint(from, to, 2 / 3),
+    to,
+  };
+}
+
+/**
+ * The curve with one handle moved.
+ *
+ * @remarks Moving an end carries its control with it, the way a vector editor moves a node with
+ * its handle. Controls are held inside the span between the ends so the curve cannot fold back
+ * in time, and the ends are kept in order.
+ */
+export function moveBezierHandle(
+  curve: BezierCurve,
+  handle: BezierHandle,
+  point: GesturePoint,
+): BezierCurve {
+  const next = { ...curve };
+  switch (handle) {
+    case 'from': {
+      const time = Math.min(point.time, curve.to.time);
+      const dt = time - curve.from.time;
+      const dm = point.midi - curve.from.midi;
+      next.from = { time, midi: point.midi };
+      next.c1 = { time: curve.c1.time + dt, midi: curve.c1.midi + dm };
+      break;
+    }
+    case 'to': {
+      const time = Math.max(point.time, curve.from.time);
+      const dt = time - curve.to.time;
+      const dm = point.midi - curve.to.midi;
+      next.to = { time, midi: point.midi };
+      next.c2 = { time: curve.c2.time + dt, midi: curve.c2.midi + dm };
+      break;
+    }
+    case 'c1':
+      next.c1 = point;
+      break;
+    case 'c2':
+      next.c2 = point;
+      break;
+  }
+  const low = next.from.time;
+  const high = next.to.time;
+  next.c1 = { time: Math.min(Math.max(next.c1.time, low), high), midi: next.c1.midi };
+  next.c2 = { time: Math.min(Math.max(next.c2.time, low), high), midi: next.c2.midi };
+  return next;
+}
+
+/**
+ * Samples a curve into points that advance strictly in time.
+ *
+ * @remarks A sample that would step back in time is dropped, so the points are always usable as
+ * curve anchors even where the controls cross over each other.
+ */
+export function sampleBezier(curve: BezierCurve, count: number): GesturePoint[] {
+  const steps = Math.max(2, Math.floor(count));
+  const points: GesturePoint[] = [];
+  let previous = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i <= steps; i += 1) {
+    const point = bezierAt(curve, i / steps);
+    if (point.time <= previous) {
+      continue;
+    }
+    previous = point.time;
+    points.push(point);
+  }
+  return points;
+}
+
+/** The point a curve passes through at parameter `t`, from 0 at `from` to 1 at `to`. */
+export function bezierAt(curve: BezierCurve, t: number): GesturePoint {
+  const u = 1 - t;
+  const a = u * u * u;
+  const b = 3 * u * u * t;
+  const c = 3 * u * t * t;
+  const d = t * t * t;
+  return {
+    time: a * curve.from.time + b * curve.c1.time + c * curve.c2.time + d * curve.to.time,
+    midi: a * curve.from.midi + b * curve.c1.midi + c * curve.c2.midi + d * curve.to.midi,
+  };
+}
+
+function lerpPoint(a: GesturePoint, b: GesturePoint, t: number): GesturePoint {
+  return { time: a.time + (b.time - a.time) * t, midi: a.midi + (b.midi - a.midi) * t };
+}
+
 /** A gesture in progress, drawn over the committed state until it is released. */
 export type EditorPreview =
   | { kind: 'spanSelect'; x0: number; x1: number }
@@ -398,5 +507,12 @@ export type EditorPreview =
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
   | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
+  | {
+      kind: 'bezier';
+      curve: BezierCurve;
+      points: readonly GesturePoint[];
+      active: BezierHandle | null;
+      label: string;
+    }
   | { kind: 'span'; blob: BlobId | null; start: number; end: number; label: string }
   | { kind: 'split'; blob: BlobId; time: number; label: string };

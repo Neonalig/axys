@@ -381,7 +381,7 @@ const TOOLS: readonly { id: ToolCommandId; label: string; shortcut: string; alt?
   { id: 'split', label: 'Slice Tool', shortcut: 'X', alt: 'S' },
   { id: 'pitch', label: 'Pitch Tool', shortcut: 'P' },
   { id: 'pen', label: 'Draw Tool', shortcut: 'B' },
-  { id: 'line', label: 'Ramp Tool', shortcut: 'N' },
+  { id: 'bezier', label: 'Bezier Tool', shortcut: 'N' },
   { id: 'time', label: 'Time Tool', shortcut: 'T' },
 ];
 

@@ -123,7 +123,12 @@ const TOOLS: readonly ToolEntry[] = [
   { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob where you click' },
   { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Drags whole blobs in pitch' },
   { id: 'pen', label: 'Draw Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target' },
-  { id: 'line', label: 'Ramp Tool', icon: 'line', tooltip: 'Draws a straight pitch transition' },
+  {
+    id: 'bezier',
+    label: 'Bezier Tool',
+    icon: 'bezier',
+    tooltip: 'Draws a curved pitch transition',
+  },
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time' },
 ];
 

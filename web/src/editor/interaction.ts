@@ -23,6 +23,8 @@ import { noteNameWithCents } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
 import type { EditorRenderer } from './renderer.js';
 import type {
+  BezierCurve,
+  BezierHandle,
   EditorPreview,
   GesturePoint,
   Hit,
@@ -41,10 +43,13 @@ import {
   FINE_FACTOR,
   gestureAnchors,
   modifiersOf,
+  moveBezierHandle,
+  sampleBezier,
   simplifyGesture,
   snapMidi,
   SNAP_PIXELS,
   snapTime,
+  straightBezier,
 } from './tools.js';
 import { displayRatio, fitView, isVisible, RULER_HEIGHT, snapViewTo, Viewport } from './view.js';
 
@@ -78,7 +83,8 @@ type Gesture =
   | { kind: 'pitch'; blobs: BlobId[]; semitones: number }
   | { kind: 'anchor'; blob: BlobId; index: number; time: number; midi: number }
   | { kind: 'pen'; points: GesturePoint[] }
-  | { kind: 'line'; from: GesturePoint; to: GesturePoint; curved: boolean }
+  | { kind: 'bezierDraw'; from: GesturePoint; to: GesturePoint }
+  | { kind: 'bezierHandle'; handle: BezierHandle }
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
   | { kind: 'edge'; blob: BlobId; edge: Edge; sourceTime: number; scale: number | null }
   | { kind: 'audition'; start: number; end: number }
@@ -86,6 +92,15 @@ type Gesture =
   | { kind: 'split'; blob: BlobId; time: number };
 
 const WHEEL_ZOOM = 0.002;
+
+/** Grab radius in pixels around a Bezier end or control point. */
+const BEZIER_HANDLE_RADIUS = 8;
+
+/** Pixels of curve per sample when a Bezier is committed. */
+const BEZIER_SAMPLE_PIXELS = 6;
+
+/** Most samples one committed Bezier carries. */
+const BEZIER_MAX_SAMPLES = 96;
 const KEY_ZOOM = 1.3;
 
 /**
@@ -109,6 +124,13 @@ export class EditorController {
   #moved = false;
   #gesture: Gesture | null = null;
   #hover: Hit | null = null;
+  /**
+   * The Bezier being shaped, between drawing it and keeping it.
+   *
+   * @remarks Kept by Enter, a tool change or the next curve, and dropped by Escape. Nothing
+   * reaches the session until it is kept, so shaping one leaves no history.
+   */
+  #bezier: BezierCurve | null = null;
 
   constructor(options: EditorControllerOptions) {
     this.#options = options;
@@ -126,7 +148,14 @@ export class EditorController {
     this.#canvas.addEventListener('contextmenu', this.#onContextMenu);
     this.#canvas.addEventListener('dblclick', this.#onDoubleClick);
 
-    this.#unsubscribe = this.#store.subscribe(() => {
+    this.#unsubscribe = this.#store.subscribe((state) => {
+      if (this.#bezier !== null && this.#gesture === null) {
+        if (state.phase !== 'ready') {
+          this.#dropBezier();
+        } else if (state.tool !== 'bezier') {
+          this.#keepBezier();
+        }
+      }
       this.render();
     });
     this.#observer =
@@ -249,6 +278,7 @@ export class EditorController {
   /** Switches the armed tool. */
   setTool(tool: ToolId): void {
     this.#cancelGesture();
+    if (tool !== 'bezier') this.#keepBezier();
     this.#store.update({ tool });
     this.#applyCursor(this.#hover);
   }
@@ -488,6 +518,7 @@ export class EditorController {
   /** Detaches every listener and stops drawing. */
   dispose(): void {
     this.#cancelGesture();
+    this.#bezier = null;
     this.#canvas.removeEventListener('pointerdown', this.#onPointerDown);
     this.#canvas.removeEventListener('pointermove', this.#onPointerMove);
     this.#canvas.removeEventListener('pointerup', this.#onPointerUp);
@@ -548,6 +579,9 @@ export class EditorController {
       const hit = this.hitTest(point.x, point.y);
       this.#hover = hit;
       this.#applyCursor(hit);
+      if (this.#bezierHandleAt(point) !== null) {
+        this.#canvas.style.cursor = 'grab';
+      }
       this.#renderer?.setHover({
         x: point.x,
         y: point.y,
@@ -648,6 +682,16 @@ export class EditorController {
   };
 
   #onKeyDown = (event: KeyboardEvent): void => {
+    if (this.#bezier !== null && this.#gesture === null) {
+      if (event.key === 'Enter' || event.key === 'Escape') {
+        if (event.key === 'Enter') this.#keepBezier();
+        else this.#dropBezier();
+        // The window's own Escape clears the selection, which is not what dropping a curve means.
+        event.stopPropagation();
+        event.preventDefault();
+        return;
+      }
+    }
     if (event.key === 'Escape' && this.#gesture !== null) {
       this.#cancelGesture();
       if (this.#pointerId !== null) {
@@ -739,9 +783,16 @@ export class EditorController {
       // stroke belongs to whatever it crosses rather than to the blob it happened to start on.
       case 'pen':
         return { kind: 'pen', points: [{ time: hit.time, midi: hit.midi }] };
-      case 'line': {
+      case 'bezier': {
+        const handle = this.#bezierHandleAt(this.#origin);
+        if (handle !== null) {
+          return { kind: 'bezierHandle', handle };
+        }
+        // Drawing another curve keeps the one being shaped, the way a vector editor finishes a
+        // path when the next one starts.
+        this.#keepBezier();
         const from = { time: hit.time, midi: hit.midi };
-        return { kind: 'line', from, to: from, curved: modifiers.fine };
+        return { kind: 'bezierDraw', from, to: from };
       }
       case 'time': {
         if (hit.blob === null) {
@@ -849,12 +900,31 @@ export class EditorController {
         }
         break;
       }
-      case 'line': {
+      case 'bezierDraw': {
         const value = modifiers.constrain
           ? gesture.from.midi
           : snapMidi(midi, this.#pitchSnap(modifiers), this.#store.state.edits?.scale ?? null);
         gesture.to = { time: this.#snapTime(time, modifiers), midi: value };
-        gesture.curved = modifiers.fine;
+        break;
+      }
+      case 'bezierHandle': {
+        const curve = this.#bezier;
+        if (curve === null) {
+          break;
+        }
+        // The ends snap like any drawn point; the controls only shape, so they move freely.
+        const end = gesture.handle === 'from' || gesture.handle === 'to';
+        const point = end
+          ? {
+              time: this.#snapTime(time, modifiers),
+              midi: snapMidi(
+                midi,
+                this.#pitchSnap(modifiers),
+                this.#store.state.edits?.scale ?? null,
+              ),
+            }
+          : { time, midi: modifiers.fine ? this.#fineMidi(midi) : midi };
+        this.#bezier = moveBezierHandle(curve, gesture.handle, point);
         break;
       }
       case 'time': {
@@ -911,7 +981,8 @@ export class EditorController {
   #updatePreview(): void {
     const gesture = this.#gesture;
     if (gesture === null) {
-      this.#renderer?.setPreview(null);
+      this.#renderer?.setPreview(this.#bezierPreview(null));
+      this.render();
       return;
     }
     this.#renderer?.setPreview(this.#previewOf(gesture));
@@ -962,12 +1033,14 @@ export class EditorController {
           points: gesture.points,
           label: `Draw Curve ${gesture.points.length}`,
         };
-      case 'line':
+      case 'bezierDraw':
         return {
           kind: 'curve',
           points: [gesture.from, gesture.to],
-          label: `Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
+          label: `Bezier ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
         };
+      case 'bezierHandle':
+        return this.#bezierPreview(gesture.handle);
       case 'split':
         return {
           kind: 'split',
@@ -1041,18 +1114,15 @@ export class EditorController {
         this.#commitStroke(simplified, 'smooth', 'Draw Curve');
         break;
       }
-      case 'line': {
-        const [from, to] =
-          gesture.from.time <= gesture.to.time
-            ? [gesture.from, gesture.to]
-            : [gesture.to, gesture.from];
-        this.#commitStroke(
-          [from, to],
-          gesture.curved ? 'smooth' : 'linear',
-          `Draw Ramp ${noteNameWithCents(gesture.to.midi, this.#accidentals())}`,
-        );
+      case 'bezierDraw':
+        // A press that never became a line leaves nothing to shape.
+        if (this.#moved && gesture.to.time !== gesture.from.time) {
+          this.#bezier = straightBezier(gesture.from, gesture.to);
+          this.#announce('Drag the handles to shape the curve. Enter keeps it, Escape drops it');
+        }
         break;
-      }
+      case 'bezierHandle':
+        break;
       case 'time':
         if (gesture.seconds !== 0) {
           this.#commit(
@@ -1097,7 +1167,7 @@ export class EditorController {
       case 'loop':
         break;
     }
-    this.render();
+    this.#updatePreview();
   }
 
   /**
@@ -1407,7 +1477,96 @@ export class EditorController {
       return;
     }
     this.#gesture = null;
+    this.#updatePreview();
+  }
+
+  /** Which handle of the curve being shaped lies under a canvas position, if any. */
+  #bezierHandleAt(point: Point): BezierHandle | null {
+    const curve = this.#bezier;
+    if (curve === null || this.#store.state.tool !== 'bezier') {
+      return null;
+    }
+    const viewport = this.viewport;
+    let best: BezierHandle | null = null;
+    let bestDistance = BEZIER_HANDLE_RADIUS;
+    // Controls first, so a control resting on its own end is still reachable.
+    for (const handle of ['c1', 'c2', 'from', 'to'] as const) {
+      const at = curve[handle];
+      const distance = Math.hypot(
+        viewport.timeToX(at.time) - point.x,
+        viewport.midiToY(at.midi) - point.y,
+      );
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = handle;
+      }
+    }
+    return best;
+  }
+
+  #bezierPreview(active: BezierHandle | null): EditorPreview | null {
+    const curve = this.#bezier;
+    if (curve === null) {
+      return null;
+    }
+    return {
+      kind: 'bezier',
+      curve,
+      points: sampleBezier(curve, this.#bezierSamples(curve)),
+      active,
+      label: `Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}  Enter Keeps`,
+    };
+  }
+
+  /** Samples a curve at roughly one point per few pixels of its length on screen. */
+  #bezierSamples(curve: BezierCurve): number {
+    const viewport = this.viewport;
+    const points = [curve.from, curve.c1, curve.c2, curve.to];
+    let length = 0;
+    for (let i = 1; i < points.length; i += 1) {
+      const a = points[i - 1];
+      const b = points[i];
+      if (a === undefined || b === undefined) continue;
+      length += Math.hypot(
+        viewport.timeToX(b.time) - viewport.timeToX(a.time),
+        viewport.midiToY(b.midi) - viewport.midiToY(a.midi),
+      );
+    }
+    return Math.min(BEZIER_MAX_SAMPLES, Math.max(8, Math.ceil(length / BEZIER_SAMPLE_PIXELS)));
+  }
+
+  /** Commits the curve being shaped, as one stroke over every blob it crosses. */
+  #keepBezier(): void {
+    const curve = this.#bezier;
+    if (curve === null) {
+      return;
+    }
+    this.#bezier = null;
     this.#renderer?.setPreview(null);
+    const viewport = this.viewport;
+    // Reduced the way a pen stroke is, so the curve keeps its shape in a handful of anchors
+    // rather than one per sample.
+    const points = simplifyGesture(
+      sampleBezier(curve, this.#bezierSamples(curve)),
+      viewport.secondsPerPixel,
+      viewport.semitonesPerPixel,
+    );
+    this.#commitStroke(
+      points,
+      'smooth',
+      `Draw Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}`,
+    );
+    this.render();
+  }
+
+  /** Throws away the curve being shaped. */
+  #dropBezier(): void {
+    if (this.#bezier === null) {
+      return;
+    }
+    this.#bezier = null;
+    this.#renderer?.setPreview(null);
+    this.#announce('Curve discarded');
     this.render();
   }
 

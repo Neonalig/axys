@@ -183,7 +183,7 @@ export interface Selection {
 export type FollowMode = 'page' | 'centre';
 
 /** Editor tool in use. */
-export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'time';
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'bezier' | 'time';
 
 /** Transport position and mode. */
 export interface TransportState {
@@ -257,7 +257,7 @@ Cancel Import lives under the import progress it cancels. Each keeps its shortcu
 presented.
 
 The tools carry the letters Melodyne and Ableton have already trained: `V` select, `X` or `S`
-slice, `P` pitch, `B` draw, `N` ramp, `T` time. The operations sit beside them on `I` and `O`, and
+slice, `P` pitch, `B` draw, `N` Bezier, `T` time. The operations sit beside them on `I` and `O`, and
 the two buttons sit in that order. Everything else avoids the chords the browser answers first, so
 Reset is `R` and Smooth Span is `H` rather than `Ctrl+R` and `Ctrl+H`. Zoom Fit is `.` and Exclude
 Blob is `E`; no command takes a bare digit, because the digits belong to the transport.
@@ -383,7 +383,7 @@ range, hover readout, drag preview).
 - Dragging previews on the dragged object itself before commitment.
 - Modifiers: Shift constrains, Alt is fine adjustment, Ctrl/Cmd toggles snap. With the Select tool
   Ctrl adds a span of its own to the selection and Shift stretches the one that is there.
-- A pen or line stroke starts anywhere, including over open canvas, and applies to every blob it
+- A pen or Bezier stroke starts anywhere, including over open canvas, and applies to every blob it
   crosses, as one `EditOp::Group` so undo is one step.
 - Every other gesture commits exactly one `EditOp`, so undo is one step.
 - Numeric entry for the selected object's pitch and time coexists with dragging.

@@ -65,7 +65,7 @@ export interface Selection {
 }
 
 /** Editor tool in use. */
-export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'line' | 'time';
+export type ToolId = 'select' | 'split' | 'pitch' | 'pen' | 'bezier' | 'time';
 
 /**
  * How the view keeps up with a playing playhead.

@@ -318,7 +318,7 @@ folded into the operation and restored by Discard, but Apply cannot tell the two
 
 ### A stroke belongs to the take, not to a blob
 
-The pen and the line start anywhere, including over open canvas, and apply to every blob they
+The pen and the Bezier start anywhere, including over open canvas, and apply to every blob they
 cross. Each blob is given the part of the stroke that falls inside it, with a point interpolated at
 each edge the stroke crosses so a curve reaches the boundary instead of stopping at the last sample
 inside it.
@@ -1366,9 +1366,23 @@ stays on the inspector fold, where a panel beside a pane is exactly what it show
 the pair swapped so the glyph names what pressing it will do rather than where the panel is.
 
 The pitch tool takes `list-chevrons-up-down`, which is the axis it drags along, and hands its
-spline to the ramp tool, which is what a spline actually draws. Align Guide takes
+spline to the Bezier tool, which is what a spline actually draws. Align Guide takes
 `ruler-dimension-line` rather than the time tool's arrows, and the keyboard cheatsheet takes a
 keyboard. The slice tool takes `slice`, the time tool `timer` and follow `arrow-right-from-line`.
+
+### The ramp is a Bezier that is shaped before it is kept
+
+The ramp tool drew a straight line, and Alt bent it into one fixed curve. It is now a cubic
+Bezier: the drag draws the line, and on release four handles appear, the two ends and a control
+pulling on each. Enter keeps it, Escape drops it, and switching tool or starting another curve
+keeps it too, which is how a vector editor finishes a path. Shaping it touches nothing in the
+session, so a curve dragged about for a minute is still one undo step when it is kept.
+
+The curve is kept as a stroke like the pen's: sampled at a few pixels of screen length per point,
+then reduced to the fewest anchors within a pixel of it and joined smoothly, so what is kept is
+what was on screen at the zoom it was shaped at. Controls
+are held between the ends in time, and a sample that would step backwards is dropped, because a
+pitch curve cannot fold back on itself.
 
 ### Shortcuts on keys a browser leaves alone
 

@@ -19,7 +19,7 @@ import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { drawWaveform } from './layers/waveform.js';
-import type { EditorPreview } from './tools.js';
+import type { BezierCurve, BezierHandle, EditorPreview } from './tools.js';
 import type { Viewport } from './view.js';
 import { RULER_HEIGHT } from './view.js';
 
@@ -230,6 +230,11 @@ export class EditorRenderer {
         break;
       case 'curve':
         drawCurvePreview(ctx, viewport, theme, preview.points);
+        labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
+        break;
+      case 'bezier':
+        drawCurvePreview(ctx, viewport, theme, preview.points);
+        drawBezierHandles(ctx, viewport, theme, preview.curve, preview.active);
         labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
         break;
       case 'span':
@@ -522,6 +527,60 @@ function drawCurvePreview(
     ctx.beginPath();
     ctx.arc(viewport.timeToX(last.time), viewport.midiToY(last.midi), 4, 0, Math.PI * 2);
     ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Draws a Bezier's control arms and its four handles.
+ *
+ * @remarks Ends are filled discs and controls hollow squares, the convention vector editors use to
+ * tell a point the curve passes through from one that only pulls on it.
+ */
+function drawBezierHandles(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  curve: BezierCurve,
+  active: BezierHandle | null,
+): void {
+  const at = (point: { time: number; midi: number }): { x: number; y: number } => ({
+    x: viewport.timeToX(point.time),
+    y: viewport.midiToY(point.midi),
+  });
+  const from = at(curve.from);
+  const c1 = at(curve.c1);
+  const c2 = at(curve.c2);
+  const to = at(curve.to);
+  ctx.save();
+  ctx.strokeStyle = theme.handle;
+  ctx.lineWidth = viewport.crispWidth();
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(c1.x, c1.y);
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(c2.x, c2.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  for (const [handle, point] of [
+    ['from', from],
+    ['to', to],
+  ] as const) {
+    ctx.fillStyle = handle === active ? theme.handleActive : theme.pitchTarget;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.lineWidth = 1.5;
+  for (const [handle, point] of [
+    ['c1', c1],
+    ['c2', c2],
+  ] as const) {
+    ctx.fillStyle = theme.bg;
+    ctx.strokeStyle = handle === active ? theme.handleActive : theme.pitchTarget;
+    ctx.fillRect(point.x - 4, point.y - 4, 8, 8);
+    ctx.strokeRect(point.x - 4, point.y - 4, 8, 8);
   }
   ctx.restore();
 }

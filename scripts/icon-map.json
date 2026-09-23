@@ -24,7 +24,7 @@
     "reset": "rotate-ccw",
     "pitch": "list-chevrons-up-down",
     "pen": "pen-tool",
-    "line": "spline",
+    "bezier": "spline",
     "smooth": "waves",
     "time": "timer",
     "alignGuide": "ruler-dimension-line",
