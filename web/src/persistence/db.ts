@@ -9,6 +9,7 @@
 
 import { isProject, parseJson } from '../core/json';
 import type { Project } from '../core/types';
+import { clipEnd } from '../core/types';
 
 /** Why a persistence operation could not complete. */
 export type PersistenceFailure = 'unavailable' | 'quota' | 'missing' | 'corrupt' | 'io';
@@ -189,10 +190,7 @@ function summarise(id: string, document: Project, updated: number): ProjectSumma
     name: document.name,
     updated,
     sourceName: document.edits.clips[0]?.source.name ?? document.name,
-    duration: Math.max(
-      0,
-      ...document.edits.clips.map((clip) => clip.position + clip.source.duration),
-    ),
+    duration: Math.max(0, ...document.edits.clips.map((clip) => clipEnd(clip))),
   };
 }
 

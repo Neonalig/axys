@@ -24,6 +24,7 @@ import type {
   MappingProposal,
   TimelineMap,
 } from '../core/types.js';
+import type { ClipPart } from '../core/wasm.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
@@ -89,6 +90,21 @@ export interface Workspace {
 
   /** True while an operation is previewing, which is when undo and redo are not the user's. */
   readonly previewing: boolean;
+
+  /**
+   * Pastes copied parts of clips as new clips at a project time, as one undo step.
+   *
+   * @remarks The earliest part lands at `at` and the rest keep their distance from it.
+   */
+  pasteClips(parts: readonly ClipPart[], at: number): void;
+
+  /**
+   * Takes project spans out of clips on the lane, as one undo step.
+   *
+   * @remarks A span covering a clip removes it, one reaching an end trims it, and one inside it
+   * leaves the clip in two.
+   */
+  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void;
 
   /** Undoes the newest edit. False when there was nothing to undo. */
   undo(): boolean;

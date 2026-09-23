@@ -229,6 +229,8 @@ export class AudioEngine {
     const placements: ClipPlacement[] = plans.map((placed) => ({
       clip: placed.clip,
       position: placed.position,
+      window: placed.window ?? null,
+      heard: placed.heard ?? null,
       plan: this.#encoder.encode(JSON.stringify(placed.plan)),
       layers: (placed.layers ?? []).map((layer) => this.#encoder.encode(JSON.stringify(layer))),
     }));

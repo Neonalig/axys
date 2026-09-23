@@ -139,6 +139,10 @@ export function evaluateCurve(curve: PitchCurve, seconds: number): number | null
   if (a === undefined || b === undefined) {
     return last.midi;
   }
+  // A released segment follows the blob's own pitch rather than a drawn one.
+  if (a.interp === 'release') {
+    return null;
+  }
   const span = b.time - a.time;
   const t = span <= 0 ? 0 : (seconds - a.time) / span;
   switch (a.interp) {

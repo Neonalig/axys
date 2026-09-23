@@ -17,7 +17,7 @@ import type {
   PitchTrackArrays,
   RenderPlan,
 } from '../core/types.js';
-import { clipOf, displayTitle } from '../core/types.js';
+import { clipEnd, clipOf, clipStart, displayTitle } from '../core/types.js';
 
 /** A clip outside the editor's layer, placed in project seconds for drawing. */
 export interface OtherSource {
@@ -104,10 +104,7 @@ export function hasOverlaps(edits: EditState | null): boolean {
       const a = clips[i];
       const b = clips[j];
       if (a === undefined || b === undefined) continue;
-      if (
-        a.position < b.position + b.source.duration - 1e-9 &&
-        b.position < a.position + a.source.duration - 1e-9
-      ) {
+      if (clipStart(a) < clipEnd(b) - 1e-9 && clipStart(b) < clipEnd(a) - 1e-9) {
         return true;
       }
     }

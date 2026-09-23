@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { ClipboardContent, PitchCutFill } from './clipboard.js';
 import type { OtherSource } from './sources.js';
 import type {
   Blob,
@@ -14,6 +15,7 @@ import type {
   TimingConflict,
   ViewState,
 } from '../core/types.js';
+import { clipEnd } from '../core/types.js';
 import { barSecondsAt } from '../core/timeline.js';
 
 /** The whole application state. Replaced wholesale on each change, never mutated in place. */
@@ -57,7 +59,31 @@ export interface AppState {
   mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
+  /** What editing acts on: blobs and the pitch in them together, blobs alone, or pitch alone. */
+  editMode: EditMode;
+  /** Whether detected pitch outside every blob is drawn and can be edited. */
+  outsidePitch: boolean;
+  /** What cutting pitch leaves in the span it came from. */
+  pitchCutFill: PitchCutFill;
+  /** What Copy or Cut last took, or `null` before either has. */
+  clipboard: ClipboardContent | null;
   dirty: boolean;
+}
+
+/**
+ * What editing acts on.
+ *
+ * @remarks `both` moves a blob's audio, its pitch and its edits together. `blob` changes which
+ * audio a blob covers and moves nothing heard. `pitch` changes the pitch line and moves no audio.
+ */
+export type EditMode = 'both' | 'blob' | 'pitch';
+
+/** The edit modes in the order the toolbar and the cycle key present them. */
+export const EDIT_MODES: readonly EditMode[] = ['both', 'blob', 'pitch'];
+
+/** What an edit mode is called in the UI. */
+export function editModeLabel(mode: EditMode): string {
+  return mode === 'both' ? 'Blob and Pitch' : mode === 'blob' ? 'Blob' : 'Pitch';
 }
 
 /**
@@ -206,6 +232,10 @@ export function initialState(): AppState {
     inspectorCollapsed: false,
     mixerCollapsed: true,
     inspectorWidth: 328,
+    editMode: 'both',
+    outsidePitch: false,
+    pitchCutFill: 'sung',
+    clipboard: null,
     dirty: false,
   };
 }
@@ -220,7 +250,7 @@ export function projectEnd(state: AppState): number {
   const edits = state.edits;
   if (edits === null) return 0;
   let end = 0;
-  for (const clip of edits.clips) end = Math.max(end, clip.position + clip.source.duration);
+  for (const clip of edits.clips) end = Math.max(end, clipEnd(clip));
   for (const reference of edits.references) {
     end = Math.max(end, reference.position + reference.source.duration);
   }

@@ -17,7 +17,7 @@ export interface Tuning {
 export type AccidentalStyle = 'sharps' | 'flats';
 
 /** Interpolation character leaving an anchor toward the next one. */
-export type Interp = 'linear' | 'cubic' | 'hold' | 'smooth';
+export type Interp = 'linear' | 'cubic' | 'hold' | 'smooth' | 'release';
 
 /** One editable point on a pitch curve. */
 export interface Anchor {
@@ -415,7 +415,11 @@ export type EditOp =
   | { type: 'resetRange'; start: number; end: number }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setGain'; blob: BlobId; gainDb: number }
-  | { type: 'deleteBlobs'; blobs: BlobId[] }
+  | { type: 'deleteBlobs'; blobs: BlobId[]; keepAudio?: boolean }
+  | { type: 'addBlobs'; blobs: Blob[] }
+  | { type: 'shiftBlob'; blob: BlobId; seconds: number }
+  | { type: 'replacePitch'; blob: BlobId; start: number; end: number; fill: PitchFill }
+  | { type: 'trimClip'; clip: ClipId; start: number; end: number }
   | { type: 'addClip'; clip: Clip; ripple?: boolean; exact?: boolean }
   | { type: 'moveClip'; clip: ClipId; position: number; exact?: boolean; ripple?: boolean }
   | { type: 'removeClip'; clip: ClipId }
@@ -438,6 +442,15 @@ export type EditOp =
   | { type: 'setTempoMap'; events: TempoEvent[] }
   | { type: 'setMeterMap'; events: MeterEvent[] }
   | { type: 'group'; ops: EditOp[] };
+
+/**
+ * What a span of a blob sounds after a `replacePitch`.
+ *
+ * @remarks `contour` is a heard contour in project seconds; `sung` is the blob's own pitch; `flat`
+ * is a level line at the span's median detected pitch.
+ */
+export type PitchFill =
+  { kind: 'contour'; anchors: Anchor[] } | { kind: 'sung' } | { kind: 'flat' };
 
 /** Undo and redo stacks over a project's edit history. */
 export interface History {
@@ -515,6 +528,8 @@ export interface Clip {
   silenced: Span[];
   /** What the clip is called in place of its file's name. */
   name?: string;
+  /** The part of the source that is heard, in clip source seconds; absent is all of it. */
+  window?: Span;
 }
 
 /** Audio heard beside the vocal and never edited or warped. */
@@ -544,6 +559,25 @@ export const CLIP_ID_BITS = 20;
 /** The clip a blob belongs to. */
 export function clipOf(blob: BlobId): ClipId {
   return Math.floor(blob / 2 ** CLIP_ID_BITS);
+}
+
+/** The part of a clip's source that is heard, in its source seconds, held inside the source. */
+export function clipWindow(clip: Clip): Span {
+  const duration = Math.max(0, clip.source.duration);
+  const window = clip.window;
+  if (window === undefined) return { start: 0, end: duration };
+  const start = Math.min(duration, Math.max(0, window.start));
+  return { start, end: Math.min(duration, Math.max(start, window.end)) };
+}
+
+/** Project seconds at which a clip starts being heard. */
+export function clipStart(clip: Clip): number {
+  return clip.position + clipWindow(clip).start;
+}
+
+/** Project seconds at which a clip stops being heard. */
+export function clipEnd(clip: Clip): number {
+  return clip.position + clipWindow(clip).end;
 }
 
 /** What a source is called on the desk and over its blobs: its file name without the extension. */

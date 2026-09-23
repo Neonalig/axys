@@ -12,7 +12,7 @@ import { othersOf } from '../app/sources.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
-import { clipOf, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
+import { clipEnd, clipOf, clipStart, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -1745,7 +1745,7 @@ export class EditorController {
   #otherSpans(clip: number): [number, number][] {
     return (this.#store.state.edits?.clips ?? [])
       .filter((entry) => entry.id !== clip)
-      .map((entry): [number, number] => [entry.position, entry.position + entry.source.duration]);
+      .map((entry): [number, number] => [clipStart(entry), clipEnd(entry)]);
   }
 
   #playhead(): number {

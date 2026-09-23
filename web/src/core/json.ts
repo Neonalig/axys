@@ -49,6 +49,7 @@ import type {
   ScaleSettings,
   SegmentParams,
   SourceInfo,
+  PitchFill,
   Span,
   Subregion,
   TempoEvent,
@@ -132,7 +133,7 @@ function isLiteral<T extends string>(allowed: readonly T[], value: unknown): val
   return typeof value === 'string' && (allowed as readonly string[]).includes(value);
 }
 
-const INTERPS = ['linear', 'cubic', 'hold', 'smooth'] as const;
+const INTERPS = ['linear', 'cubic', 'hold', 'smooth', 'release'] as const;
 const VOICINGS = ['voiced', 'unvoiced', 'silence'] as const;
 const EDGES = ['start', 'end'] as const;
 const CONFLICT_KINDS = ['overlap', 'gap'] as const;
@@ -522,7 +523,13 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   resetRange: (op) => isNumber(op.start) && isNumber(op.end),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
   setGain: (op) => isNumber(op.blob) && isNumber(op.gainDb),
-  deleteBlobs: (op) => isNumberArray(op.blobs),
+  deleteBlobs: (op) =>
+    isNumberArray(op.blobs) && (op.keepAudio === undefined || isBoolean(op.keepAudio)),
+  addBlobs: (op) => Array.isArray(op.blobs) && op.blobs.every(isBlob),
+  shiftBlob: (op) => isNumber(op.blob) && isNumber(op.seconds),
+  replacePitch: (op) =>
+    isNumber(op.blob) && isNumber(op.start) && isNumber(op.end) && isPitchFill(op.fill),
+  trimClip: (op) => isNumber(op.clip) && isNumber(op.start) && isNumber(op.end),
   addClip: (op) => isClip(op.clip),
   moveClip: (op) => isNumber(op.clip) && isNumber(op.position),
   removeClip: (op) => isNumber(op.clip),
@@ -545,6 +552,12 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   setMeterMap: (op) => Array.isArray(op.events) && op.events.every(isMeterEvent),
   group: (op) => Array.isArray(op.ops) && op.ops.every(isEditOp),
 };
+
+function isPitchFill(value: unknown): value is PitchFill {
+  if (!isRecord(value)) return false;
+  if (value.kind === 'sung' || value.kind === 'flat') return true;
+  return value.kind === 'contour' && Array.isArray(value.anchors) && value.anchors.every(isAnchor);
+}
 
 /** Accepts one edit operation of the tagged union. */
 export function isEditOp(value: unknown): value is EditOp {
@@ -664,7 +677,8 @@ export function isClip(value: unknown): value is Clip {
     isBlobSet(value.blobs) &&
     Array.isArray(value.silenced) &&
     value.silenced.every(isSpan) &&
-    (value.name === undefined || isString(value.name))
+    (value.name === undefined || isString(value.name)) &&
+    (value.window === undefined || isSpan(value.window))
   );
 }
 
@@ -695,6 +709,10 @@ export interface ClipPlan {
   clip: number;
   /** Project seconds at which the clip's output second 0 sits. */
   position: number;
+  /** The part of the clip's source that is heard, in its source seconds. */
+  window?: Span;
+  /** Output seconds, from the clip's output second 0, at which it stops being heard. */
+  heard?: number;
   /** The clip's first voice. */
   plan: RenderPlan;
   /** Every further voice, one per set of blobs a timing edit laid over the others. */
@@ -707,6 +725,8 @@ export function isClipPlan(value: unknown): value is ClipPlan {
     isRecord(value) &&
     isNumber(value.clip) &&
     isNumber(value.position) &&
+    (value.window === undefined || isSpan(value.window)) &&
+    (value.heard === undefined || isNumber(value.heard)) &&
     isRenderPlan(value.plan) &&
     (value.layers === undefined ||
       (Array.isArray(value.layers) && value.layers.every(isRenderPlan)))

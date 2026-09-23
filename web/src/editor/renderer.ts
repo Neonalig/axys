@@ -21,7 +21,7 @@ import { drawRuler } from './layers/ruler.js';
 import { drawWaveform, fillEnvelope } from './layers/waveform.js';
 import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
 import { othersOf } from '../app/sources.js';
-import { clipOf } from '../core/types.js';
+import { clipEnd, clipOf, clipStart, clipWindow } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
 import { peaksFor } from './peaks.js';
 import type { PeakEnvelope } from './peaks.js';
@@ -447,7 +447,16 @@ export class EditorRenderer {
     }
     const shift = position - entry.position;
     const middle = viewport.plotTop + viewport.plotHeight / 2;
-    drawWaveBand(ctx, viewport, theme, position, entry.source.duration, null, middle);
+    const window = clipWindow(entry);
+    drawWaveBand(
+      ctx,
+      viewport,
+      theme,
+      position + window.start,
+      window.end - window.start,
+      null,
+      middle,
+    );
     const moving = this.#splitFor(state, clip).moving;
     const view = viewport.view;
     const shifted = new Viewport(
@@ -868,8 +877,8 @@ interface DragSplit {
 
 function splitClip(state: AppState, clip: number): DragSplit {
   const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
-  const start = entry?.position ?? 0;
-  const end = start + (entry?.source.duration ?? 0);
+  const start = entry === undefined ? 0 : clipStart(entry);
+  const end = entry === undefined ? 0 : clipEnd(entry);
   const within = (time: number): boolean => time >= start && time <= end;
   const mine = (blob: Blob): boolean => clipOf(blob.id) === clip;
   return {

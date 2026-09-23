@@ -40,6 +40,10 @@ export interface OutputRange {
 export interface ClipPlacement {
   clip: number;
   position: number;
+  /** The part of the clip's source that is heard, in its source seconds; `null` is all of it. */
+  window: OutputRange | null;
+  /** Output seconds from the clip's start at which it stops being heard; `null` is its end. */
+  heard: number | null;
   plan: Uint8Array;
   /** A plan per further voice, for blobs a timing edit laid over the others. */
   layers: Uint8Array[];
@@ -422,6 +426,10 @@ interface ClipVoice {
   offset: number;
   /** Whether the clip is on the lane, which an undo of its import takes it off. */
   onLane: boolean;
+  /** Source frames the original strip plays between, the clip's trim. */
+  windowFrames: OutputRange | null;
+  /** Output frames, from the clip's start, at which it stops being heard. */
+  heardFrames: number | null;
   /** Loudest processed and original samples since the last report. */
   peakProcessed: number;
   peakOriginal: number;
@@ -434,6 +442,12 @@ interface LayerVoice {
   plan: Uint8Array;
   renderer: number;
   outputFrames: number;
+}
+
+/** Output frames a clip is heard for: its longest voice, cut short by a trimmed end. */
+function heardFrames(voice: ClipVoice): number {
+  const frames = clipFrames(voice);
+  return voice.heardFrames === null ? frames : Math.min(frames, voice.heardFrames);
 }
 
 /** Output frames a clip's longest voice produces. */
@@ -645,6 +659,8 @@ class RendererProcessor extends AudioWorkletProcessor {
       outputFrames: 0,
       offset: Math.round(message.position * this.#sourceRate),
       onLane: true,
+      windowFrames: null,
+      heardFrames: null,
       peakProcessed: 0,
       peakOriginal: 0,
       layers: message.layers.map((plan) => ({ plan, renderer: 0, outputFrames: 0 })),
@@ -692,6 +708,14 @@ class RendererProcessor extends AudioWorkletProcessor {
       if (!voice) continue;
       voice.onLane = true;
       voice.offset = Math.round(placement.position * this.#sourceRate);
+      voice.windowFrames =
+        placement.window === null
+          ? null
+          : {
+              start: placement.window.start * this.#sourceRate,
+              end: placement.window.end * this.#sourceRate,
+            };
+      voice.heardFrames = placement.heard === null ? null : placement.heard * this.#sourceRate;
       voice.plan = placement.plan;
       const regrouped = voice.layers.length !== placement.layers.length;
       if (regrouped) {
@@ -773,7 +797,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     let end = 0;
     for (const voice of this.#clips) {
       if (voice.onLane && voice.renderer !== 0)
-        end = Math.max(end, voice.offset + clipFrames(voice));
+        end = Math.max(end, voice.offset + heardFrames(voice));
     }
     for (const voice of this.#references) {
       if (voice.onLane) end = Math.max(end, voice.offset + voice.left.length);
@@ -960,7 +984,9 @@ class RendererProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < count; i += 1) {
       const position = local + i * ratio;
       const wet = processedOk ? sampleAt(this.#scratch, position - start) : 0;
-      const dry = original.audible ? sampleAt(voice.source, position) : 0;
+      const window = voice.windowFrames;
+      const heard = window === null || (position >= window.start && position < window.end);
+      const dry = original.audible && heard ? sampleAt(voice.source, position) : 0;
       const wetLeft = wet * processed.left;
       const wetRight = wet * processed.right;
       const dryLeft = dry * original.left;

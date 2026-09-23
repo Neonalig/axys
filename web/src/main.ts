@@ -31,8 +31,8 @@ import type { Capability } from './capabilities.js';
 import { isViewState } from './core/json.js';
 import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
-import type { AxysCore, Session } from './core/wasm.js';
-import { sourceTitle } from './core/types.js';
+import type { AxysCore, ClipPart, Session } from './core/wasm.js';
+import { clipEnd, clipStart, sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
   Clip,
@@ -460,6 +460,51 @@ class AxysWorkspace implements Workspace {
     }
   }
 
+  pasteClips(parts: readonly ClipPart[], at: number): void {
+    const session = this.#session;
+    if (!session) return;
+    this.commitPreview();
+    let added: ClipId[];
+    try {
+      added = session.pasteClips(parts, at);
+    } catch (error) {
+      this.#fail('Paste Clips', error);
+      return;
+    }
+    this.#loadClips(session, added);
+    this.#publish();
+  }
+
+  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void {
+    const session = this.#session;
+    if (!session) return;
+    this.commitPreview();
+    const before = new Set(session.state().clips.map((clip) => clip.id));
+    try {
+      session.cutClips(parts);
+    } catch (error) {
+      this.#fail('Cut Clips', error);
+      return;
+    }
+    const added = session
+      .state()
+      .clips.map((clip) => clip.id)
+      .filter((id) => !before.has(id));
+    this.#loadClips(session, added);
+    this.#publish();
+  }
+
+  /** Hands the audio engine the audio of clips a paste or a cut has just made. */
+  #loadClips(session: Session, clips: readonly ClipId[]): void {
+    for (const clip of clips) {
+      try {
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      } catch {
+        // A copy of audio that is not relinked yet is silent until it is, like its original.
+      }
+    }
+  }
+
   undo(): boolean {
     const session = this.#session;
     if (!session) return false;
@@ -671,8 +716,8 @@ class AxysWorkspace implements Workspace {
       const decoded = await decodeAudioFile(file, rate);
       const edits = this.#store.state.edits;
       const spans = (edits?.clips ?? []).map((clip): [number, number] => [
-        clip.position,
-        clip.position + clip.source.duration,
+        clipStart(clip),
+        clipEnd(clip),
       ]);
       const wanted = position ?? laneEnd(this.#store.state);
       const at =
@@ -710,7 +755,7 @@ class AxysWorkspace implements Workspace {
       if (placed) this.#reveal(placed.position);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
-      return placed === undefined ? null : { clip, end: placed.position + placed.source.duration };
+      return placed === undefined ? null : { clip, end: clipEnd(placed) };
     } catch (error) {
       this.#importFailed('Import Vocal', error);
       return null;
@@ -1334,15 +1379,21 @@ class AxysWorkspace implements Workspace {
         (entry) => entry.source.fingerprint === decoded.fingerprint,
       );
       if (clip) {
-        session.attachClip(clip.clip, decoded.mono);
-        this.#missing.clips = this.#missing.clips.filter((entry) => entry !== clip);
-        buildPeaks(decoded.mono, rate, decoded.fingerprint);
-        this.#audio.loadClip(
-          clip.clip,
-          session.clipSamples(clip.clip),
-          session.clipTrackJson(clip.clip),
-          null,
+        // A pasted copy shares its audio with the clip it came from, so one file relinks both.
+        const matching = this.#missing.clips.filter(
+          (entry) => entry.source.fingerprint === decoded.fingerprint,
         );
+        for (const entry of matching) {
+          session.attachClip(entry.clip, decoded.mono);
+          this.#audio.loadClip(
+            entry.clip,
+            session.clipSamples(entry.clip),
+            session.clipTrackJson(entry.clip),
+            null,
+          );
+        }
+        this.#missing.clips = this.#missing.clips.filter((entry) => !matching.includes(entry));
+        buildPeaks(decoded.mono, rate, decoded.fingerprint);
         void this.#cacheMedia(decoded.fingerprint, decoded.mono);
       } else if (reference) {
         const channels = stereoOf(decoded.channelData);
@@ -1666,7 +1717,7 @@ class AxysWorkspace implements Workspace {
 /** Project seconds at which the last clip on the lane ends, which is where the next one goes. */
 function laneEndOf(edits: EditState): number {
   let end = 0;
-  for (const clip of edits.clips) end = Math.max(end, clip.position + clip.source.duration);
+  for (const clip of edits.clips) end = Math.max(end, clipEnd(clip));
   return end;
 }
 
@@ -2305,6 +2356,8 @@ async function start(): Promise<void> {
     inspectorCollapsed: preferences.inspectorCollapsed,
     mixerCollapsed: preferences.mixerCollapsed,
     inspectorWidth: preferences.inspectorWidth,
+    outsidePitch: preferences.outsidePitch,
+    pitchCutFill: preferences.pitchCutFill,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });
   const commands = buildCommands();

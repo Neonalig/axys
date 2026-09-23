@@ -554,6 +554,16 @@ impl ClipRuntime {
         }
     }
 
+    /// Output seconds at which the clip stops being heard, with its window ending at source
+    /// second `end`.
+    fn heard_until(&self, end: f64) -> f64 {
+        self.voices
+            .iter()
+            .map(|plan| plan.time_map.output_at(end))
+            .fold(0.0, f64::max)
+            .min(self.output_duration())
+    }
+
     /// The same audio and analysis under another clip's id, for a pasted copy.
     fn duplicate(&self, id: ClipId, sample_rate: f64) -> Result<ClipRuntime, JsValue> {
         let duration = self.source.duration;
@@ -622,6 +632,8 @@ struct ClipPlan<'a> {
     position: f64,
     /// The part of the clip's source that is heard, in its source seconds.
     window: Span,
+    /// Output seconds, from the clip's output second 0, at which it stops being heard.
+    heard: f64,
     /// The clip's first voice.
     plan: &'a RenderPlan,
     /// Every further voice, one for each set of blobs a timing edit laid over the others.
@@ -1250,6 +1262,7 @@ impl Session {
                 clip: clip.id,
                 position: clip.position,
                 window: clip.window(),
+                heard: runtime.heard_until(clip.window().end),
                 plan: &runtime.voices[0],
                 layers: &runtime.voices[1..],
             })
@@ -1342,15 +1355,7 @@ impl Session {
     /// Project seconds at which the last clip's output ends.
     fn output_seconds(&self) -> f64 {
         self.lane()
-            .map(|(clip, runtime)| {
-                let end = clip.window().end;
-                let heard = runtime
-                    .voices
-                    .iter()
-                    .map(|plan| plan.time_map.output_at(end))
-                    .fold(0.0, f64::max);
-                clip.position + heard.min(runtime.output_duration())
-            })
+            .map(|(clip, runtime)| clip.position + runtime.heard_until(clip.window().end))
             .fold(0.0, f64::max)
     }
 

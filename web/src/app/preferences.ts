@@ -8,6 +8,7 @@
  * refuses storage still runs; the settings simply start at their defaults each session.
  */
 
+import type { PitchCutFill } from './clipboard.js';
 import type { FollowMode } from './store.js';
 import type { TimeDisplay } from '../core/types.js';
 import type { AccentName } from '../ui/accent.js';
@@ -35,6 +36,10 @@ export interface Preferences {
   mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
+  /** Whether detected pitch outside every blob is drawn and can be edited. */
+  outsidePitch: boolean;
+  /** What cutting pitch leaves in the span it came from. */
+  pitchCutFill: PitchCutFill;
 }
 
 /** Narrowest the inspector column may be dragged, in pixels. */
@@ -58,6 +63,7 @@ const KEY = 'axys.preferences';
 const THEME_CHOICES: readonly ThemeChoice[] = ['system', 'dark', 'light', 'contrast'];
 const FOLLOW_MODES: readonly FollowMode[] = ['page', 'centre'];
 const TIME_DISPLAYS: readonly TimeDisplay[] = ['seconds', 'barsBeats'];
+const PITCH_CUT_FILLS: readonly PitchCutFill[] = ['sung', 'flat'];
 
 /** The settings a device with nothing stored starts from. */
 export function defaultPreferences(): Preferences {
@@ -70,6 +76,8 @@ export function defaultPreferences(): Preferences {
     inspectorCollapsed: false,
     mixerCollapsed: true,
     inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
+    outsidePitch: false,
+    pitchCutFill: 'sung',
   };
 }
 
@@ -116,6 +124,9 @@ export function loadPreferences(): Preferences {
       typeof record['inspectorWidth'] === 'number'
         ? clampInspectorWidth(record['inspectorWidth'])
         : defaults.inspectorWidth,
+    outsidePitch:
+      typeof record['outsidePitch'] === 'boolean' ? record['outsidePitch'] : defaults.outsidePitch,
+    pitchCutFill: oneOf(record['pitchCutFill'], PITCH_CUT_FILLS, defaults.pitchCutFill),
   };
 }
 
