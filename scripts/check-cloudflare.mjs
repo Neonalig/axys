@@ -49,21 +49,26 @@ export function reasons(body) {
 /**
  * The accounts this token can reach, as lines to append to a failure.
  *
- * @remarks Names the mismatch rather than leaving the account id and the token's own scope to be
- * compared by hand. An id the token can reach is not the configured one, so it is not a secret
- * this run holds and is printed. A token too narrow to list accounts says so instead.
+ * * @remarks Separates the two causes that produce one error: an account id the token is not scoped
+ * to, and a token scoped to the right account without the Cloudflare Pages permission. An id the
+ * token reaches that is not the configured one is not a secret this run holds, so it is printed.
  */
-async function reachable(token) {
+async function reachable(token, account) {
+  const PERMISSION =
+    'Give the token Account, Cloudflare Pages, Edit. Not Custom Pages, Account Custom Pages ' +
+    'or Access: Custom Pages.';
   const accounts = await get('/accounts', token);
-  if (accounts.success !== true) {
-    return '\nThis token cannot list accounts either. Check its Permissions are Account, Cloudflare Pages, Edit.';
-  }
-  const found = (accounts.result ?? []).map((entry) => `${entry.name} (${entry.id})`);
+  if (accounts.success !== true) return `\n${PERMISSION}`;
+
+  const found = accounts.result ?? [];
   if (found.length === 0) {
     return '\nThis token reaches no account at all. Check Account Resources on the token.';
   }
+  if (found.some((entry) => entry.id === account)) {
+    return `\nThe token does reach this account, so the account id is right.\n${PERMISSION}`;
+  }
   return (
-    `\nThis token reaches: ${found.join(', ')}.` +
+    `\nThis token reaches: ${found.map((entry) => `${entry.name} (${entry.id})`).join(', ')}.` +
     '\nSet CLOUDFLARE_ACCOUNT_ID to one of those ids, or widen Account Resources on the token.'
   );
 }
@@ -108,7 +113,7 @@ async function main() {
   if (projects.success !== true) {
     fail(
       `The token is in date but cannot reach this account's Pages.${reasons(projects)}` +
-        `${await reachable(token)}`,
+        `${await reachable(token, account)}`,
     );
   }
 
