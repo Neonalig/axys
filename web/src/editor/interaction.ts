@@ -8,6 +8,7 @@ import {
   withRange,
 } from '../app/selection.js';
 import type { TimeRange } from '../app/selection.js';
+import { othersOf } from '../app/sources.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
@@ -16,9 +17,11 @@ import {
   blobOutputEnd,
   blobOutputStart,
   blobPitchExtent,
+  CONFLICT_STRIP,
   outputToSource,
   sourceToOutput,
   titleRect,
+  TITLE_HEIGHT,
 } from './layers/blobs.js';
 import { MARQUEE_CURSOR } from './cursors.js';
 import { referenceRect } from './layers/references.js';
@@ -45,10 +48,10 @@ import {
   describeHit,
   EDGE_GRIP,
   FINE_FACTOR,
-  freePosition,
+  extendStroke,
   gestureAnchors,
-  insertPoint,
   modifiersOf,
+  rippleInsert,
   moveBezierHandle,
   sampleBezier,
   simplifyGesture,
@@ -77,6 +80,8 @@ export interface EditorControllerOptions {
   announce?(message: string): void;
   /** Opens the menu for what was right-clicked, at a viewport position. */
   contextMenu?(hit: Hit, at: { x: number; y: number }): void;
+  /** Brings a clip outside the editor's layer forward, so its blobs can be edited. */
+  focus?(clip: number): void;
 }
 
 type Point = { x: number; y: number };
@@ -88,7 +93,7 @@ type Gesture =
   | { kind: 'rulerDrag'; anchorTime: number; drawing: boolean }
   | { kind: 'pitch'; blobs: BlobId[]; semitones: number }
   | { kind: 'anchor'; blob: BlobId; index: number; time: number; midi: number }
-  | { kind: 'pen'; points: GesturePoint[] }
+  | { kind: 'pen'; points: GesturePoint[]; last: GesturePoint }
   | { kind: 'bezierDraw'; from: GesturePoint; to: GesturePoint }
   | { kind: 'bezierHandle'; handle: BezierHandle }
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
@@ -104,9 +109,9 @@ type Gesture =
       /** How far into the clip the pointer took hold, so the clip does not jump to it. */
       grab: number;
       duration: number;
-      /** Every other clip's span, which the dragged clip may not land over. */
-      others: [number, number][];
       position: number;
+      /** Whether it is inserted, moving every clip after it later to make room. */
+      ripple: boolean;
     }
   | { kind: 'reference'; reference: number; from: number; grab: number; position: number };
 
@@ -326,9 +331,9 @@ export class EditorController {
       return { ...base, kind: 'blob', blob: blob.id, sourceTime };
     }
 
-    // Reported only where no blob covers the position, so the red band explains itself without
-    // taking a hover away from the blobs whose timing produced it.
-    for (const conflict of state.conflicts) {
+    // Reported only over its strip along the top of the plot, where no blob covers it.
+    const onStrip = y <= viewport.plotTop + CONFLICT_STRIP + EDGE_GRIP;
+    for (const conflict of onStrip ? state.conflicts : []) {
       if (time >= conflict.start && time <= conflict.end) {
         return { ...base, kind: 'conflict', conflict };
       }
@@ -410,7 +415,7 @@ export class EditorController {
       return;
     }
     this.#commit(
-      { type: 'movePitch', blobs: [...selection.blobs], semitones },
+      { type: 'movePitch', blobs: [...selection.blobs], semitones, anchors: true },
       `Move Pitch ${formatSemitones(semitones)}`,
     );
   }
@@ -457,7 +462,7 @@ export class EditorController {
     if (selection.blobs.length === 1) {
       const semitones = midi - first.detectedCenter;
       this.#commit(
-        { type: 'setPitchOffset', blob: first.id, semitones },
+        { type: 'setPitchOffset', blob: first.id, semitones, anchors: true },
         `Move Pitch ${noteNameWithCents(midi, this.#accidentals())}`,
       );
       return;
@@ -467,7 +472,7 @@ export class EditorController {
       return;
     }
     this.#commit(
-      { type: 'movePitch', blobs: [...selection.blobs], semitones: delta },
+      { type: 'movePitch', blobs: [...selection.blobs], semitones: delta, anchors: true },
       `Move Pitch ${formatSemitones(delta)}`,
     );
   }
@@ -615,7 +620,7 @@ export class EditorController {
       return;
     }
     const point = this.#pointOf(event);
-    const hit = this.hitTest(point.x, point.y);
+    const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
     const modifiers = modifiersOf(event);
     this.#canvas.focus();
     capturePointer(this.#canvas, event.pointerId);
@@ -623,7 +628,7 @@ export class EditorController {
     this.#origin = point;
     this.#current = point;
     this.#moved = false;
-    this.#gesture = this.#beginGesture(state, hit, modifiers);
+    this.#gesture = this.#beginGesture(this.#store.state, hit, modifiers);
     // A band being dragged is not the select tool resting over a blob, so it says so for as long
     // as it lasts rather than leaving the arrow up while a marquee is being drawn.
     if (this.#gesture?.kind === 'rubberBand') {
@@ -674,6 +679,43 @@ export class EditorController {
   };
 
   /**
+   * The clip outside the editor's layer whose blob or title is under a point, or `null`.
+   *
+   * @remarks Only while the others are shown; dimmed or hidden, they are never hit.
+   */
+  #otherClipAt(point: Point): number | null {
+    const state = this.#store.state;
+    if (othersOf(state.view) !== 'show') return null;
+    const viewport = this.viewport;
+    for (const other of state.others) {
+      for (const blob of other.blobs) {
+        const x0 = viewport.timeToX(blobOutputStart(blob));
+        const x1 = viewport.timeToX(blobOutputEnd(blob));
+        if (point.x < x0 || point.x > x1) continue;
+        const extent = blobPitchExtent(blob, other.track);
+        const top = viewport.midiToY(extent.high) - TITLE_HEIGHT;
+        const bottom = viewport.midiToY(extent.low) + BODY_SLACK;
+        if (point.y >= top && point.y <= bottom) return other.clip;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Brings forward the clip behind a point where nothing of the layer is hit, and hits again.
+   *
+   * @remarks The layer is in front, so a click that lands on it acts on it. Where it lands on a
+   * clip behind instead, that clip comes forward and the click acts on it.
+   */
+  #bringForward(point: Point, hit: Hit): Hit {
+    if (hit.kind !== 'empty' && hit.kind !== 'conflict') return hit;
+    const clip = this.#otherClipAt(point);
+    if (clip === null || this.#options.focus === undefined) return hit;
+    this.#options.focus(clip);
+    return this.hitTest(point.x, point.y);
+  }
+
+  /**
    * Reads what is under `point` into the hover readout and its guides.
    *
    * @remarks Outside a gesture it also sets the cursor for what is there. During one the cursor
@@ -691,7 +733,14 @@ export class EditorController {
         this.#canvas.style.cursor = 'grab';
       }
     }
-    this.#renderer?.setHover({ x: point.x, y: point.y, text: describeHit(hit, state) });
+    const behind =
+      hit.kind === 'empty' || hit.kind === 'conflict' ? this.#otherClipAt(point) : null;
+    const clip = behind === null ? undefined : state.edits?.clips.find((c) => c.id === behind);
+    if (clip !== undefined && this.#gesture === null) {
+      this.#canvas.style.cursor = 'pointer';
+    }
+    const text = clip === undefined ? describeHit(hit, state) : `Edit ${displayTitle(clip)}`;
+    this.#renderer?.setHover({ x: point.x, y: point.y, text });
     this.#renderer?.setHoverBlob(hit.blob);
   }
 
@@ -731,8 +780,8 @@ export class EditorController {
     }
     event.preventDefault();
     const point = this.#pointOf(event);
-    const hit = this.hitTest(point.x, point.y);
-    if (hit.blob !== null && !state.selection.blobs.includes(hit.blob)) {
+    const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
+    if (hit.blob !== null && !this.#store.state.selection.blobs.includes(hit.blob)) {
       const blob = this.#blob(hit.blob);
       if (blob !== undefined) {
         this.#selectSpan(blobOutputStart(blob), blobOutputEnd(blob));
@@ -884,8 +933,10 @@ export class EditorController {
       }
       // Drawing starts wherever the pointer goes down, over a blob or over nothing, and the
       // stroke belongs to whatever it crosses rather than to the blob it happened to start on.
-      case 'pen':
-        return { kind: 'pen', points: [{ time: hit.time, midi: hit.midi }] };
+      case 'pen': {
+        const first = { time: hit.time, midi: hit.midi };
+        return { kind: 'pen', points: [first], last: first };
+      }
       case 'bezier': {
         const handle = this.#bezierHandleAt(this.#origin);
         if (handle !== null) {
@@ -928,17 +979,14 @@ export class EditorController {
     if (clip === undefined) {
       return null;
     }
-    const others = (state.edits?.clips ?? [])
-      .filter((entry) => entry.id !== id)
-      .map((entry): [number, number] => [entry.position, entry.position + entry.source.duration]);
     return {
       kind: 'clip',
       clip: id,
       from: clip.position,
       grab: time - clip.position,
       duration: clip.source.duration,
-      others,
       position: clip.position,
+      ripple: false,
     };
   }
 
@@ -946,8 +994,8 @@ export class EditorController {
    * Shows where audio dragged in from outside would land, and returns that time.
    *
    * @remarks Client coordinates, as a drag event carries them. `null` when the pointer is not over
-   * the canvas, which also takes the marker away. Ctrl puts it at the start and Shift at the
-   * playhead, as they do for a clip being moved.
+   * the canvas, which also takes the marker away. Ctrl puts it at the start, and Shift inserts a
+   * vocal there, moving the clips after it later, as they do for a clip being moved.
    */
   previewDrop(clientX: number, clientY: number, modifiers = NO_MODIFIERS): number | null {
     const rect = this.#canvas.getBoundingClientRect();
@@ -957,22 +1005,13 @@ export class EditorController {
       this.endDrop();
       return null;
     }
-    const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false });
-    // A vocal cannot land inside another, so the marker goes where it will be inserted. A
-    // reference overlaps freely and lands where it was let go, which the label says when the two
-    // differ.
-    const spans = (this.#store.state.edits?.clips ?? []).map((clip): [number, number] => [
-      clip.position,
-      clip.position + clip.source.duration,
-    ]);
-    const vocal = insertPoint(spans, time);
+    const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false }, false);
+    // A vocal and a reference both land where they are let go, over whatever is there, unless
+    // Shift inserts the vocal instead.
     this.#renderer?.setPreview({
       kind: 'drop',
-      time: vocal,
-      label:
-        vocal === time
-          ? `Import At ${formatClock(time, 0.001)}`
-          : `Vocal At ${formatClock(vocal, 0.001)}  Reference At ${formatClock(time, 0.001)}`,
+      time,
+      label: `${modifiers.constrain ? 'Insert' : 'Import'} At ${formatClock(time, 0.001)}`,
     });
     return time;
   }
@@ -1063,12 +1102,9 @@ export class EditorController {
           this.#pitchSnap(modifiers),
           this.#store.state.edits?.scale ?? null,
         );
-        const last = gesture.points[gesture.points.length - 1];
-        if (last === undefined || time > last.time) {
-          gesture.points.push({ time, midi: value });
-        } else {
-          gesture.points[gesture.points.length - 1] = { time: last.time, midi: value };
-        }
+        const next = { time, midi: value };
+        gesture.points = extendStroke(gesture.points, gesture.last, next);
+        gesture.last = next;
         break;
       }
       case 'bezierDraw': {
@@ -1145,8 +1181,13 @@ export class EditorController {
         break;
       }
       case 'clip': {
-        const wanted = this.#placeTime(time - gesture.grab, modifiers);
-        gesture.position = freePosition(gesture.others, gesture.duration, wanted);
+        // Lands where it is let go, over any clip already there, and only the grid pulls on it.
+        // Shift inserts it there instead, moving the clips after it later.
+        const wanted = this.#placeTime(time - gesture.grab, modifiers, false);
+        gesture.ripple = modifiers.constrain;
+        gesture.position = gesture.ripple
+          ? rippleInsert(this.#otherSpans(gesture.clip), gesture.duration, wanted).position
+          : wanted;
         break;
       }
       case 'reference':
@@ -1233,7 +1274,7 @@ export class EditorController {
               kind: 'clipDrag',
               clip: gesture.clip,
               position: gesture.position,
-              label: `Move Clip ${formatClock(gesture.position, 0.001)}`,
+              label: `${gesture.ripple ? 'Insert' : 'Move'} Clip ${formatClock(gesture.position, 0.001)}`,
             }
           : null;
       case 'reference':
@@ -1284,7 +1325,12 @@ export class EditorController {
       case 'pitch':
         if (gesture.semitones !== 0) {
           this.#commit(
-            { type: 'movePitch', blobs: gesture.blobs, semitones: gesture.semitones },
+            {
+              type: 'movePitch',
+              blobs: gesture.blobs,
+              semitones: gesture.semitones,
+              anchors: true,
+            },
             `Move Pitch ${formatSemitones(gesture.semitones)}`,
           );
         }
@@ -1315,7 +1361,7 @@ export class EditorController {
         // A press that never became a line leaves nothing to shape.
         if (this.#moved && gesture.to.time !== gesture.from.time) {
           this.#bezier = straightBezier(gesture.from, gesture.to);
-          this.#announce('Drag the handles to shape the curve. Enter keeps it, Escape drops it');
+          this.#announce('Drag handles to shape. Enter to apply, Esc to cancel');
         }
         break;
       case 'bezierHandle':
@@ -1370,9 +1416,15 @@ export class EditorController {
         break;
       case 'clip':
         if (this.#moved) {
-          if (gesture.position !== gesture.from) {
+          if (gesture.position !== gesture.from || gesture.ripple) {
             this.#commit(
-              { type: 'moveClip', clip: gesture.clip, position: gesture.position },
+              {
+                type: 'moveClip',
+                clip: gesture.clip,
+                position: gesture.position,
+                exact: !gesture.ripple,
+                ripple: gesture.ripple,
+              },
               `Move Clip ${formatClock(gesture.position, 0.001)}`,
             );
           }
@@ -1574,13 +1626,17 @@ export class EditorController {
   }
 
   /**
-   * Where a clip, a reference or a dropped file is put: the start with Ctrl, the playhead with
-   * Shift, and otherwise `seconds` snapped. Never negative.
+   * Where a clip, a reference or a dropped file is put: the start with Ctrl, and otherwise
+   * `seconds` snapped. Never negative.
+   *
+   * @remarks Without `edges`, only the grid pulls on it, not the edges of the blobs already there.
+   * Shift is left to the caller, which inserts a vocal with it.
    */
-  #placeTime(seconds: number, modifiers: Modifiers): number {
+  #placeTime(seconds: number, modifiers: Modifiers, edges = true): number {
     if (modifiers.snap) return 0;
-    if (modifiers.constrain) return this.#playhead();
-    return Math.max(0, this.#snapTime(seconds, modifiers));
+    if (modifiers.fine) return Math.max(0, seconds);
+    const context = edges ? this.#snapContext() : { ...this.#snapContext(), blobs: [] };
+    return Math.max(0, snapTime(seconds, context));
   }
 
   #snapTime(seconds: number, modifiers: Modifiers): number {
@@ -1685,6 +1741,13 @@ export class EditorController {
     return this.#store.state.edits?.accidentals ?? 'sharps';
   }
 
+  /** The project spans of every clip but `clip`. */
+  #otherSpans(clip: number): [number, number][] {
+    return (this.#store.state.edits?.clips ?? [])
+      .filter((entry) => entry.id !== clip)
+      .map((entry): [number, number] => [entry.position, entry.position + entry.source.duration]);
+  }
+
   #playhead(): number {
     const state = this.#store.state;
     return state.transport.playing ? state.transport.position : state.view.playhead;
@@ -1762,7 +1825,7 @@ export class EditorController {
       curve,
       points: sampleBezier(curve, this.#bezierSamples(curve)),
       active,
-      label: `Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}  Enter Keeps`,
+      label: `Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}  Enter Apply  Esc Cancel`,
     };
   }
 

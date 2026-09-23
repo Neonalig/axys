@@ -155,9 +155,9 @@ function nudgeOp(state: AppState, event: KeyboardEvent): EditOp | null {
   if (blobs.length === 0) return null;
   switch (event.key) {
     case 'ArrowUp':
-      return { type: 'movePitch', blobs, semitones: pitchStep(event) };
+      return { type: 'movePitch', blobs, semitones: pitchStep(event), anchors: true };
     case 'ArrowDown':
-      return { type: 'movePitch', blobs, semitones: -pitchStep(event) };
+      return { type: 'movePitch', blobs, semitones: -pitchStep(event), anchors: true };
     case 'ArrowLeft':
       return { type: 'moveTime', blobs, seconds: -timeStep(event) };
     case 'ArrowRight':

@@ -22,7 +22,7 @@ import { projectEnd } from '../app/store.js';
 import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport, MeterReport } from '../audio/engine.js';
-import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
+import type { AccidentalStyle, ClipId, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { button as control, swapGlyph } from './controls/index.js';
 import { ICONS, STATE_ICONS, type IconName } from './icons.js';
@@ -107,6 +107,10 @@ export interface ShellHooks {
   setInspectorCollapsed(on: boolean): void;
   /** Sets how wide the inspector column is, and remembers it. */
   setInspectorWidth(pixels: number): void;
+  /** The Sources menu for the project as it is now. */
+  sourceMenu(): MenuEntry[];
+  /** Brings a clip forward in the editor. */
+  focusSource(clip: ClipId): void;
 }
 
 /** What the chrome is built from. */
@@ -132,8 +136,8 @@ interface ToolEntry {
 
 const TOOLS: readonly ToolEntry[] = [
   { id: 'select', label: 'Select Tool', icon: 'select', tooltip: 'Selects blobs and anchors' },
-  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob where you click' },
-  { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Drags whole blobs in pitch' },
+  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob at the cursor' },
+  { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Moves whole blobs in pitch' },
   { id: 'pen', label: 'Draw Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target' },
   {
     id: 'bezier',
@@ -173,6 +177,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'transport.toggleMetronome': 'Metronome',
   'view.followPlayhead': 'Follow',
   'midi.alignGuide': 'Align',
+  'view.sources': 'Sources',
   'help.showDiagnostics': 'Help',
 };
 
@@ -188,7 +193,7 @@ interface ButtonMenu {
 /** How long ago an epoch-millisecond time was, as a recent-list detail such as `3h ago`. */
 function ago(time: number): string {
   const minutes = Math.floor((Date.now() - time) / 60_000);
-  if (minutes < 1) return 'Just Now';
+  if (minutes < 1) return 'Just now';
   if (minutes < 60) return `${String(minutes)}m ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${String(hours)}h ago`;
@@ -203,7 +208,7 @@ function ago(time: number): string {
  */
 const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
   'file.open': {
-    hint: 'Recent projects in the menu',
+    hint: 'Includes recent projects',
     onClick: true,
     entries: async (shell) => {
       const recent = await shell.recentProjects();
@@ -236,8 +241,34 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       ];
     },
   },
+  'view.sources': {
+    hint: 'Set the front source and how other sources show',
+    onClick: true,
+    entries: (shell) => [
+      ...shell.sourceMenu(),
+      { separator: true },
+      {
+        label: 'Next Source',
+        icon: 'sources',
+        key: ']',
+        enabled: shell.can('view.sources'),
+        run: () => {
+          shell.run('view.sources');
+        },
+      },
+      {
+        label: 'Previous Source',
+        icon: 'sources',
+        key: '[',
+        enabled: shell.can('view.previousSource'),
+        run: () => {
+          shell.run('view.previousSource');
+        },
+      },
+    ],
+  },
   'file.saveProject': {
-    hint: 'Save As (Ctrl+Shift+S). Right-click for both',
+    hint: 'Right-click for Save As (Ctrl+Shift+S)',
     entries: (shell) => [
       {
         label: 'Save Project',
@@ -268,7 +299,7 @@ function themeLabel(choice: ThemeChoice): string {
 
 /** The theme button's tooltip: what pressing it does, and which theme is on. */
 function themeTip(choice: ThemeChoice): string {
-  return `Pick Theme (${choice === 'system' ? 'System' : THEME_LABELS[choice]})`;
+  return `Theme (${choice === 'system' ? 'System' : THEME_LABELS[choice]})`;
 }
 
 /**
@@ -289,7 +320,7 @@ function buildAccentRow(shell: AppShell): HTMLElement {
   const dark = isDarkTheme(theme);
   const ignored = theme === 'contrast';
   if (ignored) {
-    setTooltip(group, 'High Contrast uses its own colours');
+    setTooltip(group, 'Not available in High Contrast');
   }
 
   for (const name of ACCENT_NAMES) {
@@ -340,6 +371,9 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   // Deleting is done to what is under the hand: the key, or the menu over the blob.
   'edit.deleteBlobs',
   'edit.deleteClip',
+  // Both live in the Sources button's menu and on their keys.
+  'view.previousSource',
+  'view.toggleOthers',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
@@ -404,6 +438,9 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Follow Playhead': 'follow',
   Metronome: 'metronome',
   'Align Guide': 'alignGuide',
+  'Next Source': 'sources',
+  'Previous Source': 'sources',
+  'Toggle Others': 'sources',
   'Keyboard Shortcuts': 'keyboard',
   'Find Command': 'search',
   'Help and Diagnostics': 'help',
@@ -741,8 +778,8 @@ export class AppShell {
     emptyHeading.textContent = 'Open a vocal to start';
     const emptyHint = document.createElement('p');
     emptyHint.className = 'axys-hint';
-    emptyHint.textContent = 'Drop an audio file here, or open one';
-    const emptyActions = group('Ways In');
+    emptyHint.textContent = 'Drop an audio file here';
+    const emptyActions = group('Get Started');
     for (const id of EMPTY_COMMANDS) {
       const command = options.commands.find((entry) => entry.id === id);
       if (command === undefined) continue;
@@ -837,6 +874,9 @@ export class AppShell {
         this.#hooks.previewMixer(mixer);
       },
       meters: () => this.#hooks.meters(),
+      focus: (clip) => {
+        this.#hooks.focusSource(clip);
+      },
     });
 
     const footer = document.createElement('footer');
@@ -844,7 +884,7 @@ export class AppShell {
     this.#statusPhase = statusItem(footer, 'State');
     this.#statusPosition = statusItem(footer, 'Position').value;
     this.#statusSelection = statusItem(footer, 'Selection').value;
-    this.#statusConflicts = statusItem(footer, 'Conflicts');
+    this.#statusConflicts = statusItem(footer, 'Gaps');
     this.#statusPlayback = statusItem(footer, 'Playback');
 
     const progress = new ProgressBar('Analysis Progress');
@@ -981,7 +1021,7 @@ export class AppShell {
     this.#setFace('transport.toggleMetronome', {
       icon: 'metronome',
       label: 'Metronome',
-      tooltip: metronome ? 'Silence Metronome (M)' : 'Metronome (M)',
+      tooltip: metronome ? 'Mute Metronome (M)' : 'Metronome (M)',
       pressed: metronome,
     });
 
@@ -1260,6 +1300,11 @@ export class AppShell {
     return this.#hooks.recentProjects();
   }
 
+  /** The vocal sources the Sources menu offers. */
+  sourceMenu(): MenuEntry[] {
+    return this.#hooks.sourceMenu();
+  }
+
   /** Reopens a project from the recent list. */
   openRecent(id: string): void {
     this.#hooks.openRecent(id);
@@ -1498,7 +1543,7 @@ ${tool.tooltip}`,
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
         this.#hooks.setTool(tool.id);
-        this.announce(`${tool.label} active.`);
+        this.announce(`${tool.label} selected`);
       });
       this.#toolButtons.set(tool.id, button);
       section.append(button);

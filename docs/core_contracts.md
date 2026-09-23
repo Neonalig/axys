@@ -32,10 +32,18 @@ pub struct F0Params {
     pub max_hz: f64,        // default 1000.0
     pub frame_seconds: f64, // default 0.0464 (analysis window)
     pub hop_seconds: f64,   // default 0.005  (5 ms frames)
-    pub threshold: f64,     // default 0.15, YIN absolute threshold
+    pub method: F0Method,   // default Yin
+    pub threshold: f64,     // default 0.15, YIN absolute threshold, or pYIN's threshold mean
+    pub strength: f64,      // default 0.25, SWIPE strength a voiced frame reaches
     pub voiced_rms_floor: f32, // default 0.0015
+    /// Raises `threshold` to suit the clip. Default true; false for analyses stored before it.
+    pub auto_threshold: bool,
 }
 impl Default for F0Params { /* the values above */ }
+
+/// YIN with an absolute threshold, pYIN over a Beta threshold distribution, or SWIPE' in
+/// `analysis/swipe.rs`. Each observes per-frame candidates and an unvoiced cost for one decoder.
+pub enum F0Method { Yin, Pyin, Swipe }
 
 /// One analysis frame of detected pitch.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -310,6 +318,10 @@ impl Clip {
 pub fn renumber(blobs: &BlobSet, clip: ClipId) -> Result<BlobSet>;
 pub fn numbered_for(blobs: &BlobSet, clip: ClipId) -> bool;
 
+/// The clips the editor edits together: `active` first, then every clip that overlaps none
+/// already chosen, or `active` alone with `isolate`.
+pub fn layer(clips: &[Clip], active: Option<ClipId>, isolate: bool) -> Vec<ClipId>;
+
 /// The position nearest `wanted` at which a span of `duration` overlaps no other clip.
 pub fn free_position(others: &[(f64, f64)], duration: f64, wanted: f64) -> f64;
 
@@ -327,10 +339,12 @@ pub struct Reference {
 }
 ```
 
-Clips never overlap on the lane. A clip added or moved over another lands against the nearer edge
-of the one it would have covered, so the lane's blobs, taken together in project seconds, are
-always one valid `BlobSet`. `Blob::shifted` and `PitchCurve::shifted` move a blob and its anchors
-between the two time domains.
+Clips may overlap. The blobs of a `layer`, taken together in project seconds, are always one valid
+`BlobSet`; `EditState::layer_blobs` builds it, `EditState::all_blobs` lists every clip's blobs,
+and `EditState::conflicts` lists the gaps timing edits opened inside each clip. `free_position` and
+`ripple_insert` place a clip that is not `exact`, which only operations recorded before `exact`
+existed still do. `Blob::shifted` and `PitchCurve::shifted` move a blob and its anchors between
+the two time domains.
 
 ## `analysis/segment.rs`
 
@@ -876,6 +890,13 @@ pub struct GuideInputs<'a> {
 /// build the time map.
 pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan>;
 
+/// Splits blobs into voices whose edited spans never overlap, in edited start order.
+pub fn voice_layers(blobs: &BlobSet) -> Vec<Vec<BlobId>>;
+
+/// A plan per voice of `voice_layers`: the first plays everything but the other voices' blobs,
+/// every other plays its own blobs alone. One plan, `compile_plan`'s, with no overlaps.
+pub fn compile_voices(inputs: &PlanInputs<'_>) -> Result<Vec<RenderPlan>>;
+
 /// Splits a detected contour into slow drift and fast vibrato about `split_hz`.
 ///
 /// Returns (drift, vibrato) sampled on the same grid as the input.
@@ -908,8 +929,8 @@ pub enum EditOp {
     SetExcluded { blob: BlobId, excluded: bool },
     SetGain { blob: BlobId, gain_db: f64 },
     DeleteBlobs { blobs: Vec<BlobId> },
-    AddClip { clip: Clip, ripple: bool },
-    MoveClip { clip: ClipId, position: f64 },
+    AddClip { clip: Clip, ripple: bool, exact: bool },
+    MoveClip { clip: ClipId, position: f64, exact: bool },
     RemoveClip { clip: ClipId },
     AddReference { reference: Reference },
     MoveReference { reference: ReferenceId, position: f64 },
@@ -975,8 +996,12 @@ pub fn apply_with_baseline(state: &mut EditState, track: Option<&PitchTrack>,
 
 `DeleteBlobs` removes the blobs and silences the source spans they covered; `ResetRange` restores
 both the analysed blobs and the silenced material across its span. `AddClip` refuses a clip whose
-blobs are not numbered for it. With `ripple` it lands where it was asked, or on the nearer edge of a
-clip it was asked inside, and every clip after it moves later by the overlap. Importing a second vocal or a reference is an edit like any other,
+blobs are not numbered for it. With `exact` it lands where it was asked, over any clip there; with
+`ripple` it lands where it was asked, or on the nearer edge of a clip it was asked inside, and every
+clip after it moves later by the overlap; with neither it lands on the nearest free position.
+`MoveClip` with `exact` goes where it was asked and otherwise to the nearest free position. Both
+flags default to false, so a recorded operation replays as it was made. Importing a second vocal or
+a reference is an edit like any other,
 so undo takes it back; the first clip is the base state the history replays over.
 
 ## `audio/wav.rs`
@@ -1137,7 +1162,15 @@ pub struct ViewState {
     pub playhead: f64,
     pub loop_start: Option<f64>,
     pub loop_end: Option<f64>,
+    /// The clip in front; `None` is the first clip.
+    pub active_clip: Option<ClipId>,
+    /// How the clips outside the active layer are shown. `Show` when a document has none.
+    pub others: OthersView,
 }
+
+/// Show draws the others behind the layer and a click brings one forward; Dim and Hide edit the
+/// active clip alone.
+pub enum OthersView { Show, Dim, Hide }
 impl Default for ViewState { /* 0..10 s, MIDI 36..84, Seconds, division 4 */ }
 
 /// Whether the ruler reads in clock time or in bars and beats.

@@ -167,6 +167,22 @@ controls rather than one blunt amount.
   silence. Viterbi costs are 0.08 per semitone of transition, 0.15 per voicing switch and an
   unvoiced observation cost of twice the YIN threshold; these are tuned against the fixture battery,
   not taken from the paper.
+- **Three estimators, one decoder.** YIN, pYIN and SWIPE' each observe per-frame candidates with
+  a cost and, for pYIN and SWIPE', an unvoiced cost of their own: pYIN's is the probability the
+  frame is voiced, SWIPE's is one less its strength threshold. The same Viterbi pass decodes them
+  all. SWIPE' measures each frame from its own window, decimated to 16 kHz, with 32 candidates an
+  octave and a 0.2 ERB grid, which keeps it within about three times YIN's cost. On a commercial
+  acapella MP3, YIN with the automatic threshold voiced 88% of sung frames, SWIPE' 58% at its
+  default strength and 86% at 0.1, and pYIN 15% at its textbook mean of 0.15 and 74% at 0.6.
+- **The voicing threshold suits the clip.** A dry vocal dips below YIN's 0.15 on nearly every sung
+  frame; a reverberant, compressed, doubled or lossy one sits between 0.15 and 0.6, and with a fixed
+  threshold most of it decoded unvoiced and got no blobs. A commercial acapella MP3 voiced 36% of
+  its sung frames. With `auto_threshold`, the threshold is the 60th percentile of the best dip over
+  frames above 15% of the clip's 95th percentile level, clamped between the fixed threshold and
+  0.35. A clean take stays at 0.15 and decodes exactly as before; that acapella voices 82%. Only the
+  Viterbi pass reads it; the first-below-threshold bonus that settles octaves keeps the fixed value.
+  Rejected: raising the fixed threshold, which turns consonants and breath into pitch on clean
+  takes.
 - **NaN crosses JSON as null.** `serde_json` cannot represent NaN, and an unvoiced frame's MIDI
   value is NaN. `PitchFrame` and `PitchTrackArrays` carry serde shims mapping it to and from `null`,
   so a project containing any unvoiced frame reopens. Without this the round trip silently failed.
@@ -222,10 +238,16 @@ segmentation mistake.
 ### How timing edits treat gaps, overlaps and neighbours
 
 Timing edits are local by default: moving or scaling a blob does not ripple into its neighbours, so
-source duration outside the changed region stays stable. That makes overlaps and gaps possible, and
-`BlobSet::timing_conflicts` reports every one of them. Conflicts are drawn in the editor and listed
-before export rather than being silently resolved. Where blobs overlap, the render plan's time map
-stays monotone by crossfading the contested span, so the output never plays backwards.
+source duration outside the changed region stays stable. That makes overlaps and gaps possible.
+Blobs moved over each other all sound: `compile_voices` splits a clip's blobs into voices whose
+edited spans never overlap and compiles a plan per voice, each with a monotone time map, and the
+worklet and the export render every voice. A gap is reported, drawn as a strip along the top of
+the plot and listed before export, rather than being silently filled.
+
+Rejected: crossfading the contested span of two overlapping blobs through one time map. It
+sounded like neither blob, and an overlap is as deliberate as two clips laid over each other.
+Rejected: a full-height band over every conflict. It turned the whole plot red for a gap a few
+milliseconds wide.
 
 ### How intent sources compose
 
@@ -463,9 +485,12 @@ that method is dead by construction rather than by accident.
 
 ### Time domains
 
-The store's `view.playhead` is in source seconds; the engine's position and loop range are in
-output seconds. The workspace converts between them through the plan's time map, so a loop set from
-a selection follows timing edits instead of drifting off them.
+The canvas draws blobs at their edited positions, so its time axis is output time, and so are
+`view.playhead`, a selection's spans, the loop range and the engine's position. Nothing converts
+between them. Converting through the plan's time map, as the playhead, Loop Selection and Export
+once did, turned a span already in output time into a later one wherever blobs had been moved in
+time: the loop and the exported range drifted off the selection, and a stopped playhead jumped
+away from where it had been playing.
 
 ### Bypass is gone
 
@@ -575,24 +600,53 @@ playing and set it, and a second way to say it is a second thing to keep in step
 
 ## Multiple sources
 
-### Clips on one lane, never overlapping
+### Clips overlap, and the editor edits one layer of them
 
 A project holds several vocal clips, each one imported file with its own analysis, blobs and
-plan, placed at a position on the one editable lane. The design bible keeps one monophonic vocal
-lane, so clips do not overlap: a clip dropped or dragged over another lands against the nearer
-edge of the clip it would have covered, and the preview shows where before the pointer is let go.
-Reordering is dragging a clip past its neighbour into the gap beyond it. A vocal dropped in from
-outside is inserted where it was let go instead, or at the nearer edge of the clip under it, and
-every clip after it moves later by the overlap: landing it at the nearest free gap put it wherever
-the lane had room, which could be well past the end.
+plan, placed at a position on the timeline. Clips may overlap, a lead under its harmonies or a
+double on top of a take, and each keeps its own blobs, pitch, timing and correction. A clip
+dropped or dragged lands exactly where it was let go: nothing snaps to another clip's edge and
+nothing is pushed along. Stems dropped together all land at the drop time, so they line up.
 
-That rule is what keeps the editor unchanged underneath. The lane's blobs, taken together in
-project seconds, are always one valid ordered set, so selection, snapping, conflicts and MIDI
-mapping read one list rather than a list per clip.
+The editor still reads one ordered, non-overlapping set of blobs, because every time-domain
+question it asks, which blob is under the pointer, what a span covers, where the playhead sits in
+source time, assumes one. That set is now a layer: the active clip, and every clip that sits
+beside it without overlapping, chosen in the order the project holds them
+(`axys_core::clip::layer`). Selection, snapping, the lane plan, the drawn track and the playhead
+all read the layer. A project whose clips never overlap has every clip in its layer, so it edits
+exactly as it did.
 
-Rejected: overlapping clips summed together. Every time-domain question the editor asks, which
-blob is under the pointer, what a span covers, where the playhead sits in source time, would have
-needed a clip to answer it.
+Every clip outside the layer is drawn behind it, faded, in its own colour. A click on one brings
+its clip forward, which rebuilds the layer around it; a click that lands on the layer acts on the
+layer, so dragging one source never disturbs the one it overlaps. Focus is also reached by the
+Sources menu, by `[` and `]`, and by clicking a clip's track on the desk. Dim Others and Hide
+Others, cycled with `\`, edit the active clip alone with the rest faint or gone.
+
+Which clip is in front and how the others show are view state, saved with the project and never
+undone.
+
+Rejected: a lane per source, stacked vertically. The pitch axis is the vertical axis, so a second
+lane either halves the pitch range or needs a second plot, and a harmony a third above its lead is
+exactly what should be read against it.
+
+Rejected: letting a click pick among overlapping blobs by pitch. Two sources at the same time and
+pitch, a double say, have no pitch to tell them apart; bringing one forward always does.
+
+### Questions the overlap raised
+
+- A source may overlap itself as well as other sources. Blobs a timing edit lays over each other
+  inside one clip each sound, in a voice of their own, exactly as two clips would.
+- The view is built for a handful of sources at once, a lead with two or three harmonies or
+  doubles. Past that, Dim Others or Hide Others keeps the one being edited readable.
+- Moving a clip past another no longer reorders them. Nothing orders clips any more, so a clip
+  simply goes where it is put. An `addClip` or `moveClip` recorded before `exact` existed still
+  replays with the old rule, so a history keeps meaning what it did.
+
+### Only gaps are reported, per clip
+
+Gaps timing edits open are measured inside each clip. Blobs sounding at once, of one clip or of
+two, are the point of overlapping them, not a problem to flag. A single-lane project that moved a
+clip's last blob into the next clip no longer reports that as an overlap.
 
 ### A clip keeps its own time, and the lane adds its position
 
@@ -604,6 +658,15 @@ owning clip's before it is applied, so every existing operation kept its shape.
 Blob ids are partitioned by clip, twenty low bits each, so a blob id alone names its clip and no
 operation needed a clip field. The first clip's ids are the ids a single-source project always
 had, which is what made the migration a rename.
+
+### Operations say which sources they change
+
+Correction and Align Guide tick the sources they change, starting from those holding the
+selection, or every source with nothing selected. Correction leaves an unticked source out by
+excluding its blobs, the same way it already confined itself to a selection. Align Guide maps
+each ticked source to the guide on its own, so a double follows the same notes as its lead, and
+every other source keeps its mappings. Voice Character is compiled over every take and says so,
+naming them. A project with one source shows none of this.
 
 ### Importing a second source is an edit
 
@@ -649,10 +712,20 @@ move and right-clicked to delete, and each has a strip on the desk.
 Import takes audio or MIDI. MIDI is only ever the guide, and audio with nothing open only ever
 starts a project as its vocal, so neither is asked about. Audio on an open project could be a take
 to edit or a backing track to hear, which nothing in the file says, so a question asks once for
-everything imported or dropped together: Import Vocal or Import Reference.
+everything imported or dropped together: Vocal or Reference.
 
 Rejected: an Import menu with an entry per kind. It asked the same question before the file was
 chosen, and a drop had no menu to ask it with, so dropped audio was always taken as a vocal.
+
+### Importing a vocal previews its analysis
+
+The question is a floating panel. Choosing Vocal imports the audio with the settings last applied
+and turns the panel into the analysis step: the pitch method and its setting, and the pitch range.
+Each change analyses the imported vocals again and replaces their blobs where they came in, so the
+editor and playback show the result while the panel is open, as Correction does. Apply remembers
+the settings on the device for the next import, closing the panel keeps the import, and Cancel
+takes it back. A clip is analysed again only while no edit touches it, since later edits name
+blobs the new analysis does not have.
 
 ### A dropped file shows where it lands once it is read
 
@@ -859,7 +932,8 @@ with an info icon, and the control carries none. Hovering the label or the icon 
 the field shows nothing.
 
 The same rule settled what an operation says about its extent. Each now says `Affects 3 selected
-blobs.` or `No selection. Affects whole project.` and nothing else. The line is read at a glance
+blobs` or `Affects the whole project`, naming the sources when there are several, and nothing
+else. The line is read at a glance
 before pressing Apply, and the sentence about playing to hear it was read once and then read past
 forever.
 

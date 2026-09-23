@@ -142,7 +142,7 @@ These are valuable extensions but must not complicate the central note-and-curve
 
 | Capability | Requirement |
 | --- | --- |
-| Multiple references | Display additional audio or MIDI references while retaining one editable monophonic vocal lane. |
+| Multiple references | Display additional audio or MIDI references beside the vocal sources. Each vocal source stays monophonic and editable, and sources may overlap. |
 | Advanced mapping | Explicitly map one blob across several MIDI notes or several blobs to one note for melismas and segmentation differences. |
 | Groove and swing | Represent swung subdivisions or groove references separately from the base tempo map. |
 | Markers and regions | Named markers, comments, colour labels and export regions. |
@@ -612,25 +612,9 @@ per frame. Latency reads as lag in an editor.
 
 ### 14.4 Writing style
 
-Strings follow the GNOME Human Interface Guidelines. It is written for desktop application chrome
-rather than for marketing pages, and it matches the house style already in use.
-
-- Header capitalisation for anything that is not a sentence: buttons, menu items, switch labels,
-  tooltips, headings.
-- Sentence capitalisation for checkboxes, radio buttons, body text and dialog description lines.
-- A tooltip is at most one sentence, and short.
-- A tooltip never repeats the label beside it. Either supplement it or rephrase it.
-- Every control in a container has a tooltip, or none of them do. Mixed is worse than absent.
-- Standard labels for standard controls. Do not invent a synonym for Back, Search or Main Menu.
-- A menu or search tooltip may name what it applies to: Search Documents, Document Menu.
-- No period on a heading, a description, or a single-sentence string.
-- Ellipsis only where further input or confirmation follows.
-- Familiar task words, not system jargon. No Latin abbreviations, write "for example".
-- Never build one sentence across two controls. It breaks translation and screen readers.
-- No rationale in a label. A control says what it does, never why it exists.
-- No tooltip carries essential information on its own. It is unreachable on touch and often
-  unreachable to assistive technology.
-- A toggle's tooltip names what pressing it will do, and follows the state icon.
+Every string a person reads follows [ui_text.md](ui_text.md): the GNOME Human Interface Guidelines,
+with Apple's alerts and Microsoft's error messages where GNOME is silent, standard words, banned
+patterns and worked examples.
 
 ### 14.5 Sources
 

@@ -335,3 +335,47 @@ export function watchPreferredTheme(onChange: (name: ThemeName) => void): () => 
     }
   };
 }
+
+/** Accents the clips after the first are drawn in, most distinct from the default first. */
+const SOURCE_ACCENTS: readonly AccentName[] = [
+  'coral',
+  'kelp',
+  'ember',
+  'abyssal',
+  'seaGlass',
+  'lagoon',
+  'cerulean',
+];
+
+/** Each theme's colours per clip, made once per theme. */
+const SOURCE_THEMES = new WeakMap<Theme, Map<number, Theme>>();
+
+/**
+ * The colours a clip's blobs are drawn in.
+ *
+ * @remarks Clip 0 keeps the theme as it is. Every other clip takes an accent of its own for its
+ * blob fill and bounds, skipping the one the theme already uses, so two sources at the same time
+ * and pitch read apart.
+ */
+export function sourceTheme(theme: Theme, clip: number): Theme {
+  if (clip <= 0) return theme;
+  let clips = SOURCE_THEMES.get(theme);
+  if (clips === undefined) {
+    clips = new Map();
+    SOURCE_THEMES.set(theme, clips);
+  }
+  const known = clips.get(clip);
+  if (known !== undefined) return known;
+  const accent = currentAccent();
+  const choices = SOURCE_ACCENTS.filter((name) => name !== accent);
+  const chosen = choices[(clip - 1) % choices.length] ?? DEFAULT_ACCENT;
+  const tokens = accentTokens(chosen, isDarkTheme(currentTheme()));
+  const tinted: Theme = {
+    ...theme,
+    blobFill: tokens.blobFill,
+    blobFillSelected: tokens.blobFillSelected,
+    blobBounds: tokens.blobBounds,
+  };
+  clips.set(clip, tinted);
+  return tinted;
+}

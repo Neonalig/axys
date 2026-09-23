@@ -40,7 +40,7 @@ export class SpanPool {
       });
       worker.addEventListener('error', (event) => {
         event.preventDefault();
-        this.#lose(worker, event.message || 'a span worker stopped');
+        this.#lose(worker, event.message || 'Analysis stopped');
       });
       this.#idle.push(worker);
       this.#workers += 1;
@@ -75,7 +75,7 @@ export class SpanPool {
   observe(job: RequestId, span: Span): Promise<SpanMeasures> {
     return new Promise<SpanMeasures>((resolve, reject) => {
       if (this.#workers === 0) {
-        reject(new Error('no span workers are running'));
+        reject(new Error('Analysis unavailable'));
         return;
       }
       this.#queue.push({ job, span, resolve, reject });

@@ -10,6 +10,7 @@
 
 import { savePreferences } from './preferences.js';
 import { selectionSpan } from './selection.js';
+import { othersOf, stepSource } from './sources.js';
 import { projectEnd, projectRate } from './store.js';
 import type { AppState, AppStore } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
@@ -18,6 +19,7 @@ import type {
   Blob,
   ClipId,
   EditOp,
+  OthersView,
   ExportPreview,
   MappingProposal,
   TimelineMap,
@@ -144,19 +146,22 @@ export interface Workspace {
   /**
    * Proposes blob-to-note mappings against the guide, without applying them.
    *
-   * @remarks `null` when there is no session or no guide to align against. The caller commits
-   * what it keeps of the proposal as an edit of its own.
+   * @remarks `clips` limits the proposal to those clips, each mapped on its own; absent is every
+   * clip. `null` when there is no session or no guide to align against. The caller commits what
+   * it keeps of the proposal as an edit of its own.
    */
-  proposeMappings(): MappingProposal | null;
+  proposeMappings(clips?: readonly ClipId[]): MappingProposal | null;
+
+  /**
+   * Brings a clip forward, and sets how the clips outside its layer are shown.
+   *
+   * @remarks `null` is the first clip. An absent `others` keeps the current one. A view change,
+   * not an edit, so it is never undone.
+   */
+  focus(clip: ClipId | null, others?: OthersView): void;
 
   /** Source time a source time snaps to on the musical grid. */
   snapTime(seconds: number): number;
-
-  /** Output time the current plan puts a source time at. */
-  outputAt(sourceSeconds: number): number;
-
-  /** Source time the current plan reads at an output time. */
-  sourceAt(outputSeconds: number): number;
 }
 
 /** Everything a command may reach. */
@@ -181,6 +186,13 @@ export interface Chrome {
   toggleCommandPalette(): void;
   /** Opens the keyboard cheatsheet, or closes it when it is already open. */
   toggleCheatsheet(): void;
+}
+
+/** Brings forward the source `step` places after the one in front. */
+function stepFocus(ctx: CommandContext, step: number): void {
+  const state = ctx.store.state;
+  if (state.edits === null) return;
+  ctx.workspace.focus(stepSource(state.edits, state.layer[0] ?? null, step));
 }
 
 /**
@@ -485,13 +497,7 @@ export function buildCommands(): Command[] {
         const state = ctx.store.state;
         const selection = selectedRange(state);
         showExportDialog({
-          selection:
-            selection === null
-              ? null
-              : {
-                  start: ctx.workspace.outputAt(selection.start),
-                  end: ctx.workspace.outputAt(selection.end),
-                },
+          selection,
           sourceRate: projectRate(state) ?? 48_000,
           references: (state.edits?.references.length ?? 0) > 0,
           preview: (range, withReferences) => ctx.workspace.exportPreview(range, withReferences),
@@ -732,14 +738,8 @@ export function buildCommands(): Command[] {
         selectedRange(ctx.store.state) !== null || ctx.store.state.transport.loop !== null,
       run: (ctx) => {
         const state = ctx.store.state;
-        const range = selectedRange(state);
-        const wanted =
-          range === null
-            ? null
-            : {
-                start: ctx.workspace.outputAt(range.start),
-                end: ctx.workspace.outputAt(range.end),
-              };
+        // A selection is already in output time, which is what the transport loops.
+        const wanted = selectedRange(state);
         const loop = state.transport.loop;
         if (loop !== null && (wanted === null || sameRange(loop, wanted))) {
           ctx.audio.setLoop(null);
@@ -807,6 +807,40 @@ export function buildCommands(): Command[] {
       enabled: () => true,
       run: (ctx) => {
         fitToContent(ctx.store);
+      },
+    },
+    {
+      id: 'view.sources',
+      label: 'Next Source',
+      group: 'View',
+      shortcut: ']',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      run: (ctx) => {
+        stepFocus(ctx, 1);
+      },
+    },
+    {
+      id: 'view.previousSource',
+      label: 'Previous Source',
+      group: 'View',
+      shortcut: '[',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      run: (ctx) => {
+        stepFocus(ctx, -1);
+      },
+    },
+    {
+      // Show, then Dim, then Hide, then Show again.
+      id: 'view.toggleOthers',
+      label: 'Toggle Others',
+      group: 'View',
+      shortcut: '\\',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const mode = othersOf(state.view);
+        const next = mode === 'show' ? 'dim' : mode === 'dim' ? 'hide' : 'show';
+        ctx.workspace.focus(state.layer[0] ?? null, next);
       },
     },
     {

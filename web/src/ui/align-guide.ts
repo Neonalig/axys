@@ -7,15 +7,19 @@
  * those notes. It is chosen, watched against the material and then kept or thrown away, the same
  * way Correction and Voice Character are, so how far it pulls and what it pulls are visible
  * before anything is committed. With blobs selected only those are remapped; with nothing
- * selected the whole project is.
+ * selected the whole project is. With more than one vocal source, each ticked source is mapped to
+ * the guide on its own, so a double follows the same notes as its lead, and every other source
+ * keeps its mappings.
  */
 
 import { Dialog } from './dialog.js';
 import { describeLeftovers, scopeLine } from './inspector.js';
+import { initialSources, sourcePicker } from './source-picker.js';
 import { field, guidedLabel, rangeInput, selectInput } from './controls/index.js';
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
 import type { EditOp, GuideMode, GuideSelection, NoteMapping } from '../core/types.js';
+import { clipOf } from '../core/types.js';
 
 /** Guide modes, in the order they are offered. */
 const GUIDE_MODES: readonly { value: GuideMode; label: string }[] = [
@@ -33,19 +37,20 @@ function readNumber(input: HTMLInputElement, fallback: number): number {
 /**
  * The mappings a proposal contributes, narrowed to the selection.
  *
- * @remarks Every blob outside the selection keeps whatever it is mapped to now, so aligning a
- * phrase leaves the rest of the take where the last alignment put it.
+ * @remarks The proposal covers only the chosen sources. Every blob outside the selection keeps
+ * whatever it is mapped to now, so aligning a phrase leaves the rest of the take where the last
+ * alignment put it, and every other source keeps its own alignment.
  */
 function narrow(
   proposed: readonly NoteMapping[],
   current: readonly NoteMapping[],
   selected: ReadonlySet<number>,
 ): NoteMapping[] {
-  if (selected.size === 0) return [...proposed];
+  const narrowed = proposed.some((mapping) => selected.has(mapping.blob));
   const kept = new Map<number, NoteMapping>();
   for (const mapping of current) kept.set(mapping.blob, mapping);
   for (const mapping of proposed) {
-    if (selected.has(mapping.blob)) kept.set(mapping.blob, mapping);
+    if (!narrowed || selected.has(mapping.blob)) kept.set(mapping.blob, mapping);
   }
   return [...kept.values()].sort((a, b) => a.blob - b.blob);
 }
@@ -55,18 +60,40 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   const state: AppState = ctx.store.state;
   const guide = state.edits?.guide ?? null;
   if (guide === null) {
-    ctx.toast.warn('Choose a MIDI guide track before aligning it');
+    ctx.toast.warn('Choose a guide track first');
     return Dialog.open({ title: 'Align Guide', content: document.createElement('div') });
   }
   const selected = new Set(state.selection.blobs);
-  // Proposed once, against the project as the panel found it. The mapping follows from the
-  // blobs and the notes; mode and strength decide what is done with it, not what it is.
-  const proposal = ctx.workspace.proposeMappings();
-  if (proposal === null) {
-    ctx.toast.warn('This guide could not be aligned');
+  // Proposed against the project as the panel found it, again only when the sources change. The
+  // mapping follows from the blobs and the notes; mode and strength decide what is done with it,
+  // not what it is.
+  const propose = (sources: readonly number[]): NoteMapping[] | null => {
+    const proposal = ctx.workspace.proposeMappings(sources);
+    if (proposal === null) return null;
+    result.textContent = describeLeftovers(
+      proposal.report.unmappedBlobs.filter((blob) => sources.includes(clipOf(blob))).length,
+      proposal.report.unmappedNotes.length,
+    );
+    return narrow(proposal.mappings, state.edits?.mappings ?? [], selected);
+  };
+  const result = document.createElement('p');
+  result.className = 'axys-hint';
+  let scope: HTMLElement = document.createElement('p');
+  const picker = sourcePicker(state, initialSources(state), () => {
+    const next = propose(picker.chosen());
+    if (next !== null) mappings = next;
+    const line = scopeLine(state, picker.chosen());
+    scope.replaceWith(line);
+    scope = line;
+    apply();
+  });
+  const first = propose(picker.chosen());
+  if (first === null) {
+    ctx.toast.warn('Guide alignment failed');
     return Dialog.open({ title: 'Align Guide', content: document.createElement('div') });
   }
-  const mappings = narrow(proposal.mappings, state.edits?.mappings ?? [], selected);
+  let mappings = first;
+  scope = scopeLine(state, picker.chosen());
 
   const content = document.createElement('div');
   content.className = 'axys-panel';
@@ -87,7 +114,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   strengthRow.className = 'axys-field';
   const strengthLabel = guidedLabel(
     'Guide Strength',
-    'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung',
+    'How far mapped blobs are pulled onto their notes',
   );
   strengthLabel.htmlFor = strength.id;
   const pair = document.createElement('div');
@@ -95,21 +122,11 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   pair.append(strength, strengthReadout);
   strengthRow.append(strengthLabel, pair);
 
-  const result = document.createElement('p');
-  result.className = 'axys-hint';
-  result.textContent = describeLeftovers(
-    proposal.report.unmappedBlobs.length,
-    proposal.report.unmappedNotes.length,
-  );
-
   content.append(
-    field(
-      'Guide Mode',
-      mode,
-      'What the guide moves. A blob mapped to a note is pulled onto that note; Visual Only maps the notes and moves nothing, which is how a mapping is checked before it is used',
-    ),
+    field('Guide Mode', mode, 'What the guide moves: pitch, timing, both or nothing'),
     strengthRow,
-    scopeLine(state),
+    ...(picker.element === null ? [] : [picker.element]),
+    scope,
     result,
   );
 
@@ -141,7 +158,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
     blocking: false,
     actions: [
       {
-        label: 'Discard',
+        label: 'Cancel',
         onSelect: () => {
           settled = true;
           ctx.workspace.discardPreview();

@@ -30,10 +30,12 @@ import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState, FollowMode } from '../app/store.js';
 import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
+import { scopeText } from './source-picker.js';
 import type {
   AccidentalStyle,
   Blob,
   BlobId,
+  ClipId,
   EditOp,
   GuideMode,
   GuideSelection,
@@ -145,7 +147,7 @@ export function plural(count: number, noun: string): string {
 
 /** How many blobs and notes a guide proposal left over. */
 export function describeLeftovers(blobs: number, notes: number): string {
-  return `${plural(blobs, 'blob')} and ${plural(notes, 'note')} unmapped.`;
+  return `${plural(blobs, 'blob')} and ${plural(notes, 'note')} unmapped`;
 }
 
 /**
@@ -155,14 +157,10 @@ export function describeLeftovers(blobs: number, notes: number): string {
  * operation has to say and saying it differently each time makes it a thing to read rather than
  * a thing to glance at.
  */
-export function scopeLine(state: AppState): HTMLElement {
+export function scopeLine(state: AppState, clips: readonly ClipId[]): HTMLElement {
   const line = document.createElement('p');
   line.className = 'axys-hint';
-  const count = state.selection.blobs.length;
-  line.textContent =
-    count === 0
-      ? 'No selection. Affects whole project'
-      : `Affects ${String(count)} selected ${count === 1 ? 'blob' : 'blobs'}.`;
+  line.textContent = scopeText(state, clips);
   return line;
 }
 
@@ -410,7 +408,7 @@ export class Inspector {
         'Detected Centre',
         this.#detected,
         this.#detectedName,
-        'Detected pitch centre in MIDI notes. Analysis evidence, not editable',
+        'Detected pitch centre in MIDI notes, read-only',
       ),
       this.#readoutField(
         'Target Centre',
@@ -419,18 +417,14 @@ export class Inspector {
         'Pitch the blob is corrected to, in MIDI notes',
       ),
       field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch', 'st'),
-      field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents', 'ct'),
+      field('Offset Cents', this.#cents, 'Pitch offset in cents', 'ct'),
       field(
         'Gain',
         this.#gain,
-        `Level of the blob in decibels, so one word can be lifted or dropped. ${String(MIN_GAIN_DB)} dB is silence.`,
+        `Blob level in decibels, ${String(MIN_GAIN_DB)} dB is silent`,
         'dB',
       ),
-      field(
-        'Exclude',
-        this.#excluded,
-        'Leaves this blob out of scale correction and MIDI guidance. It still sounds, and edits made on it by hand still apply',
-      ),
+      field('Exclude', this.#excluded, 'Skip this blob in correction and MIDI guidance'),
     );
     properties.append(blobPanel);
 
@@ -443,8 +437,8 @@ export class Inspector {
     this.#projectName = textInput(MAX_PROJECT_NAME);
     this.#key = selectInput(KEY_OPTIONS);
     projectPanel.append(
-      field('Name', this.#projectName, 'What this project is called. Renaming is undoable'),
-      field('Key', this.#key, 'Key the project is in. Correction pulls blobs onto its scale'),
+      field('Name', this.#projectName, 'Project name'),
+      field('Key', this.#key, 'Project key, used as the correction scale'),
     );
     project.append(projectPanel);
 
@@ -458,24 +452,20 @@ export class Inspector {
     this.#estimate = button({
       icon: 'correct',
       label: 'Estimate From Vocal',
-      tooltip: 'Estimate the tempo, meter, start and key from the vocal',
+      tooltip: 'Estimate tempo, time signature, start and key',
       onPress: () => {
         this.#hooks.estimate();
       },
     });
     this.#estimate.classList.add('is-labelled', 'axys-estimate');
     timingPanel.append(
-      field('Tempo', this.#bpm, 'Beats per minute at the start of the project', 'BPM'),
-      field('Time Signature', this.#meter, 'Beats in a bar, and the note that counts one'),
-      field(
-        'Start Beat',
-        this.#startBeat,
-        'Beat of the bar the first beat is. The metronome and the ruler count from it',
-      ),
+      field('Tempo', this.#bpm, 'Beats per minute at the project start', 'BPM'),
+      field('Time Signature', this.#meter, 'Beats per bar and the beat unit'),
+      field('Start Beat', this.#startBeat, 'Beat of the bar the first beat falls on'),
       field(
         'Start Offset',
         this.#startOffset,
-        'Seconds from the start of the project to the first beat',
+        'Seconds from the project start to the first beat',
         's',
       ),
       this.#estimate,
@@ -508,19 +498,11 @@ export class Inspector {
 
     displayPanel.append(
       field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz', 'Hz'),
-      field('Accidental Style', this.#accidentals, 'How note names spell accidentals'),
-      field('Snap Division', this.#snap, 'Grid resolution edits snap to'),
-      field(
-        'Time Display',
-        this.#timeDisplay,
-        'Whether the ruler reads clock time or bars and beats',
-      ),
-      field(
-        'Follow Mode',
-        this.#followMode,
-        'Whether a following view jumps ahead a screen at a time or holds the playhead centred',
-      ),
-      field('Button Names', this.#toolbarLabels, 'Shows each toolbar button name beside its icon'),
+      field('Accidental Style', this.#accidentals, 'Sharps or flats in note names'),
+      field('Snap Division', this.#snap, 'Snap grid resolution'),
+      field('Time Display', this.#timeDisplay, 'Ruler in clock time or bars and beats'),
+      field('Follow Mode', this.#followMode, 'Page ahead or keep the playhead centred'),
+      field('Button Names', this.#toolbarLabels, 'Show names beside toolbar icons'),
     );
     project.append(displayPanel);
 
@@ -540,19 +522,11 @@ export class Inspector {
       'Guide Strength',
       this.#guideStrength,
       this.#guideStrengthReadout,
-      'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung',
+      'How far mapped blobs are pulled onto their notes',
     );
-    this.#guideMutedRow = field(
-      'Mute Guide',
-      this.#guideMuted,
-      'Stops the guide sounding and hides its notes. The mapping is kept, so unmuting brings it back as it was',
-    );
+    this.#guideMutedRow = field('Mute Guide', this.#guideMuted, 'Mute and hide the guide notes');
     guidePanel.append(
-      field(
-        'Guide Mode',
-        this.#guideMode,
-        'What the guide contributes: the pitch of each mapped blob, its timing, or both. Visual Only draws the notes and moves nothing',
-      ),
+      field('Guide Mode', this.#guideMode, 'What the guide moves: pitch, timing, both or nothing'),
       this.#guideStrengthRow,
       this.#guideMutedRow,
       this.#guideHint,
@@ -715,7 +689,7 @@ export class Inspector {
     // One selected blob is what the heading already says, so the count under it is a line that
     // repeats the line above it.
     this.#selectionCount.hidden = selectedCount <= 1;
-    this.#selectionCount.textContent = `${plural(selectedCount, 'blob')} selected.`;
+    this.#selectionCount.textContent = `${plural(selectedCount, 'blob')} selected`;
 
     // Start and End are one blob's own boundaries, so they stay on the blob the heading leads
     // with. Everything else is a figure a whole selection can carry, so it reads across the
@@ -852,8 +826,8 @@ export class Inspector {
     const parts: string[] = [];
     if (report)
       parts.push(describeLeftovers(report.unmappedBlobs.length, report.unmappedNotes.length));
-    if (overlaps > 0) parts.push(`${plural(overlaps, 'overlapping note')}.`);
-    this.#guideHint.textContent = parts.join(' ');
+    if (overlaps > 0) parts.push(plural(overlaps, 'overlapping note'));
+    this.#guideHint.textContent = parts.join(', ');
     this.#guideHint.hidden = parts.length === 0;
   }
 
@@ -926,6 +900,7 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted - blob.detectedCenter,
+        anchors: true,
       }));
     });
 
@@ -936,6 +911,7 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted,
+        anchors: true,
       }));
     });
 
@@ -946,6 +922,7 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted / 100,
+        anchors: true,
       }));
     });
 

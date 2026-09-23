@@ -34,8 +34,8 @@ Hand-written TypeScript mirrors of the serde contracts in `docs/core_contracts.m
 `Project`, `Quality`, `ClipId`, `ReferenceId`, `Span`, `Clip`, `Reference`, `ClipMedia`,
 `ClipStrips`, `ReferenceStrip`.
 
-A project holds several vocal clips on one lane and any number of references. Blobs read from a
-session are in project seconds, and a blob id names its clip: `clipOf(id)` in `core/types.ts` reads
+A project holds several vocal clips, which may overlap, and any number of references. Blobs read
+from a session are in project seconds, and a blob id names its clip: `clipOf(id)` in `core/types.ts` reads
 it, and `displayTitle(source)` is the one spelling of a clip's or reference's name on the desk and
 over its blobs: the name it was given, or its file's name through `sourceTitle`. New operations:
 `deleteBlobs`, `addClip`, `moveClip`, `removeClip`, `renameClip`, `addReference`, `moveReference`,
@@ -99,7 +99,8 @@ export interface AxysCore {
 `Session` wraps the Rust `Session` class: `applyEdit(op: EditOp): void`, `undo(): boolean`,
 `redo(): boolean`, `state(): EditState`, `track(): PitchTrackArrays`, `blobs(): Blob[]`,
 `plan(): RenderPlan`, `conflicts(): TimingConflict[]`, `guideOverlaps(): GuideOverlap[]`,
-`proposeMappingsPreview(): MappingProposal`, `history(): { undo: string | null; redo:
+`proposeMappingsPreview(clips?): MappingProposal`, `setFocus(active, isolate)`,
+`layer(): ClipId[]`, `otherBlobs(): Blob[]`, `clipTrack(clip)`, `history(): { undo: string | null; redo:
 string | null }`, `project(name: string, view: ViewState): string`,
 `exportPreview(range, withReferences?): ExportPreview`,
 `exportWav(range, depth, sampleRate?, withReferences?): { bytes: Uint8Array; report: ExportReport }`,
@@ -107,10 +108,15 @@ string | null }`, `project(name: string, view: ViewState): string`,
 `clipSamples(clip)`, `media(): MediaList`, `attachClip(clip, samples)`, `addClip(input): ClipId`,
 `addReference(source, position): ReferenceId` and `attachReference(reference, channels)`.
 
-`plan()` is one plan for the whole lane in project seconds, which the editor draws from; with one
-clip at zero it is that clip's own plan. Playback and export read `clipPlans()`, each clip's plan
-with its position. `track()` is the lane's detected pitch, clips joined with an unvoiced frame
-between them and deleted material unvoiced. `addClip` takes mono samples at the project rate and
+`setFocus` picks the editor's layer: the active clip, `null` for the first, and every clip beside
+it that overlaps none of the rest, or the active clip alone with `isolate`. `blobs()`, `track()`
+and `plan()` read that layer; `layer()` names its clips, active first, and `otherBlobs()` holds
+every other clip's blobs. `plan()` is one plan for the layer in project seconds, which the editor
+draws from; with one clip at zero it is that clip's own plan. Playback and export read
+`clipPlans()`, every clip's plan with its position and a plan per further voice in `layers`. `track()` is the layer's detected pitch, clips
+joined with an unvoiced frame between them and deleted material unvoiced. `conflicts()` are
+measured inside each clip, across every clip. `proposeMappingsPreview(clips)` maps each listed
+clip to the guide on its own, or every clip when none are listed. `addClip` takes mono samples at the project rate and
 is one undo step; `attachClip` refuses audio whose fingerprint is not the clip's.
 
 `AnalysedSessionInput` carries `samples`, `sampleRate`, `name`, the analysis worker's `trackJson`
@@ -425,13 +431,17 @@ range, hover readout, drag preview).
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 - Every blob carries a tab naming its clip, where the clip is picked up with any tool and
   dragged along the lane, previewing as a band with the clip's waveform and its blobs as ghosts
-  where it would land. A click on the tab selects the clip. A clip dropped over another lands on
-  the nearest free position, by `freePosition` in `editor/tools.ts`, which mirrors the core.
-  Ctrl puts a dragged clip or reference at the start and Shift at the playhead.
+  where it would land. A click on the tab selects the clip. A clip lands exactly where it is let
+  go, over any clip there, snapping to the grid but not to blob edges. Ctrl puts a dragged clip
+  or reference at the start. Shift inserts a dragged or dropped vocal instead, moving every clip
+  after it later, and the two stack.
+- Clips outside the layer are drawn behind it from `state.others`, faded as a whole and in their
+  own colours, and hidden under Hide Others. Where nothing of the layer is hit and Show Others is
+  on, a press on one of their blobs calls `focus(clip)` first and then acts on what it hits.
 - References are bands along the foot of the plot, dragged to move and right-clicked to delete.
 - `previewDrop(clientX, clientY, modifiers)` marks where audio dragged in from outside would land
   and returns that time, with the same Ctrl and Shift placements; `endDrop()` takes the marker
-  away. A vocal dropped there is inserted with `ripple`, which `rippleInsert` mirrors.
+  away. Every vocal and reference dropped together lands at that time.
 - The Bezier tool draws a line and then offers its two ends and two controls to shape. Enter keeps
   it, Escape drops it, and a tool change or the next curve keeps it.
 
@@ -494,8 +504,9 @@ the operation applies to that span by excluding every blob outside it, and those
 part of what Discard takes back. Align Guide narrows its proposal to the selected blobs instead,
 leaving every blob outside the selection mapped as it was.
 
-Each names its extent in one line, the same line everywhere: `Affects 3 selected blobs.` or `No
-selection. Affects whole project.` Nothing else goes in it.
+Each names its extent in one line, the same line everywhere: `Affects 3 selected blobs` or
+`Affects the whole project`, with the sources named when there are several. Nothing else goes in
+it.
 
 `ui/export-dialog.ts` exports `showExportDialog(options: ExportDialogOptions): Dialog`, the Export
 WAV panel: a range choice of whole project or selection defaulting to the selection when there is
@@ -506,7 +517,9 @@ change. It commits an `ExportChoice` of `{ range, sampleRate, depth, withReferen
 ticked, the file is stereo with every unmuted reference at its desk level and pan.
 
 `ui/mixer.ts` exports `class MixerPanel`, the desk across the bottom of the editor: a track per
-clip, in lane order and headed with the clip's name, carrying a Processed and an Original strip;
+clip, in time order and headed with the clip's name in its colour, carrying a Processed and an
+Original strip, where a click on the name brings the clip forward and the track in front is
+outlined;
 a strip per reference; one Metronome strip; and a Master strip at the far end with a level and a
 mute only. Each strip is laid out the way a desk lays one out, with the name, the pan above the
 fader, a vertical fader and mute and solo under it. The fader's fill darkens as far as the strip

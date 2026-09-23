@@ -60,7 +60,8 @@
     "overflow": "ellipsis",
     "search": "search",
     "caret": "chevron-down",
-    "close": "x"
+    "close": "x",
+    "sources": "layers"
   },
   "states": {
     "inspectorFold": { "on": "sidebarClosed", "off": "sidebar" },

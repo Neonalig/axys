@@ -79,6 +79,20 @@ impl PitchCurve {
         }
     }
 
+    /// The same curve with every anchor moved by `semitones`.
+    pub fn transposed(&self, semitones: f64) -> PitchCurve {
+        PitchCurve {
+            anchors: self
+                .anchors
+                .iter()
+                .map(|anchor| Anchor {
+                    midi: anchor.midi + semitones,
+                    ..*anchor
+                })
+                .collect(),
+        }
+    }
+
     /// Creates a curve from anchors, sorting them by time.
     pub fn from_anchors(mut anchors: Vec<Anchor>) -> Result<Self> {
         if anchors.len() > limits::MAX_CURVE_ANCHORS {

@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../../app/store.js';
-import type { PitchTrackArrays, RenderPlan } from '../../core/types.js';
+import type { Blob, PitchTrackArrays, RenderPlan } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
-import { blobOutputEnd, blobOutputStart, outputToSource, targetMidiAt } from './blobs.js';
+import {
+  blobOutputEnd,
+  blobOutputStart,
+  outputToSource,
+  sourceToOutput,
+  targetMidiAt,
+} from './blobs.js';
 
 /** Height in pixels of the unvoiced strip along the bottom of the pitch area. */
 const UNVOICED_STRIP = 7;
@@ -58,11 +64,9 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
   const weight = new Float32Array(count);
   for (let i = 0; i < track.times.length; i += 1) {
     const time = track.times[i] ?? 0;
-    if (time < from) {
+    // A timing edit can carry frames past later ones, so the track is not always in time order.
+    if (time < from || time > to) {
       continue;
-    }
-    if (time > to) {
-      break;
     }
     const column = Math.floor(time / step) - firstColumn;
     if (column < 0 || column >= count) {
@@ -162,21 +166,167 @@ export function drawPitch(
   if (state.track === null) {
     return;
   }
-  const columns = collect(state.track, viewport);
-
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
 
-  drawUnvoiced(ctx, columns, viewport, theme);
-  drawUncertainty(ctx, columns, viewport, theme);
-  drawDetected(ctx, columns, viewport, theme);
+  // One pass per voice, so blobs moved over each other draw two lines rather than one column
+  // spanning both.
+  for (const track of warpedTracks(state.track, state.blobs)) {
+    const columns = collect(track, viewport);
+    drawUnvoiced(ctx, columns, viewport, theme);
+    drawUncertainty(ctx, columns, viewport, theme);
+    drawDetected(ctx, columns, viewport, theme);
+  }
+  drawBridges(ctx, state.track, state.blobs, viewport, theme);
   drawTarget(ctx, state, viewport, theme);
   drawAnchors(ctx, state, viewport, theme);
 
   ctx.restore();
 }
+
+/**
+ * The track with every frame inside a blob moved to where that blob's timing edit puts it, split
+ * into voices whose blobs never overlap, and unvoiced outside every blob.
+ *
+ * @remarks The detected line then moves and stretches with its blob, as the waveform and the
+ * target already do. Frames outside every blob stay where they were sung, in the first voice.
+ * Blobs go to voices as the core splits them for playback: each to the first voice whose last
+ * blob has ended. Kept per track and blob list, which every edit replaces.
+ */
+function warpedTracks(track: PitchTrackArrays, blobs: readonly Blob[]): PitchTrackArrays[] {
+  const known = WARPED.get(track);
+  if (known !== undefined && known.blobs === blobs) {
+    return known.warped;
+  }
+  const voiceOf = voicesOf(blobs);
+  const count = Math.max(0, ...voiceOf.values()) + 1;
+  const members: number[][] = Array.from({ length: count }, () => []);
+  const times = new Float32Array(track.times);
+  const inside = new Uint8Array(times.length);
+  let next = 0;
+  for (let i = 0; i < times.length; i += 1) {
+    const time = track.times[i] ?? 0;
+    while (next < blobs.length && (blobs[next]?.end ?? 0) < time) next += 1;
+    const blob = blobs[next];
+    if (blob !== undefined && time >= blob.start) {
+      inside[i] = 1;
+      times[i] = sourceToOutput(blob, time);
+      members[voiceOf.get(blob.id) ?? 0]?.push(i);
+    } else {
+      members[0]?.push(i);
+    }
+  }
+  // Pitch outside every blob is not drawn: nothing there can be edited. Its level still reaches
+  // the unvoiced strip.
+  const warped = members
+    .filter((indices) => indices.length > 0)
+    .map((indices) => ({
+      times: Float32Array.from(indices, (i) => times[i] ?? 0),
+      midi: Float32Array.from(indices, (i) =>
+        inside[i] === 1 ? (track.midi[i] ?? Number.NaN) : Number.NaN,
+      ),
+      confidence: Float32Array.from(indices, (i) => track.confidence[i] ?? 0),
+      rms: Float32Array.from(indices, (i) => track.rms[i] ?? 0),
+    }));
+  WARPED.set(track, { blobs, warped });
+  return warped;
+}
+
+/**
+ * Continues each blob's detected line across the stretches of it that have no pitch, such as a
+ * consonant or a breath, as a faint dashed line.
+ *
+ * @remarks Between two sung stretches the line joins their ends. Before the first and after the
+ * last it runs flat to the blob's edge, so a blob always reads as one line.
+ */
+function drawBridges(
+  ctx: CanvasRenderingContext2D,
+  track: PitchTrackArrays,
+  blobs: readonly Blob[],
+  viewport: Viewport,
+  theme: Theme,
+): void {
+  const path = new Path2D();
+  const view = viewport.view;
+  for (const blob of blobs) {
+    if (blobOutputEnd(blob) < view.visibleStart || blobOutputStart(blob) > view.visibleEnd) {
+      continue;
+    }
+    const at = (time: number): number => viewport.timeToX(sourceToOutput(blob, time));
+    let last: { x: number; y: number } | null = null;
+    let gap = false;
+    let first = true;
+    for (let i = firstFrame(track, blob.start); i < track.times.length; i += 1) {
+      const time = track.times[i] ?? 0;
+      if (time > blob.end) break;
+      const midi = track.midi[i] ?? Number.NaN;
+      if (!Number.isFinite(midi)) {
+        gap = true;
+        continue;
+      }
+      const point = { x: at(time), y: viewport.midiToY(midi) };
+      if (first && gap) {
+        path.moveTo(at(blob.start), point.y);
+        path.lineTo(point.x, point.y);
+      } else if (gap && last !== null && point.x - last.x > 2) {
+        path.moveTo(last.x, last.y);
+        path.lineTo(point.x, point.y);
+      }
+      first = false;
+      gap = false;
+      last = point;
+    }
+    if (last !== null && gap) {
+      path.moveTo(last.x, last.y);
+      path.lineTo(at(blob.end), last.y);
+    }
+  }
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = theme.pitchDetected;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 3]);
+  ctx.stroke(path);
+  ctx.restore();
+}
+
+/** Index of the first frame at or after `seconds`. */
+function firstFrame(track: PitchTrackArrays, seconds: number): number {
+  let low = 0;
+  let high = track.times.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if ((track.times[middle] ?? 0) < seconds) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** Each blob's voice: the first whose last blob has ended by the edited start of this one. */
+function voicesOf(blobs: readonly Blob[]): Map<number, number> {
+  const order = [...blobs].sort((a, b) => blobOutputStart(a) - blobOutputStart(b));
+  const ends: number[] = [];
+  const voices = new Map<number, number>();
+  for (const blob of order) {
+    const start = blobOutputStart(blob);
+    let voice = ends.findIndex((end) => end <= start + 1e-9);
+    if (voice === -1) {
+      voice = ends.length;
+      ends.push(0);
+    }
+    ends[voice] = blobOutputEnd(blob);
+    voices.set(blob.id, voice);
+  }
+  return voices;
+}
+
+/** Each track's warped voices, and the blob list they were warped by. */
+const WARPED = new WeakMap<
+  PitchTrackArrays,
+  { blobs: readonly Blob[]; warped: PitchTrackArrays[] }
+>();
 
 function drawUnvoiced(
   ctx: CanvasRenderingContext2D,

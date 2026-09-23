@@ -19,6 +19,7 @@ import initWasm, {
 } from '../wasm/axys_wasm.js';
 import {
   arrayOf,
+  isNumber,
   isBlob,
   isClipPlan,
   isDriftReport,
@@ -126,6 +127,8 @@ export interface ClipInput extends Omit<AnalysedSessionInput, 'sampleRate'> {
   position: number;
   /** Inserts at `position` instead, moving the clips after it later to make room. */
   ripple?: boolean;
+  /** Places the clip at `position` over whatever is already there. */
+  exact?: boolean;
 }
 
 /** Typed facade over the wasm-bindgen exports. */
@@ -207,7 +210,7 @@ async function compileCore(url: URL): Promise<CompiledCore> {
   if (!response.ok) {
     throw new AxysError(
       'Load Core',
-      `the core module could not be read (${String(response.status)} ${response.statusText})`,
+      `Download failed (${String(response.status)} ${response.statusText})`,
     );
   }
   const contentType = response.headers.get('content-type') ?? '';
@@ -399,7 +402,24 @@ export class Session {
         params,
         input.position,
         input.ripple ?? false,
+        input.exact ?? false,
       ),
+    );
+  }
+
+  /**
+   * Replaces a clip's analysis, as though it had been imported with the new one.
+   *
+   * @remarks Refused once an edit touches the clip. The caller reloads the clip's audio in the
+   * engine afterwards, since its pitch track has changed.
+   */
+  reanalyse(
+    clip: ClipId,
+    input: { trackJson: string; blobsJson: string; f0?: F0Params; segment?: SegmentParams },
+  ): void {
+    const params = paramsJson(input.f0, input.segment);
+    call('Analyse Clip', () =>
+      this.#alive().reanalyse(clip, input.trackJson, input.blobsJson, params),
     );
   }
 
@@ -409,13 +429,39 @@ export class Session {
     return call('Import Reference', () => this.#alive().addReference(json, position));
   }
 
-  /** The current blobs in time order. */
+  /**
+   * Brings a clip forward and sets whether the editor edits it alone.
+   *
+   * @remarks `null` is the first clip. {@link Session.blobs}, {@link Session.track} and
+   * {@link Session.plan} read the layer this sets.
+   */
+  setFocus(active: ClipId | null, isolate: boolean): void {
+    call('Focus Clip', () => this.#alive().setFocus(active ?? -1, isolate));
+  }
+
+  /** The clips of the editor's layer, active clip first. */
+  layer(): ClipId[] {
+    return this.#read('Read Layer', () => this.#alive().layerJson(), arrayOf(isNumber), 'layer');
+  }
+
+  /** One clip's detected pitch in its own source seconds. */
+  clipTrack(clip: ClipId): PitchTrackArrays {
+    const json = call('Read Track', () => this.#alive().clipTrackJson(clip));
+    return pitchTrackToArrays(decode('Read Track', json, isPitchTrack, 'pitch track'));
+  }
+
+  /** The blobs of the editor's layer in time order. */
   blobs(): Blob[] {
     return this.#read('Read Blobs', () => this.#alive().blobsJson(), arrayOf(isBlob), 'blobs');
   }
 
+  /** The blobs of every clip outside the editor's layer, in project seconds. */
+  otherBlobs(): Blob[] {
+    return this.#read('Read Blobs', () => this.#alive().otherBlobsJson(), arrayOf(isBlob), 'blobs');
+  }
+
   /**
-   * One plan for the whole lane in project seconds, for the editor to draw from.
+   * One plan for the editor's layer in project seconds, for the editor to draw from.
    *
    * @remarks Its time map and target pitch join every clip's; playback reads
    * {@link Session.clipPlans} instead.
@@ -498,7 +544,7 @@ export class Session {
     );
     const report = this.lastExportReport();
     if (!report) {
-      throw new AxysError('Export WAV', 'the core encoded a file but reported no peak figures');
+      throw new AxysError('Export WAV', 'Encoder returned no peak level');
     }
     return { bytes, report };
   }
@@ -539,10 +585,11 @@ export class Session {
    * @remarks The caller keeps what it wants of the proposal and commits it as a `setMappings`
    * edit of its own, so aligning a selection and previewing an alignment are one undo step.
    */
-  proposeMappingsPreview(): MappingProposal {
+  proposeMappingsPreview(clips?: readonly ClipId[]): MappingProposal {
+    const json = clips === undefined ? undefined : JSON.stringify(clips);
     return this.#read(
       'Align Guide',
-      () => this.#alive().proposeMappingsPreview(),
+      () => this.#alive().proposeMappingsPreview(json),
       isMappingProposal,
       'mapping proposal',
     );
@@ -603,7 +650,7 @@ export class Session {
 
   #alive(): RawSession {
     if (this.#freed) {
-      throw new AxysError('Use Session', 'this session has been closed');
+      throw new AxysError('Use Session', 'Project is closed');
     }
     return this.#raw;
   }
@@ -649,7 +696,7 @@ function messageOf(thrown: unknown): string {
     const message: unknown = (thrown as { message: unknown }).message;
     if (typeof message === 'string') return message;
   }
-  return 'the core failed without a message';
+  return 'Unknown error';
 }
 
 function now(): number {

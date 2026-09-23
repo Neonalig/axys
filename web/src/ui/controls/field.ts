@@ -84,7 +84,7 @@ export function field(
   }
   const scrubbable =
     control instanceof HTMLInputElement && control.type === 'number' && !control.readOnly;
-  const explainer = scrubbable ? `${guide} ${DRAG_HINT}`.trim() : guide;
+  const explainer = !scrubbable ? guide : guide === '' ? DRAG_HINT : `${guide}. ${DRAG_HINT}`;
   const label = guidedLabel(labelText, explainer);
   label.htmlFor = control.id;
   row.append(label, unit === undefined ? control : withUnit(control, unit));

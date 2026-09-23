@@ -3,9 +3,13 @@
 //! Sources placed on the project timeline: vocal clips and reference tracks.
 //!
 //! A clip is one imported vocal with its own analysis and its own blobs, placed at a position on
-//! the one editable lane. Everything inside a clip stays in that clip's source seconds, so its
-//! analysis, blobs and render plan never change meaning when it moves; only the position does.
-//! Project seconds are clip seconds plus the clip's position.
+//! the timeline. Clips may overlap, a lead under its harmonies say, and each keeps its own blobs.
+//! Everything inside a clip stays in that clip's source seconds, so its analysis, blobs and
+//! render plan never change meaning when it moves; only the position does. Project seconds are
+//! clip seconds plus the clip's position.
+//!
+//! The editor edits one [`layer`] at a time: the active clip and every clip that can sit beside
+//! it without overlapping, so the blobs it reads are still one ordered set.
 //!
 //! Blob ids are partitioned by clip, [`CLIP_ID_BITS`] low bits per clip, so a blob id alone says
 //! which clip owns it and an edit operation addressing a blob needs no clip field.
@@ -271,6 +275,33 @@ pub fn ripple_insert(others: &[(f64, f64)], duration: f64, wanted: f64) -> (f64,
     (at, shift)
 }
 
+/// The clips the editor edits together: `active` first, then every clip in `clips` order that
+/// overlaps none already chosen.
+///
+/// Clips that only touch do not overlap. With no clip overlapping another the layer is every
+/// clip. An `active` clip not in `clips` falls back to the first. With `isolate`, the layer is
+/// the active clip alone. Empty when `clips` is.
+pub fn layer(clips: &[Clip], active: Option<ClipId>, isolate: bool) -> Vec<ClipId> {
+    let Some(first) = active
+        .and_then(|id| clips.iter().find(|clip| clip.id == id))
+        .or_else(|| clips.first())
+    else {
+        return Vec::new();
+    };
+    let mut chosen: Vec<&Clip> = vec![first];
+    if !isolate {
+        for clip in clips {
+            let clear = chosen.iter().all(|other| {
+                clip.end() <= other.position + 1e-9 || clip.position >= other.end() - 1e-9
+            });
+            if clear {
+                chosen.push(clip);
+            }
+        }
+    }
+    chosen.iter().map(|clip| clip.id).collect()
+}
+
 /// Audio heard beside the vocal and never edited or warped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,6 +448,54 @@ mod tests {
         fit_to_source(&mut set, 2.0);
         assert_eq!(set.get(BlobId(1)).expect("kept").end, 2.0);
         assert_eq!(set.get(BlobId(0)).expect("kept").end, 1.0);
+    }
+
+    fn placed(id: u32, position: f64, duration: f64) -> Clip {
+        Clip::new(
+            ClipId(id),
+            test_source("a", duration),
+            position,
+            BlobSet::new(),
+        )
+    }
+
+    #[test]
+    fn a_layer_without_overlaps_is_every_clip() {
+        let clips = [
+            placed(0, 0.0, 2.0),
+            placed(1, 2.0, 2.0),
+            placed(2, 5.0, 1.0),
+        ];
+        assert_eq!(
+            layer(&clips, None, false),
+            vec![ClipId(0), ClipId(1), ClipId(2)]
+        );
+        assert_eq!(layer(&clips, Some(ClipId(1)), true), vec![ClipId(1)]);
+        assert!(layer(&[], None, false).is_empty());
+    }
+
+    #[test]
+    fn a_layer_leaves_out_what_overlaps_the_active_clip() {
+        // 1 overlaps 0; 2 overlaps 1 but not 0; 3 overlaps 2 but not 0.
+        let clips = [
+            placed(0, 0.0, 4.0),
+            placed(1, 3.0, 4.0),
+            placed(2, 6.0, 2.0),
+            placed(3, 7.0, 2.0),
+        ];
+        assert_eq!(layer(&clips, None, false), vec![ClipId(0), ClipId(2)]);
+        assert_eq!(
+            layer(&clips, Some(ClipId(1)), false),
+            vec![ClipId(1), ClipId(3)]
+        );
+        assert_eq!(
+            layer(&clips, Some(ClipId(3)), false),
+            vec![ClipId(3), ClipId(0)]
+        );
+        assert_eq!(
+            layer(&clips, Some(ClipId(9)), false),
+            vec![ClipId(0), ClipId(2)]
+        );
     }
 
     #[test]

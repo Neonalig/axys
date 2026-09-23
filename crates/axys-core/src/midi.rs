@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::blob::{BlobId, BlobSet};
+use crate::blob::{Blob, BlobId, BlobSet};
 use crate::limits;
 use crate::timeline::{MeterEvent, TempoEvent, TimelineMap};
 use crate::{AxysError, Result};
@@ -131,7 +131,7 @@ impl MidiFile {
 pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
     if bytes.len() > limits::MAX_MIDI_BYTES {
         return Err(AxysError::Invalid(format!(
-            "midi file of {} bytes exceeds the {} byte limit",
+            "MIDI file of {} bytes is over the {} byte limit",
             bytes.len(),
             limits::MAX_MIDI_BYTES
         )));
@@ -139,7 +139,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
     let ppq = check_structure(bytes)?;
 
     let smf = midly::Smf::parse(bytes)
-        .map_err(|e| AxysError::Invalid(format!("midi file could not be parsed: {e}")))?;
+        .map_err(|e| AxysError::Invalid(format!("MIDI file is not valid: {e}")))?;
 
     let format = match smf.header.format {
         midly::Format::SingleTrack => 0,
@@ -150,7 +150,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
     let total_events: usize = smf.tracks.iter().map(|t| t.len()).sum();
     if total_events > limits::MAX_MIDI_EVENTS {
         return Err(AxysError::Invalid(format!(
-            "midi file holds {total_events} events, over the {} event limit",
+            "MIDI file has {total_events} events, over the {} event limit",
             limits::MAX_MIDI_EVENTS
         )));
     }
@@ -172,7 +172,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
         file.tracks.push(scanned.info);
         if file.tempo.len() > limits::MAX_MAP_EVENTS || file.meter.len() > limits::MAX_MAP_EVENTS {
             return Err(AxysError::Invalid(format!(
-                "midi tempo or meter map exceeds {} events",
+                "MIDI tempo or meter map is over {} events",
                 limits::MAX_MAP_EVENTS
             )));
         }
@@ -191,33 +191,31 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
 /// an SMPTE division be reported precisely instead of as a generic parse failure.
 fn check_structure(bytes: &[u8]) -> Result<u16> {
     if bytes.len() < 14 {
-        return Err(AxysError::Invalid(
-            "midi file is shorter than a header chunk".into(),
-        ));
+        return Err(AxysError::Invalid("MIDI file is truncated".into()));
     }
     if &bytes[0..4] != b"MThd" {
-        return Err(AxysError::Invalid("midi file has no MThd header".into()));
+        return Err(AxysError::Invalid("file is not a MIDI file".into()));
     }
     let header_len = read_u32(bytes, 4) as usize;
     if header_len < 6 {
-        return Err(AxysError::Invalid("midi header chunk is too short".into()));
+        return Err(AxysError::Invalid("MIDI header is truncated".into()));
     }
     let body_end = 8usize
         .checked_add(header_len)
-        .ok_or_else(|| AxysError::Invalid("midi header length overflows".into()))?;
+        .ok_or_else(|| AxysError::Invalid("MIDI header is corrupt".into()))?;
     if body_end > bytes.len() {
-        return Err(AxysError::Invalid("midi header chunk is truncated".into()));
+        return Err(AxysError::Invalid("MIDI header is truncated".into()));
     }
 
     let declared_tracks = u16::from_be_bytes([bytes[10], bytes[11]]) as usize;
     let division = u16::from_be_bytes([bytes[12], bytes[13]]);
     if division & 0x8000 != 0 {
         return Err(AxysError::Unsupported(
-            "SMPTE timecode divisions are not supported, only ticks per quarter note".into(),
+            "SMPTE timecode MIDI files are not supported".into(),
         ));
     }
     if division == 0 {
-        return Err(AxysError::Invalid("midi tick division is zero".into()));
+        return Err(AxysError::Invalid("MIDI tick division is zero".into()));
     }
 
     let mut pos = body_end;
@@ -227,9 +225,9 @@ fn check_structure(bytes: &[u8]) -> Result<u16> {
         let end = pos
             .checked_add(8)
             .and_then(|p| p.checked_add(len))
-            .ok_or_else(|| AxysError::Invalid("midi chunk length overflows".into()))?;
+            .ok_or_else(|| AxysError::Invalid("MIDI track is corrupt".into()))?;
         if end > bytes.len() {
-            return Err(AxysError::Invalid("midi track chunk is truncated".into()));
+            return Err(AxysError::Invalid("MIDI track is truncated".into()));
         }
         if &bytes[pos..pos + 4] == b"MTrk" {
             found_tracks += 1;
@@ -237,13 +235,11 @@ fn check_structure(bytes: &[u8]) -> Result<u16> {
         pos = end;
     }
     if pos != bytes.len() {
-        return Err(AxysError::Invalid(
-            "midi file ends inside a chunk header".into(),
-        ));
+        return Err(AxysError::Invalid("MIDI file is truncated".into()));
     }
     if found_tracks < declared_tracks {
         return Err(AxysError::Invalid(format!(
-            "midi header declares {declared_tracks} tracks but the file holds {found_tracks}"
+            "MIDI file has {found_tracks} of {declared_tracks} tracks"
         )));
     }
     Ok(division)
@@ -705,7 +701,7 @@ pub struct DriftReport {
 
 /// Measures alignment error between mapped blobs and their guide notes.
 pub fn measure_drift(
-    blobs: &BlobSet,
+    blobs: &[Blob],
     notes: &[MidiNote],
     mappings: &[NoteMapping],
     timeline: &TimelineMap,
@@ -715,7 +711,8 @@ pub fn measure_drift(
         if mapping.opted_out {
             continue;
         }
-        let (Some(note), Some(blob)) = (mapping.note, blobs.get(mapping.blob)) else {
+        let blob = blobs.iter().find(|blob| blob.id == mapping.blob);
+        let (Some(note), Some(blob)) = (mapping.note, blob) else {
             continue;
         };
         let Some(note) = notes.get(note) else {
@@ -1187,7 +1184,7 @@ mod tests {
                 opted_out: false,
             })
             .collect();
-        let report = measure_drift(&blobs, &notes, &mappings, &guide_timeline()).unwrap();
+        let report = measure_drift(blobs.blobs(), &notes, &mappings, &guide_timeline()).unwrap();
         assert_eq!(report.pairs_compared, 3);
         assert!((report.offset_seconds + 0.1).abs() < 1e-9);
         assert!(report.drift_seconds_per_second.abs() < 1e-9);
@@ -1195,7 +1192,7 @@ mod tests {
 
         // Blobs progressively later: a growing error the tempo map has to absorb.
         let drifting = blob_set(&[(0.0, 0.2, 60.0), (1.1, 1.3, 62.0), (2.2, 2.4, 64.0)]);
-        let report = measure_drift(&drifting, &notes, &mappings, &guide_timeline()).unwrap();
+        let report = measure_drift(drifting.blobs(), &notes, &mappings, &guide_timeline()).unwrap();
         assert!(report.drift_seconds_per_second < -0.04);
         assert!((report.early_error_seconds).abs() < 1e-9);
         assert!((report.late_error_seconds + 0.2).abs() < 1e-9);
@@ -1205,21 +1202,21 @@ mod tests {
     fn drift_needs_at_least_one_pair() {
         let blobs = blob_set(&[(0.0, 0.2, 60.0)]);
         let notes = [note(60, 0, 240)];
-        assert!(measure_drift(&blobs, &notes, &[], &guide_timeline()).is_none());
+        assert!(measure_drift(blobs.blobs(), &notes, &[], &guide_timeline()).is_none());
         let opted = [NoteMapping {
             blob: BlobId(0),
             note: Some(0),
             manual: false,
             opted_out: true,
         }];
-        assert!(measure_drift(&blobs, &notes, &opted, &guide_timeline()).is_none());
+        assert!(measure_drift(blobs.blobs(), &notes, &opted, &guide_timeline()).is_none());
         let dangling = [NoteMapping {
             blob: BlobId(0),
             note: Some(7),
             manual: true,
             opted_out: false,
         }];
-        assert!(measure_drift(&blobs, &notes, &dangling, &guide_timeline()).is_none());
+        assert!(measure_drift(blobs.blobs(), &notes, &dangling, &guide_timeline()).is_none());
     }
 
     #[test]

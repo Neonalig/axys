@@ -18,6 +18,7 @@ import { bindShortcuts } from './app/shortcuts.js';
 import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
+import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js';
 import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
@@ -28,18 +29,23 @@ import { browserLabel } from './browser.js';
 import { isSupported, probeCapabilities } from './capabilities.js';
 import type { Capability } from './capabilities.js';
 import { isViewState } from './core/json.js';
+import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, Session } from './core/wasm.js';
 import { sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
+  Clip,
   ClipId,
   EditOp,
+  F0Params,
   EditState,
   ExportPreview,
   GuideOverlap,
   MappingProposal,
   MixerSettings,
+  OthersView,
+  PitchTrackArrays,
   Reference,
   ReferenceId,
   RenderPlan,
@@ -71,6 +77,9 @@ import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
+import { openImportPanel, storedAnalysis } from './ui/import-dialog.js';
+import type { AnalysisOutcome } from './ui/import-dialog.js';
+import { sourceMenu } from './ui/sources-menu.js';
 import type { MenuEntry } from './ui/menu.js';
 import type { IconName } from './ui/icons.js';
 import { AppShell } from './ui/shell.js';
@@ -194,12 +203,15 @@ class AxysWorkspace implements Workspace {
   readonly #render = new RenderClient();
 
   #session: Session | null = null;
-  #plan: RenderPlan | null = null;
   #projectId: string | null = null;
   #autosave: Autosave | null = null;
   #missing: MissingMedia = { clips: [], references: [] };
   /** Each reference's channels at the project rate, kept so the engine can be handed copies. */
   readonly #references = new Map<ReferenceId, Float32Array[]>();
+  /** The voicing threshold the latest analysis used, which Auto Threshold may have raised. */
+  #lastThreshold = 0;
+  /** Each clip's detected pitch in its own source seconds, read once for drawing it behind. */
+  readonly #clipTracks = new Map<ClipId, PitchTrackArrays>();
   #importing = false;
   /** Whether an open operation has a group applied that Apply keeps and Discard takes back. */
   #previewing = false;
@@ -242,7 +254,12 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return;
     }
-    if (!(await this.#mayReplaceProject('Starting a new project', 'Discard and Start'))) return;
+    if (!(await this.#mayReplaceProject())) return;
+    this.#closeToEmpty();
+  }
+
+  /** Closes the project and returns the editor to empty, without asking. */
+  #closeToEmpty(): void {
     this.#close();
     this.#projectFile = null;
     recordOpenProject('');
@@ -255,6 +272,8 @@ class AxysWorkspace implements Workspace {
       projectName: null,
       track: null,
       blobs: [],
+      layer: [],
+      others: [],
       conflicts: [],
       edits: null,
       plan: null,
@@ -279,7 +298,7 @@ class AxysWorkspace implements Workspace {
     this.#session = null;
     this.#missing = { clips: [], references: [] };
     this.#references.clear();
-    this.#plan = null;
+    this.#clipTracks.clear();
     this.#projectId = null;
     clearPeaks();
     this.#audio.unloadSource();
@@ -476,39 +495,146 @@ class AxysWorkspace implements Workspace {
    * instead, because that is what it asked for.
    */
   async openAudioFile(file: File, ask = false): Promise<void> {
+    await this.openVocals([file], ask);
+  }
+
+  /**
+   * Starts a project from vocal files through Import Audio, the first as the project and the
+   * rest as clips after it.
+   *
+   * @remarks A project still waiting for audio takes the files as relinks instead.
+   */
+  async openVocals(files: readonly File[], ask = false): Promise<void> {
+    const [first, ...rest] = files;
+    if (first === undefined) return;
     if (this.#hasMissing()) {
-      await this.#relink(file);
+      for (const file of files) await this.#relink(file);
       return;
     }
     if (ask && !(await this.#mayReplaceProject())) return;
+    if (this.#importing) {
+      this.#toast.warn('An import is already running');
+      return;
+    }
+    const clips: ClipId[] = [];
+    openImportPanel({
+      what: describeFiles(files),
+      askRole: false,
+      importVocals: async (params) => {
+        if (!(await this.#startProject(first, params))) return null;
+        clips.push(0);
+        for (const file of rest) {
+          const added = await this.importClipFile(file, undefined, 'free', params);
+          if (added !== null) clips.push(added.clip);
+        }
+        return this.#outcome(clips);
+      },
+      importReferences: () => Promise.resolve(),
+      analyse: (params) => this.#reanalyseClips(clips, params),
+      cancel: () => {
+        this.#closeToEmpty();
+      },
+    });
+  }
+
+  /** Decodes and analyses one file and opens it as a new project. Resolves false on failure. */
+  async #startProject(file: File, params: F0Params): Promise<boolean> {
     // One import at a time. A second would race the first onto the same session and leave
     // whichever finished last in charge, which is not a choice anybody made.
     if (this.#importing) {
       this.#toast.warn('An import is already running');
-      return;
+      return false;
     }
     this.#progress('Decode Audio', 0.05);
     this.#importing = true;
     try {
       const decoded = await decodeAudioFile(file);
-      const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name);
+      const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name, params);
       const session = this.#core.openSessionFromAnalysis({
         samples: analysed.samples,
         sampleRate: analysed.sampleRate,
         name: analysed.name,
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
+        f0: params,
       });
       this.#close();
       await this.#install(session, null, null);
       this.estimate(true);
       if (decoded.resampled) {
-        this.#toast.warn(`Decoded at ${String(decoded.sampleRate)} Hz, not the file's own rate.`);
+        this.#toast.warn(`Resampled to ${String(decoded.sampleRate)} Hz`);
       }
+      return true;
     } catch (error) {
       this.#importFailed('Open Audio', error);
+      return false;
     } finally {
       this.#importing = false;
+    }
+  }
+
+  /**
+   * Analyses clips again with new settings, replacing what their import brought in.
+   *
+   * @remarks Resolves with how many blobs the clips now hold. A clip already edited is refused,
+   * with the reason reported.
+   */
+  async #reanalyseClips(clips: readonly ClipId[], params: F0Params): Promise<AnalysisOutcome> {
+    const session = this.#session;
+    if (!session) return this.#outcome(clips);
+    this.#importing = true;
+    try {
+      const rate = session.sampleRate();
+      for (const clip of clips) {
+        const entry = session.state().clips.find((candidate) => candidate.id === clip);
+        if (entry === undefined) continue;
+        const analysed = await this.#analyse(
+          session.clipSamples(clip),
+          rate,
+          entry.source.name,
+          params,
+        );
+        session.reanalyse(clip, {
+          trackJson: analysed.trackJson,
+          blobsJson: analysed.blobsJson,
+          f0: params,
+        });
+        this.#clipTracks.delete(clip);
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      }
+      this.#idle();
+      this.#publish();
+    } catch (error) {
+      this.#importFailed('Analyse Clip', error);
+      throw error;
+    } finally {
+      this.#importing = false;
+    }
+    return this.#outcome(clips);
+  }
+
+  /** How many blobs some clips hold, and the threshold their latest analysis used. */
+  #outcome(clips: readonly ClipId[]): AnalysisOutcome {
+    const blobs = (this.#session?.state().clips ?? [])
+      .filter((clip) => clips.includes(clip.id))
+      .reduce((total, clip) => total + clip.blobs.blobs.length, 0);
+    return { blobs, threshold: this.#lastThreshold };
+  }
+
+  /** Takes imported clips back: undone where they were the last edit, removed otherwise. */
+  #takeBack(clips: readonly ClipId[]): void {
+    const session = this.#session;
+    if (!session) return;
+    const stranded: ClipId[] = [];
+    for (const clip of [...clips].reverse()) {
+      if (session.history().undo === 'Import Clip') this.undo();
+      else stranded.push(clip);
+    }
+    if (stranded.length > 0) {
+      this.apply({
+        type: 'group',
+        ops: stranded.map((clip): EditOp => ({ type: 'removeClip', clip })),
+      });
     }
   }
 
@@ -517,12 +643,18 @@ class AxysWorkspace implements Workspace {
    *
    * @remarks `position` is project seconds, and defaults to the end of the lane so a take
    * stitches onto the one before it. A position that would overlap a clip lands on the nearest
-   * free one, or with `ripple` stays where it is and moves the clips after it later. The audio is
+   * free one, with `exact` lands there over whatever is there, or with `ripple` stays where it is
+   * and moves the clips after it later. The audio is
    * decoded at the project's rate, because every clip is held at one. The decoded waveform is
    * shown where the clip lands while it is analysed, and the view moves to it when it lands out
    * of sight. Resolves with where the clip ends, or `null` when it was not imported.
    */
-  async importClipFile(file: File, position?: number, ripple = false): Promise<number | null> {
+  async importClipFile(
+    file: File,
+    position?: number,
+    placement: 'free' | 'exact' | 'ripple' = 'free',
+    params: F0Params = storedAnalysis(),
+  ): Promise<{ clip: ClipId; end: number } | null> {
     const session = this.#session;
     if (!session) {
       await this.openAudioFile(file);
@@ -543,9 +675,12 @@ class AxysWorkspace implements Workspace {
         clip.position + clip.source.duration,
       ]);
       const wanted = position ?? laneEnd(this.#store.state);
-      const at = ripple
-        ? rippleInsert(spans, decoded.duration, wanted).position
-        : freePosition(spans, decoded.duration, wanted);
+      const at =
+        placement === 'exact'
+          ? Math.max(0, wanted)
+          : placement === 'ripple'
+            ? rippleInsert(spans, decoded.duration, wanted).position
+            : freePosition(spans, decoded.duration, wanted);
       buildPeaks(decoded.mono, rate, decoded.fingerprint);
       this.#onPending?.({
         position: at,
@@ -554,24 +689,28 @@ class AxysWorkspace implements Workspace {
         title: sourceTitle(file.name),
       });
       this.#reveal(at);
-      const analysed = await this.#analyse(decoded.mono, rate, decoded.name);
+      const analysed = await this.#analyse(decoded.mono, rate, decoded.name, params);
       const clip = session.addClip({
         samples: analysed.samples,
         name: analysed.name,
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
+        f0: params,
         position: at,
-        ripple,
+        ripple: placement === 'ripple',
+        exact: placement === 'exact',
       });
       buildPeaks(analysed.samples, rate, fingerprintOf(analysed.samples));
       this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
       this.#idle();
+      // A clip just brought in is what is being worked on, so it comes forward.
+      this.#store.update({ view: { ...this.#store.state.view, activeClip: clip } });
       this.#publish();
       const placed = session.state().clips.find((entry) => entry.id === clip);
       if (placed) this.#reveal(placed.position);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
-      return placed === undefined ? null : placed.position + placed.source.duration;
+      return placed === undefined ? null : { clip, end: placed.position + placed.source.duration };
     } catch (error) {
       this.#importFailed('Import Vocal', error);
       return null;
@@ -603,25 +742,46 @@ class AxysWorkspace implements Workspace {
    * Takes audio dropped on an open project: a relink when the project is waiting for it, and
    * otherwise a vocal or a reference, whichever the user answers.
    *
-   * @remarks One question for everything dropped at once. The first file goes at `position`,
-   * and each after it follows the one before. A vocal dropped at a position is inserted there,
-   * moving the clips after it later rather than landing wherever there happens to be room.
+   * @remarks One question for everything dropped at once. Every file dropped at a position goes
+   * there, over whatever is already there, so stems dropped together line up. With `ripple` the
+   * first vocal is inserted there, moving the clips after it later, and each after it is inserted
+   * after the one before. With no position each vocal follows the one before, from the end of the
+   * project.
    */
-  async dropAudio(files: readonly File[], position: number | null): Promise<void> {
+  async dropAudio(files: readonly File[], position: number | null, ripple = false): Promise<void> {
     if (this.#hasMissing()) {
       for (const file of files) await this.#relink(file);
       return;
     }
-    const role = await this.#askRole(files);
-    if (role === null) return;
-    let next = position;
-    for (const [index, file] of files.entries()) {
-      if (role === 'vocal') {
-        next = (await this.importClipFile(file, next ?? undefined, next !== null)) ?? next;
-      } else {
-        await this.importReferenceFile(file, index === 0 ? (position ?? 0) : 0);
-      }
-    }
+    const clips: ClipId[] = [];
+    openImportPanel({
+      what: describeFiles(files),
+      askRole: true,
+      importVocals: async (params) => {
+        let next = position;
+        for (const file of files) {
+          let added: { clip: ClipId; end: number } | null;
+          if (position !== null && !ripple) {
+            added = await this.importClipFile(file, position, 'exact', params);
+          } else if (next !== null) {
+            added = await this.importClipFile(file, next, 'ripple', params);
+          } else {
+            added = await this.importClipFile(file, undefined, 'free', params);
+          }
+          if (added === null) continue;
+          clips.push(added.clip);
+          if (position === null || ripple) next = added.end;
+        }
+        return clips.length > 0 ? this.#outcome(clips) : null;
+      },
+      importReferences: async () => {
+        for (const file of files) await this.importReferenceFile(file, position ?? 0);
+      },
+      analyse: (params) => this.#reanalyseClips(clips, params),
+      cancel: () => {
+        this.#takeBack(clips);
+      },
+    });
   }
 
   /**
@@ -661,23 +821,6 @@ class AxysWorkspace implements Workspace {
   }
 
   /** Asks whether audio is a vocal to edit or a reference to hear. `null` when cancelled. */
-  async #askRole(files: readonly File[]): Promise<'vocal' | 'reference' | null> {
-    const first = files[0];
-    if (first === undefined) return null;
-    const what =
-      files.length === 1 ? sourceTitle(first.name) : `${String(files.length)} audio files`;
-    const answer = await confirmAction({
-      title: 'Import Audio',
-      message: `Import ${what} as a vocal to edit, or as a reference to hear beside it.`,
-      confirm: 'Import Vocal',
-      alternative: 'Import Reference',
-      icon: 'import',
-      kind: 'primary',
-    });
-    if (answer === 'cancel') return null;
-    return answer === 'confirm' ? 'vocal' : 'reference';
-  }
-
   /**
    * Brings in audio to hear beside the vocal, as one undoable edit.
    *
@@ -748,6 +891,7 @@ class AxysWorkspace implements Workspace {
     samples: Float32Array,
     sampleRate: number,
     name: string,
+    f0: F0Params,
   ): Promise<{
     samples: Float32Array;
     sampleRate: number;
@@ -755,9 +899,14 @@ class AxysWorkspace implements Workspace {
     trackJson: string;
     blobsJson: string;
   }> {
-    return await this.#analysis.analyse({ samples, sampleRate, name }, (stage, progress) => {
-      this.#progress(stage, progress);
-    });
+    const result = await this.#analysis.analyse(
+      { samples, sampleRate, name, f0 },
+      (stage, progress) => {
+        this.#progress(stage, progress);
+      },
+    );
+    this.#lastThreshold = result.threshold;
+    return result;
   }
 
   #importFailed(operation: string, error: unknown): void {
@@ -778,20 +927,16 @@ class AxysWorkspace implements Workspace {
   /**
    * Whether opening something else may replace what is open.
    *
-   * @remarks Opening, and starting again, replace the whole project, so unsaved work would go
-   * without a word. The question offers to save first, because that is what someone who did not
-   * mean to discard it wants next, and it names what is about to happen.
+   * @remarks Opening and starting again replace the whole project, so unsaved work is offered a
+   * save before it is discarded.
    */
-  async #mayReplaceProject(
-    what = 'Opening something else',
-    confirm = 'Discard and Open',
-  ): Promise<boolean> {
+  async #mayReplaceProject(): Promise<boolean> {
     if (!this.#session || !this.#store.state.dirty) return true;
     const answer = await confirmAction({
-      title: 'Unsaved Changes',
-      message: `${this.projectName} has edits that are not saved. ${what} discards them.`,
-      confirm,
-      alternative: 'Save First',
+      title: `Save Changes to ${this.projectName}?`,
+      message: 'Unsaved changes will be lost.',
+      confirm: 'Discard',
+      alternative: 'Save',
       icon: 'warning',
     });
     if (answer === 'cancel') return false;
@@ -815,7 +960,7 @@ class AxysWorkspace implements Workspace {
       this.#store.update({ midi });
       this.#publish();
       this.#toast.info(
-        `Imported ${String(midi.tracks.length)} tracks, ${String(midi.notes.length)} notes.`,
+        `Imported ${String(midi.tracks.length)} tracks, ${String(midi.notes.length)} notes`,
       );
     } catch (error) {
       this.#fail('Open MIDI', error);
@@ -947,7 +1092,7 @@ class AxysWorkspace implements Workspace {
     }
     const unlinked = choice.withReferences ? this.#missing.references[0] : undefined;
     if (unlinked !== undefined) {
-      this.#toast.error(`Relink ${unlinked.source.name} to export it with the vocal.`);
+      this.#toast.error(`Relink ${unlinked.source.name} to export references`);
       return;
     }
     this.#progress('Export WAV', 0.02);
@@ -993,17 +1138,48 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  proposeMappings(): MappingProposal | null {
+  proposeMappings(clips?: readonly ClipId[]): MappingProposal | null {
     const session = this.#session;
     if (!session) return null;
     try {
-      const proposal = session.proposeMappingsPreview();
+      const proposal = session.proposeMappingsPreview(clips);
       this.#store.update({ mappingReport: proposal.report });
       return proposal;
     } catch (error) {
       this.#fail('Align Guide', error);
       return null;
     }
+  }
+
+  focus(clip: ClipId | null, others?: OthersView): void {
+    const session = this.#session;
+    const edits = this.#store.state.edits;
+    if (!session || edits === null) return;
+    const current = this.#store.state.view;
+    const view: ViewState = { ...current, others: others ?? othersOf(current) };
+    if (clip === null) delete view.activeClip;
+    else view.activeClip = clip;
+    try {
+      const plans = session.clipPlans();
+      const patch = this.#readLayer(session, edits, plans, view);
+      const state = this.#store.state;
+      const kept =
+        patch.layer.length === state.layer.length &&
+        patch.layer.every((id) => state.layer.includes(id));
+      this.#audio.setPlans(plans, patch.plan);
+      this.#store.update({
+        ...patch,
+        view,
+        // A span over one layer names other blobs over the next, so a new layer starts clear.
+        selection: kept
+          ? selectionForRanges(patch.blobs, state.selection.ranges)
+          : emptySelection(),
+      });
+    } catch (error) {
+      this.#fail('Focus Clip', error);
+      return;
+    }
+    this.#autosave?.markDirty();
   }
 
   /**
@@ -1029,7 +1205,7 @@ class AxysWorkspace implements Workspace {
     if (key !== null) {
       parts.push(`${SHARP_NAMES[key.root] ?? ''} ${key.minor ? 'Minor' : 'Major'}`);
     }
-    this.#toast.info(`Estimated ${parts.join(', ')}. Check the Project tab`);
+    this.#toast.info(`Estimated ${parts.join(', ')}`);
   }
 
   /** Sets the concert reference the editor names and measures pitch against. */
@@ -1050,14 +1226,6 @@ class AxysWorkspace implements Workspace {
     } catch {
       return seconds;
     }
-  }
-
-  outputAt(sourceSeconds: number): number {
-    return mapTime(this.#plan, sourceSeconds, 1, 0);
-  }
-
-  sourceAt(outputSeconds: number): number {
-    return mapTime(this.#plan, outputSeconds, 0, 1);
   }
 
   /**
@@ -1141,8 +1309,8 @@ class AxysWorkspace implements Workspace {
     const count = this.#missing.clips.length + this.#missing.references.length;
     this.#toast.warn(
       count === 1
-        ? `Open ${first.name} to relink it.`
-        : `Open ${first.name} to relink it. ${String(count)} files are missing.`,
+        ? `Open ${first.name} to relink`
+        : `${String(count)} files missing. Open ${first.name} to relink.`,
     );
   }
 
@@ -1187,10 +1355,7 @@ class AxysWorkspace implements Workspace {
         );
         void this.#cacheReference(reference.source, channels);
       } else {
-        throw new PersistenceError(
-          'corrupt',
-          `${file.name} is not audio this project is waiting for.`,
-        );
+        throw new PersistenceError('corrupt', `${file.name} does not match any missing audio.`);
       }
       this.#idle();
       this.#publish();
@@ -1212,11 +1377,7 @@ class AxysWorkspace implements Workspace {
     // A fresh import has no file of its own yet, so the next Save asks where it goes.
     if (view === null) this.#projectFile = null;
 
-    const blobs = session.blobs();
-    const track = session.track();
-    const plan = session.plan();
     const edits = session.state();
-    this.#plan = plan;
     this.#projectId = id ?? newProjectId();
 
     const rate = session.sampleRate();
@@ -1240,7 +1401,9 @@ class AxysWorkspace implements Workspace {
         reference.position,
       );
     }
-    this.#audio.setPlans(plans, plan);
+    const layer = this.#readLayer(session, edits, plans, view ?? this.#store.state.view);
+    const blobs = layer.blobs;
+    this.#audio.setPlans(plans, layer.plan);
     this.#audio.placeReferences(edits.references);
     this.#audio.setMixer(edits.mixer);
     this.#audio.setLoop(null);
@@ -1259,10 +1422,7 @@ class AxysWorkspace implements Workspace {
       phase: 'ready',
       message: null,
       projectName: edits.name,
-      track,
-      blobs,
-      plan,
-      conflicts: session.conflicts(),
+      ...layer,
       edits,
       midi: session.midi(),
       mappingReport: null,
@@ -1312,7 +1472,7 @@ class AxysWorkspace implements Workspace {
       if (await media.has(fingerprint)) return;
       await media.write(fingerprint, mono);
     } catch {
-      this.#toast.warn('Audio not cached. Reopening will decode again');
+      this.#toast.warn('Audio not cached');
     } finally {
       this.#writes -= 1;
     }
@@ -1347,7 +1507,7 @@ class AxysWorkspace implements Workspace {
       if (await media.has(key)) return;
       await media.write(key, joinChannels(channels));
     } catch {
-      this.#toast.warn('Audio not cached. Reopening will decode again');
+      this.#toast.warn('Audio not cached');
     } finally {
       this.#writes -= 1;
     }
@@ -1382,9 +1542,7 @@ class AxysWorkspace implements Workspace {
     }
     this.#store.update({ guideOverlaps: overlaps });
     if (announce && overlaps.length > 0) {
-      this.#toast.warn(
-        `Guide has ${String(overlaps.length)} overlapping notes. Each note takes one blob at most.`,
-      );
+      this.#toast.warn(`Guide has ${String(overlaps.length)} overlapping notes`);
     }
   }
 
@@ -1392,24 +1550,21 @@ class AxysWorkspace implements Workspace {
     const session = this.#session;
     if (!session) return;
     try {
-      const plan = session.plan();
-      this.#plan = plan;
       const edits = session.state();
-      this.#audio.setPlans(session.clipPlans(), plan);
+      const plans = session.clipPlans();
+      const layer = this.#readLayer(session, edits, plans, this.#store.state.view);
+      const blobs = layer.blobs;
+      this.#audio.setPlans(plans, layer.plan);
       this.#audio.placeReferences(edits.references);
       // The desk is monitoring rather than a plan input, so it reaches the worklet on its own
       // path. It still travels with the project, which is why it is read back from the session.
       this.#audio.setMixer(edits.mixer);
-      const blobs = session.blobs();
       this.#store.update({
-        blobs,
         // The track moves with the clips, so it is read again whenever a clip may have moved.
-        track: session.track(),
         // The plan is what correction, guidance and modulation actually amount to, and the
         // editor draws the pitch target from it. Leaving it out drew the blob edits alone, so
         // an operation the plan carried moved nothing on screen.
-        plan,
-        conflicts: session.conflicts(),
+        ...layer,
         edits,
         // Renaming is an ordinary edit, so the name comes back with the rest of the state and
         // needs no path of its own.
@@ -1422,10 +1577,60 @@ class AxysWorkspace implements Workspace {
       this.#audio.setTail(endLeniency(this.#store.state));
       this.#audio.setTimeline(edits.timeline);
     } catch (error) {
-      this.#fail('Read Plan', error);
+      this.#fail('Update Editor', error);
       return;
     }
     this.#autosave?.markDirty();
+  }
+
+  /**
+   * Reads the editor's layer for a view's focus, and every clip outside it.
+   *
+   * @remarks Sets the session's focus as it goes, so what the core answers afterwards is about
+   * the same layer.
+   */
+  #readLayer(
+    session: Session,
+    edits: EditState,
+    plans: readonly ClipPlan[],
+    view: ViewState,
+  ): Pick<AppState, 'blobs' | 'track' | 'conflicts' | 'layer' | 'others'> & { plan: RenderPlan } {
+    session.setFocus(view.activeClip ?? null, othersOf(view) !== 'show');
+    const plan = session.plan();
+    const layer = session.layer();
+    const others = otherSources(
+      edits,
+      layer,
+      session.otherBlobs(),
+      (clip: Clip) => {
+        const track = this.#clipTrack(session, clip.id);
+        return track === null ? null : placeTrack(track, clip);
+      },
+      (clip: Clip) => {
+        const placed = plans.find((entry) => entry.clip === clip.id);
+        return placed === undefined ? null : placePlan(placed.plan, clip.position);
+      },
+    );
+    return {
+      blobs: session.blobs(),
+      track: session.track(),
+      plan,
+      conflicts: session.conflicts(),
+      layer,
+      others,
+    };
+  }
+
+  #clipTrack(session: Session, clip: ClipId): PitchTrackArrays | null {
+    const known = this.#clipTracks.get(clip);
+    if (known !== undefined) return known;
+    try {
+      const track = session.clipTrack(clip);
+      this.#clipTracks.set(clip, track);
+      return track;
+    } catch {
+      return null;
+    }
   }
 
   #progress(stage: string, progress: number): void {
@@ -1529,26 +1734,6 @@ function highestCentre(blobs: readonly { detectedCenter: number }[]): number {
  * @remarks The map is ascending in both columns, so the same piecewise-linear walk converts
  * either way; `from` and `to` pick which column is searched.
  */
-function mapTime(plan: RenderPlan | null, value: number, from: 0 | 1, to: 0 | 1): number {
-  const points = plan?.timeMap.points;
-  if (!points || points.length < 2) return value;
-  let low = 0;
-  let high = points.length - 1;
-  while (low < high - 1) {
-    const middle = (low + high) >> 1;
-    const point = points[middle];
-    if (!point) break;
-    if (point[from] <= value) low = middle;
-    else high = middle;
-  }
-  const first = points[low];
-  const second = points[high];
-  if (!first || !second) return value;
-  const span = second[from] - first[from];
-  if (!(span > 0)) return first[to];
-  return first[to] + ((value - first[from]) / span) * (second[to] - first[to]);
-}
-
 function toBytes(bytes: Uint8Array): ArrayBuffer {
   const copy = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(copy).set(bytes);
@@ -1564,7 +1749,7 @@ function describe(error: unknown): string {
   if (error instanceof AxysError || error instanceof PersistenceError) return error.message;
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
-  return 'the reason was not reported';
+  return 'Unknown error';
 }
 
 /**
@@ -1613,6 +1798,13 @@ function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
 }
 
 /** Which import a dropped file is, from its name and media type. */
+/** Names files being imported: one file's title, or how many there are. */
+function describeFiles(files: readonly File[]): string {
+  const first = files[0];
+  if (files.length === 1 && first !== undefined) return sourceTitle(first.name);
+  return `${String(files.length)} audio files`;
+}
+
 function kindOf(file: File): 'project' | 'midi' | 'audio' {
   const name = file.name.toLowerCase();
   if (name.endsWith('.axys.json') || name.endsWith('.json')) return 'project';
@@ -1635,10 +1827,10 @@ function bindDragAndDrop(
     const item = event.dataTransfer?.items[0];
     shell.setDropTarget(
       item?.kind !== 'file'
-        ? 'Drop To Open File'
+        ? 'Drop a file to open'
         : workspace.ready
-          ? 'Drop To Import'
-          : 'Drop To Open Audio Or Project',
+          ? 'Drop to import'
+          : 'Drop audio or a project to open',
     );
   };
   const onDragEnter = (event: DragEvent): void => {
@@ -1664,14 +1856,13 @@ function bindDragAndDrop(
   const onDrop = (event: DragEvent): void => {
     depth = 0;
     shell.setDropTarget(null);
-    const at = workspace.ready
-      ? editor.previewDrop(event.clientX, event.clientY, modifiersOf(event))
-      : null;
+    const modifiers = modifiersOf(event);
+    const at = workspace.ready ? editor.previewDrop(event.clientX, event.clientY, modifiers) : null;
     editor.endDrop();
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
     event.preventDefault();
-    void openDropped([...files], workspace, toast, at);
+    void openDropped([...files], workspace, toast, at, modifiers.constrain);
   };
   target.addEventListener('dragenter', onDragEnter);
   target.addEventListener('dragover', onDragOver);
@@ -1698,6 +1889,7 @@ async function openDropped(
   workspace: AxysWorkspace,
   toast: ToastHost,
   at: number | null,
+  ripple: boolean,
 ): Promise<void> {
   const project = files.find((file) => kindOf(file) === 'project');
   const audio = files.filter((file) => kindOf(file) === 'audio');
@@ -1705,12 +1897,10 @@ async function openDropped(
   if (project) {
     await workspace.openProjectFile(project, true);
   } else if (audio.length > 0) {
-    const [first, ...rest] = audio;
-    if (first && !workspace.ready) {
-      await workspace.openAudioFile(first, true);
-      for (const file of rest) await workspace.importClipFile(file);
+    if (!workspace.ready) {
+      await workspace.openVocals(audio, true);
     } else {
-      await workspace.dropAudio(audio, at);
+      await workspace.dropAudio(audio, at, ripple);
     }
   }
   if (midi) {
@@ -1758,7 +1948,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
   section.append(list);
 
   const tail = document.createElement('p');
-  tail.textContent = 'Supported Browsers: current Chrome, Edge, Firefox and Safari, over HTTPS.';
+  tail.textContent = 'Supported browsers: current Chrome, Edge, Firefox and Safari, over HTTPS.';
   section.append(tail);
 
   mount.append(section);
@@ -1770,7 +1960,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
  * @remarks Drawn with the splash's own inline styles, since a failed load may have fetched no
  * stylesheet. A failed fetch is named as the connection it is, with the browser's text under it.
  */
-function showFailure(mount: HTMLElement, error: unknown, part = 'audio core'): void {
+function showFailure(mount: HTMLElement, error: unknown, part = 'Editor'): void {
   mount.textContent = '';
   const section = document.createElement('section');
   section.className = 'axys-failure';
@@ -1783,8 +1973,8 @@ function showFailure(mount: HTMLElement, error: unknown, part = 'audio core'): v
   const lead = document.createElement('p');
   lead.textContent =
     lostConnection(error) || (error instanceof Error && lostConnection(error.cause))
-      ? `Axys could not download its ${part}. Check the connection, then reload.`
-      : `Axys could not start its ${part}.`;
+      ? `${part} failed to load. Check your connection and reload.`
+      : `${part} failed to start.`;
   const detail = document.createElement('p');
   detail.className = 'axys-failure-detail';
   detail.textContent = describe(error);
@@ -1836,7 +2026,7 @@ function noteDegradedCapabilities(
     // A browser that refuses storage shows the notice again next time, which is harmless.
   }
   const names = missing.map((cap) => cap.label).join(', ');
-  toast.warn(`Unavailable Features: ${names}. See Help and Diagnostics for details.`, {
+  toast.warn(`Unavailable features: ${names}`, {
     text: 'Help and Diagnostics',
     run: openHelp,
   });
@@ -1874,30 +2064,25 @@ async function restoreLastProject(
   if (discarded > 0) {
     toast.info(
       discarded === 1
-        ? 'Discarded a recovery copy this version cannot read'
-        : `Discarded ${String(discarded)} recovery copies this version cannot read`,
+        ? 'Discarded an unreadable recovery copy'
+        : `Discarded ${String(discarded)} unreadable recovery copies`,
     );
   }
 }
 
 /** Keeps the editor playhead in step with the audio engine, playing or seeking. */
-function startPlayheadLoop(
-  store: AppStore,
-  audio: AudioEngine,
-  workspace: AxysWorkspace,
-): () => void {
+function startPlayheadLoop(store: AppStore, audio: AudioEngine): () => void {
   let running = true;
   const frame = (): void => {
     if (!running) return;
     const state = store.state;
+    // The canvas, the selection and the transport all measure output time, so the playhead does.
     const output = audio.position;
-    const playhead = workspace.sourceAt(output);
-    const movedPlayhead = Math.abs(playhead - state.view.playhead) > PLAYHEAD_EPSILON;
+    const movedPlayhead = Math.abs(output - state.view.playhead) > PLAYHEAD_EPSILON;
     const movedTransport =
       Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
       audio.playing !== state.transport.playing;
-    const view = movedPlayhead ? { ...state.view, playhead } : state.view;
-    // The playing playhead is drawn at the output position, so that is what the view follows.
+    const view = movedPlayhead ? { ...state.view, playhead: output } : state.view;
     const followed =
       state.follow && audio.playing ? followView(view, output, state.followMode) : null;
     if (movedPlayhead || movedTransport || followed !== null) {
@@ -1930,7 +2115,7 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
   const show = (report: EngineReport): void => {
     shell.setEngineReport(report);
     if (report.status === 'failed') {
-      const message = report.message ?? 'Playback failed and the browser gave no reason';
+      const message = report.message ?? 'Playback failed';
       if (message !== reportedFailure) toast.error(message);
       reportedFailure = message;
       return;
@@ -1946,7 +2131,7 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
     const missed = report.underruns - seenUnderruns;
     seenUnderruns = report.underruns;
     shell.setEngineReport(report);
-    toast.warn(`Dropped ${String(missed)} audio blocks. Close other heavy tabs.`);
+    toast.warn(`${String(missed)} audio dropouts. Close other tabs.`);
   }, UNDERRUN_INTERVAL_MS);
 
   return () => {
@@ -1988,6 +2173,14 @@ function buildHooks(
   onThemeChoice: (choice: ThemeChoice) => void,
 ): ShellHooks {
   return {
+    focusSource(clip) {
+      workspace()?.focus(clip);
+    },
+    sourceMenu() {
+      return sourceMenu(store.state, (clip, others) => {
+        workspace()?.focus(clip, others);
+      });
+    },
     runCommand(id: string): void {
       const ctx = context();
       const command = ctx ? findCommand(commands, id) : undefined;
@@ -2123,7 +2316,7 @@ async function start(): Promise<void> {
   if (audio.loadError !== null) {
     audio.dispose();
     dismissSplash();
-    showFailure(mount, audio.loadError, 'audio engine');
+    showFailure(mount, audio.loadError, 'Audio engine');
     return;
   }
   const projectsPromise = openStore(ProjectStore.open());
@@ -2162,10 +2355,10 @@ async function start(): Promise<void> {
   const projects = await projectsPromise;
   const media = await mediaPromise;
   if (!projects) {
-    toast.warn('This browser cannot store projects. Export before closing the tab');
+    toast.warn('Project storage unavailable. Export before closing the tab.');
   }
   if (!media) {
-    toast.warn('Audio cannot be cached here. Reopening will ask for the file');
+    toast.warn('Audio caching unavailable');
   }
 
   workspace = new AxysWorkspace({ core, store, audio, toast, projects, media });
@@ -2199,6 +2392,9 @@ async function start(): Promise<void> {
         at,
       );
     },
+    focus: (clip) => {
+      workspace.focus(clip);
+    },
   });
   context = { store, editor, audio, toast, workspace, chrome: shell };
 
@@ -2216,7 +2412,7 @@ async function start(): Promise<void> {
 
   const releaseShortcuts = bindShortcuts(window, commands, context);
   const releaseDrop = bindDragAndDrop(window, workspace, toast, shell, editor);
-  const stopPlayhead = startPlayheadLoop(store, audio, workspace);
+  const stopPlayhead = startPlayheadLoop(store, audio);
 
   // A reload reopens the recovery copy, so only work that has not reached it yet is worth a
   // warning. Starting the write here usually lands it while the warning is still up.
@@ -2260,7 +2456,7 @@ async function start(): Promise<void> {
     open.flush();
     queueMicrotask(() => {
       teardown();
-      showFailure(mount, error, 'audio engine');
+      showFailure(mount, error, 'Audio engine');
     });
   });
 

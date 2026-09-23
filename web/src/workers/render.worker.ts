@@ -56,11 +56,11 @@ scope.addEventListener('message', (event) => {
 async function renderRange(request: RenderRangeRequest): Promise<void> {
   const { id } = request;
   try {
-    report(id, 'Load Core', 0);
+    report(id, 'Load Engine', 0);
     await loadCore();
     if (abandon(id)) return;
 
-    report(id, 'Build Renderer', 0.02);
+    report(id, 'Prepare Render', 0.02);
     const renderer = PlaybackRenderer.create(
       request.samples,
       request.trackJson,
@@ -105,7 +105,7 @@ async function renderRange(request: RenderRangeRequest): Promise<void> {
 async function exportWav(request: ExportWavRequest): Promise<void> {
   const { id } = request;
   try {
-    report(id, 'Load Core', 0);
+    report(id, 'Load Engine', 0);
     const core = await loadCore();
     if (abandon(id)) return;
 

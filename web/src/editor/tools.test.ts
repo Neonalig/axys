@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   bezierAt,
+  extendStroke,
   freePosition,
   insertPoint,
   moveBezierHandle,
@@ -12,6 +13,64 @@ import {
   straightBezier,
 } from './tools.js';
 import { readoutNoteName } from '../core/notes.js';
+
+describe('extendStroke', () => {
+  const draw = (moves: [number, number][]): [number, number][] => {
+    const [first, ...rest] = moves.map(([time, midi]) => ({ time, midi }));
+    if (first === undefined) return [];
+    let points = [first];
+    let last = first;
+    for (const point of rest) {
+      points = extendStroke(points, last, point);
+      last = point;
+    }
+    return points.map((point) => [point.time, point.midi]);
+  };
+
+  it('draws right to left as well as left to right', () => {
+    expect(
+      draw([
+        [3, 60],
+        [2, 61],
+        [1, 62],
+      ]),
+    ).toEqual([
+      [1, 62],
+      [2, 61],
+      [3, 60],
+    ]);
+  });
+
+  it('replaces what a stroke passes back over with the newest part', () => {
+    expect(
+      draw([
+        [0, 60],
+        [1, 60],
+        [2, 60],
+        [3, 60],
+        [1.5, 64],
+      ]),
+    ).toEqual([
+      [0, 60],
+      [1, 60],
+      [1.5, 64],
+      [3, 60],
+    ]);
+  });
+
+  it('replaces the last point on a move straight up', () => {
+    expect(
+      draw([
+        [0, 60],
+        [1, 60],
+        [1, 62],
+      ]),
+    ).toEqual([
+      [0, 60],
+      [1, 62],
+    ]);
+  });
+});
 
 describe('freePosition', () => {
   it('keeps a clip where it was asked when it fits', () => {

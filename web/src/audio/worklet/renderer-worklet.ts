@@ -36,11 +36,13 @@ export interface OutputRange {
   end: number;
 }
 
-/** One clip's plan, as UTF-8 JSON, and where the clip sits in project seconds. */
+/** One clip's plans, as UTF-8 JSON, and where the clip sits in project seconds. */
 export interface ClipPlacement {
   clip: number;
   position: number;
   plan: Uint8Array;
+  /** A plan per further voice, for blobs a timing edit laid over the others. */
+  layers: Uint8Array[];
 }
 
 /** What the main thread asks the renderer to do. */
@@ -57,6 +59,7 @@ export type EngineMessage =
       samples: ArrayBuffer;
       track: Uint8Array;
       plan: Uint8Array;
+      layers: Uint8Array[];
       position: number;
     }
   // Every clip on the lane; a loaded clip left out is off the lane and silent.
@@ -317,7 +320,7 @@ class Core {
     const value: unknown = table.get(index);
     this.#function('__externref_table_dealloc')(index);
     if (value instanceof Error) return value;
-    return new Error(typeof value === 'string' ? value : 'the core failed without a message');
+    return new Error(typeof value === 'string' ? value : 'Unknown error');
   }
 
   #values(returned: unknown, length: number): unknown[] {
@@ -422,6 +425,22 @@ interface ClipVoice {
   /** Loudest processed and original samples since the last report. */
   peakProcessed: number;
   peakOriginal: number;
+  /** A renderer per further voice, over the same source, mixed in with the first. */
+  layers: LayerVoice[];
+}
+
+/** One further voice of a clip: its plan and its renderer. */
+interface LayerVoice {
+  plan: Uint8Array;
+  renderer: number;
+  outputFrames: number;
+}
+
+/** Output frames a clip's longest voice produces. */
+function clipFrames(voice: ClipVoice): number {
+  let frames = voice.outputFrames;
+  for (const layer of voice.layers) frames = Math.max(frames, layer.outputFrames);
+  return frames;
 }
 
 /** One reference the processor plays unwarped: its channels and where it starts. */
@@ -459,6 +478,8 @@ class RendererProcessor extends AudioWorkletProcessor {
   #tail = 0;
 
   #scratch: Float32Array = new Float32Array(512);
+  /** Where a clip's further voices are rendered before they are added to its first. */
+  #layerScratch: Float32Array = new Float32Array(512);
   #position = 0;
   #playing = false;
   #levels: MixLevels = mixLevels(DEFAULT_MIXER);
@@ -626,6 +647,7 @@ class RendererProcessor extends AudioWorkletProcessor {
       onLane: true,
       peakProcessed: 0,
       peakOriginal: 0,
+      layers: message.layers.map((plan) => ({ plan, renderer: 0, outputFrames: 0 })),
     };
     this.#clips = [...this.#clips.filter((entry) => entry.id !== message.id), voice];
     this.#build(voice);
@@ -639,6 +661,10 @@ class RendererProcessor extends AudioWorkletProcessor {
     try {
       voice.renderer = core.createRenderer(voice.source, voice.track, voice.plan);
       voice.outputFrames = core.outputFrames(voice.renderer);
+      for (const layer of voice.layers) {
+        layer.renderer = core.createRenderer(voice.source, voice.track, layer.plan);
+        layer.outputFrames = core.outputFrames(layer.renderer);
+      }
       this.#failure = null;
       this.#post({
         type: 'ready',
@@ -667,6 +693,16 @@ class RendererProcessor extends AudioWorkletProcessor {
       voice.onLane = true;
       voice.offset = Math.round(placement.position * this.#sourceRate);
       voice.plan = placement.plan;
+      const regrouped = voice.layers.length !== placement.layers.length;
+      if (regrouped) {
+        this.#release(voice);
+        voice.layers = placement.layers.map((plan) => ({ plan, renderer: 0, outputFrames: 0 }));
+      } else {
+        placement.layers.forEach((plan, index) => {
+          const layer = voice.layers[index];
+          if (layer !== undefined) layer.plan = plan;
+        });
+      }
       if (!core || voice.renderer === 0) {
         this.#build(voice);
         continue;
@@ -674,6 +710,10 @@ class RendererProcessor extends AudioWorkletProcessor {
       try {
         core.setPlan(voice.renderer, placement.plan);
         voice.outputFrames = core.outputFrames(voice.renderer);
+        for (const layer of voice.layers) {
+          core.setPlan(layer.renderer, layer.plan);
+          layer.outputFrames = core.outputFrames(layer.renderer);
+        }
         this.#failure = null;
       } catch (thrown) {
         this.#fail(thrown);
@@ -733,7 +773,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     let end = 0;
     for (const voice of this.#clips) {
       if (voice.onLane && voice.renderer !== 0)
-        end = Math.max(end, voice.offset + voice.outputFrames);
+        end = Math.max(end, voice.offset + clipFrames(voice));
     }
     for (const voice of this.#references) {
       if (voice.onLane) end = Math.max(end, voice.offset + voice.left.length);
@@ -901,7 +941,8 @@ class RendererProcessor extends AudioWorkletProcessor {
     const ratio = this.#ratio;
     const local = this.#position - voice.offset;
     const last = local + (count - 1) * ratio;
-    if (last < 0 || local >= Math.max(voice.outputFrames, voice.source.length)) return;
+    const frames = clipFrames(voice);
+    if (last < 0 || local >= Math.max(frames, voice.source.length)) return;
     const levels = clipLevels(this.#levels, voice.id);
     const processed = levels.processed;
     const original = levels.original;
@@ -910,7 +951,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     const start = Math.max(0, Math.floor(local));
     const span = Math.floor(last) - start + 2;
     const processedOk =
-      processed.audible && span > 0 && local < voice.outputFrames
+      processed.audible && span > 0 && local < frames
         ? this.#renderProcessed(voice, start, span)
         : false;
 
@@ -1005,6 +1046,17 @@ class RendererProcessor extends AudioWorkletProcessor {
     }
     try {
       core.render(voice.renderer, start, span, this.#scratch);
+      if (voice.layers.length > 0) {
+        if (span > this.#layerScratch.length) this.#layerScratch = new Float32Array(span * 2);
+        const layered = this.#layerScratch;
+        for (const layer of voice.layers) {
+          if (layer.renderer === 0) continue;
+          core.render(layer.renderer, start, span, layered);
+          for (let i = 0; i < span; i += 1) {
+            this.#scratch[i] = (this.#scratch[i] ?? 0) + (layered[i] ?? 0);
+          }
+        }
+      }
       return true;
     } catch (thrown) {
       this.#underruns += 1;
@@ -1128,6 +1180,10 @@ class RendererProcessor extends AudioWorkletProcessor {
     const core = this.#core;
     if (core && voice.renderer !== 0) core.freeRenderer(voice.renderer);
     voice.renderer = 0;
+    for (const layer of voice.layers) {
+      if (core && layer.renderer !== 0) core.freeRenderer(layer.renderer);
+      layer.renderer = 0;
+    }
   }
 
   #dispose(): void {

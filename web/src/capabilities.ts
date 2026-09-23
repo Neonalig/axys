@@ -303,7 +303,7 @@ export async function probeCapabilities(): Promise<Capability[]> {
       'WebAssembly',
       true,
       probeWasm(),
-      ['Runs the audio core', 'Required to analyse, edit and render audio'],
+      ['Runs the audio engine', 'Required to analyse, edit and render audio'],
       support(
         'WebAssembly',
         browser,
@@ -337,7 +337,10 @@ export async function probeCapabilities(): Promise<Capability[]> {
       'Secure Context',
       true,
       secure,
-      ['Enables worklets, storage and offline install', 'Required for worklets and storage'],
+      [
+        'Enables Audio Worklet, storage and offline install',
+        'Required for Audio Worklet and storage',
+      ],
       [
         safe(() => globalThis.location.protocol === 'https:')
           ? 'Page is served over HTTPS.'
@@ -355,7 +358,7 @@ export async function probeCapabilities(): Promise<Capability[]> {
         'IndexedDB',
         browser,
         ['Chrome 24+', 'Edge 12+', 'Firefox 16+', 'Safari 10+'],
-        'Private browsing or blocked site data can disable it.',
+        'Private browsing or blocked site data can disable IndexedDB.',
       ),
     ),
     capability(
@@ -363,12 +366,12 @@ export async function probeCapabilities(): Promise<Capability[]> {
       'Media Storage',
       false,
       opfs,
-      ['Caches decoded audio between sessions', 'Source audio is decoded again on every open'],
+      ['Caches decoded audio between visits', 'Audio is decoded again on every open'],
       availability(
         'Origin Private File System',
         browser,
         ['Chrome 86+', 'Edge 86+', 'Firefox 111+', 'Safari 15.2+'],
-        'Private browsing or blocked site data can disable it.',
+        'Private browsing or blocked site data can disable OPFS.',
       ),
     ),
     capability(
@@ -381,7 +384,7 @@ export async function probeCapabilities(): Promise<Capability[]> {
         'Service Workers',
         browser,
         ['Chrome 40+', 'Edge 17+', 'Firefox 44+', 'Safari 11.1+'],
-        secure ? 'Private browsing can disable them.' : insecure,
+        secure ? 'Private browsing can disable service workers.' : insecure,
       ),
     ),
     capability(

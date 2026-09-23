@@ -157,6 +157,7 @@ export class AudioEngine {
         samples: buffer,
         track: this.#encoder.encode(trackJson),
         plan: this.#encoder.encode(JSON.stringify(plan)),
+        layers: (placed?.layers ?? []).map((layer) => this.#encoder.encode(JSON.stringify(layer))),
         position: placed?.position ?? 0,
       },
       [buffer],
@@ -229,6 +230,7 @@ export class AudioEngine {
       clip: placed.clip,
       position: placed.position,
       plan: this.#encoder.encode(JSON.stringify(placed.plan)),
+      layers: (placed.layers ?? []).map((layer) => this.#encoder.encode(JSON.stringify(layer))),
     }));
     this.#send({ type: 'plans', plans: placements });
     if (this.#metronome) this.#sendClicks();
@@ -486,7 +488,7 @@ export class AudioEngine {
 
     const bytes = this.#coreBytes;
     if (!bytes) {
-      this.#publish('failed', 'Playback is unavailable: the core did not load');
+      this.#publish('failed', 'Playback unavailable: audio engine failed to load');
       return null;
     }
 
@@ -503,7 +505,7 @@ export class AudioEngine {
       void context.close();
       if (this.#node) return this.#node;
       this.#loadError = thrown;
-      this.#publish('failed', `The audio renderer did not load: ${messageOf(thrown)}`);
+      this.#publish('failed', `Audio engine failed to load: ${messageOf(thrown)}`);
       return null;
     }
     this.#teardown();
@@ -517,7 +519,7 @@ export class AudioEngine {
       this.#receive(event.data);
     };
     node.onprocessorerror = (): void => {
-      this.#publish('failed', 'The audio renderer stopped and playback was silenced');
+      this.#publish('failed', 'Audio engine stopped');
     };
     node.connect(context.destination);
     context.onstatechange = (): void => {

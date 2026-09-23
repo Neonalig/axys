@@ -397,7 +397,7 @@ pub fn encode_wav(
     let fact_size: usize = if float { 12 } else { 0 };
     let riff_size = 4 + (8 + fmt_size) + fact_size + (8 + data_size + pad);
     if riff_size > u32::MAX as usize {
-        return Err(invalid("exported file exceeds the 4 GiB RIFF limit"));
+        return Err(invalid("exported file is over the 4 GiB WAV limit"));
     }
 
     let mut out = Vec::with_capacity(riff_size + 8);

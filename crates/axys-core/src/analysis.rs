@@ -8,3 +8,4 @@
 pub mod energy;
 pub mod f0;
 pub mod segment;
+pub mod swipe;

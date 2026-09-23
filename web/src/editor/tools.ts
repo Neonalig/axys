@@ -60,42 +60,42 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     id: 'select',
     label: 'Select',
-    hint: 'Click a blob, drag a band, Shift adds',
+    hint: 'Click or drag to select, Shift to add',
     key: 'V',
     cursor: 'default',
   },
   {
     id: 'split',
     label: 'Slice',
-    hint: 'Click a blob to slice it in two',
+    hint: 'Click to slice a blob',
     key: 'X',
     cursor: 'col-resize',
   },
   {
     id: 'pitch',
     label: 'Move Pitch',
-    hint: 'Drag in pitch, Shift semitones, Alt fine, Ctrl scale',
+    hint: 'Drag to move pitch, Shift semitones, Alt fine, Ctrl scale',
     key: 'P',
     cursor: 'ns-resize',
   },
   {
     id: 'pen',
     label: 'Draw Curve',
-    hint: 'Drag a freehand target',
+    hint: 'Drag to draw a pitch curve',
     key: 'B',
     cursor: PEN_CURSOR,
   },
   {
     id: 'bezier',
     label: 'Draw Bezier',
-    hint: 'Drag a line, then shape it by its handles',
+    hint: 'Drag a line, then drag handles to shape',
     key: 'N',
     cursor: 'crosshair',
   },
   {
     id: 'time',
     label: 'Move Time',
-    hint: 'Drag a blob or its edges in time',
+    hint: 'Drag to move blobs or edges in time',
     key: 'T',
     cursor: 'ew-resize',
   },
@@ -188,18 +188,16 @@ export function describeHit(hit: Hit, state: AppState): string {
     case 'blob':
       return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
-      return 'Move Clip  Ctrl Start  Shift Playhead';
+      return 'Move Clip  Ctrl Start  Shift Insert';
     case 'reference':
-      return 'Move Reference  Ctrl Start  Shift Playhead';
+      return 'Move Reference  Ctrl Start';
     case 'conflict': {
       const conflict = hit.conflict;
       if (conflict === null) {
         return clock;
       }
-      const pair = `blobs ${String(conflict.first)} and ${String(conflict.second)}`;
-      return conflict.kind === 'gap'
-        ? `Gap  Nothing sounds between ${pair}`
-        : `Overlap  ${pair.charAt(0).toUpperCase()}${pair.slice(1)} both sound here`;
+      const pair = `Blobs ${String(conflict.first)} and ${String(conflict.second)}`;
+      return conflict.kind === 'gap' ? `Gap  ${pair}` : `Overlap  ${pair}`;
     }
     default:
       return `${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
@@ -390,6 +388,33 @@ export function simplifyGesture(
     }
   }
   return result;
+}
+
+/**
+ * A freehand stroke with the pointer moved on from `from` to `next`, as points in time order.
+ *
+ * @remarks A stroke may run in either direction. The newest segment replaces every point it
+ * passes back over, so drawing over part of the stroke again redraws that part. A move straight
+ * up or down replaces the point it started from.
+ */
+export function extendStroke(
+  points: readonly GesturePoint[],
+  from: GesturePoint,
+  next: GesturePoint,
+): GesturePoint[] {
+  const low = Math.min(from.time, next.time);
+  const high = Math.max(from.time, next.time);
+  const vertical = high - low < 1e-9;
+  const kept = points.filter((point) => {
+    if (point === from) return !vertical;
+    return (
+      point.time <= low - 1e-9 || point.time >= high + 1e-9 || (vertical && point.time !== low)
+    );
+  });
+  const at = kept.findIndex((point) => point.time > next.time);
+  if (at === -1) kept.push(next);
+  else kept.splice(at, 0, next);
+  return kept;
 }
 
 /**

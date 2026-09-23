@@ -65,7 +65,7 @@ export function exportProject(json: string, name: string): string {
   try {
     parseJson(json, isProject, 'project');
   } catch (cause) {
-    throw new PersistenceError('corrupt', 'Refusing to export a document that is not a project', {
+    throw new PersistenceError('corrupt', 'Document is not a valid project', {
       cause,
     });
   }
@@ -117,7 +117,7 @@ export async function importProject(
   } catch (cause) {
     throw new PersistenceError(
       'corrupt',
-      `${file.name} is not an Axys project file, or it was written by a newer build.`,
+      `${file.name} is not an Axys project or is from a newer version.`,
       { cause },
     );
   }
@@ -169,7 +169,7 @@ export async function relink(file: File, expected: SourceInfo): Promise<Relinked
   } catch (cause) {
     throw new PersistenceError(
       'corrupt',
-      `${file.name} could not be decoded. This browser may not support its format.`,
+      `${file.name} could not be decoded. Try WAV, FLAC or MP3.`,
       { cause },
     );
   }
@@ -178,7 +178,7 @@ export async function relink(file: File, expected: SourceInfo): Promise<Relinked
   if (digest !== expected.fingerprint) {
     throw new PersistenceError(
       'corrupt',
-      `${file.name} is not the audio this project was made from. Choose ${expected.name}.`,
+      `${file.name} does not match ${expected.name}. Choose the original file.`,
     );
   }
   return {

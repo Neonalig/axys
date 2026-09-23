@@ -92,6 +92,9 @@ pub enum EditOp {
         blobs: Vec<BlobId>,
         /// Relative transposition in semitones.
         semitones: f64,
+        /// Moves the blobs' drawn anchors by the same amount.
+        #[serde(default, skip_serializing_if = "is_false")]
+        anchors: bool,
     },
     /// Sets one blob's transposition to an absolute amount.
     SetPitchOffset {
@@ -99,6 +102,9 @@ pub enum EditOp {
         blob: BlobId,
         /// Absolute transposition in semitones.
         semitones: f64,
+        /// Moves the blob's drawn anchors by as much as the transposition changes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        anchors: bool,
     },
     /// Slides a selection along the timeline by a relative amount.
     MoveTime {
@@ -198,22 +204,33 @@ pub enum EditOp {
         /// Blobs to delete.
         blobs: Vec<BlobId>,
     },
-    /// Puts an imported vocal on the lane.
+    /// Puts an imported vocal on the timeline.
     AddClip {
-        /// The clip, its blobs numbered for it. A position that would overlap another clip is
-        /// moved to the nearest free one, unless `ripple` is set.
+        /// The clip, its blobs numbered for it. Placed as `exact` and `ripple` say.
         clip: Clip,
         /// Inserts the clip at its position, moving every clip after it later to make room, as
         /// [`ripple_insert`] describes.
         #[serde(default, skip_serializing_if = "is_false")]
         ripple: bool,
+        /// Places the clip at its position, over any clip already there. Without it or `ripple`,
+        /// a position that would overlap another clip moves to the nearest free one.
+        #[serde(default, skip_serializing_if = "is_false")]
+        exact: bool,
     },
-    /// Moves a clip along the lane.
+    /// Moves a clip along the timeline.
     MoveClip {
         /// Clip to move.
         clip: ClipId,
-        /// Wanted position in project seconds; an overlapping one lands on the nearest free one.
+        /// Wanted position in project seconds.
         position: f64,
+        /// Places the clip at `position`, over any clip already there. Without it or `ripple`, an
+        /// overlapping position lands on the nearest free one.
+        #[serde(default, skip_serializing_if = "is_false")]
+        exact: bool,
+        /// Inserts the clip at `position`, moving every other clip at or after it later to make
+        /// room, as [`ripple_insert`] describes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        ripple: bool,
     },
     /// Takes a clip off the lane.
     RemoveClip {
@@ -384,6 +401,44 @@ pub struct History {
     undone: Vec<EditOp>,
 }
 
+impl EditOp {
+    /// Whether the operation reads or changes a clip or any of its blobs.
+    ///
+    /// A range reset touches every clip, since it reaches whatever lies under its span.
+    pub fn touches_clip(&self, clip: ClipId) -> bool {
+        let one = |blob: &BlobId| clip_of(*blob) == clip;
+        match self {
+            EditOp::SplitBlob { blob, .. }
+            | EditOp::MoveBoundary { blob, .. }
+            | EditOp::SetVoicing { blob, .. }
+            | EditOp::SetPitchOffset { blob, .. }
+            | EditOp::SetTimeScale { blob, .. }
+            | EditOp::AddAnchor { blob, .. }
+            | EditOp::MoveAnchor { blob, .. }
+            | EditOp::RemoveAnchor { blob, .. }
+            | EditOp::DrawSpan { blob, .. }
+            | EditOp::SmoothSpan { blob, .. }
+            | EditOp::ResetSpan { blob, .. }
+            | EditOp::ResetBlob { blob }
+            | EditOp::SetExcluded { blob, .. }
+            | EditOp::SetGain { blob, .. } => one(blob),
+            EditOp::JoinBlobs { first, second } => one(first) || one(second),
+            EditOp::MovePitch { blobs, .. }
+            | EditOp::MoveTime { blobs, .. }
+            | EditOp::DeleteBlobs { blobs } => blobs.iter().any(one),
+            EditOp::SetMapping { mapping } => one(&mapping.blob),
+            EditOp::SetMappings { mappings } => mappings.iter().any(|m| one(&m.blob)),
+            EditOp::ResetRange { .. } => true,
+            EditOp::AddClip { clip: added, .. } => added.id == clip,
+            EditOp::MoveClip { clip: moved, .. }
+            | EditOp::RemoveClip { clip: moved }
+            | EditOp::RenameClip { clip: moved, .. } => *moved == clip,
+            EditOp::Group { ops } => ops.iter().any(|op| op.touches_clip(clip)),
+            _ => false,
+        }
+    }
+}
+
 impl History {
     /// Creates an empty history.
     pub fn new() -> Self {
@@ -407,6 +462,11 @@ impl History {
     /// True when at least one undone operation can be replayed.
     pub fn can_redo(&self) -> bool {
         !self.undone.is_empty()
+    }
+
+    /// The applied operations, oldest first, for rewriting in place.
+    pub fn applied_mut(&mut self) -> &mut [EditOp] {
+        &mut self.applied
     }
 
     /// Removes and returns the newest applied op, moving it to the redo stack.
@@ -535,17 +595,32 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             clip.blobs
                 .set_voicing(*blob, start - offset, end - offset, *voicing)?;
         }
-        EditOp::MovePitch { blobs, semitones } => {
+        EditOp::MovePitch {
+            blobs,
+            semitones,
+            anchors,
+        } => {
             let semitones = finite(*semitones, "pitch move")?;
             for id in require_all(state, blobs)? {
                 if let Some(b) = state.blob_mut(id) {
                     b.pitch_offset += semitones;
+                    if *anchors {
+                        b.curve = b.curve.transposed(semitones);
+                    }
                 }
             }
         }
-        EditOp::SetPitchOffset { blob, semitones } => {
+        EditOp::SetPitchOffset {
+            blob,
+            semitones,
+            anchors,
+        } => {
             let semitones = finite(*semitones, "pitch offset")?;
-            blob_mut(state, *blob)?.pitch_offset = semitones;
+            let b = blob_mut(state, *blob)?;
+            if *anchors {
+                b.curve = b.curve.transposed(semitones - b.pitch_offset);
+            }
+            b.pitch_offset = semitones;
         }
         EditOp::MoveTime { blobs, seconds } => {
             let seconds = finite(*seconds, "time move")?;
@@ -642,8 +717,7 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
                 }
                 let Some(baseline) = sources.baseline(clip.id) else {
                     return Err(AxysError::Invalid(
-                        "the analysed segmentation is unavailable, so a range cannot be reset"
-                            .into(),
+                        "range includes a clip with no analysis".into(),
                     ));
                 };
                 clip.blobs.restore_range(baseline, from, to)?;
@@ -673,7 +747,11 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             forget_missing_mappings(state);
         }
-        EditOp::AddClip { clip, ripple } => {
+        EditOp::AddClip {
+            clip,
+            ripple,
+            exact,
+        } => {
             if state.clips.len() >= MAX_CLIPS {
                 return Err(AxysError::Invalid(format!(
                     "a project holds at most {MAX_CLIPS} clips"
@@ -693,13 +771,15 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             let duration = finite(clip.source.duration, "clip duration")?;
             if duration <= 0.0 {
-                return Err(AxysError::Invalid("a clip must have some duration".into()));
+                return Err(AxysError::Invalid("clip is empty".into()));
             }
             let mut clip = clip.clone();
             fit_to_source(&mut clip.blobs, duration);
             let wanted = finite(clip.position, "clip position")?;
             let spans = lane_spans(state, None);
-            if *ripple {
+            if *exact {
+                clip.position = wanted.max(0.0);
+            } else if *ripple {
                 let (at, shift) = ripple_insert(&spans, duration, wanted);
                 for other in &mut state.clips {
                     if other.position >= at - 1e-9 {
@@ -712,13 +792,35 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             state.clips.push(clip);
         }
-        EditOp::MoveClip { clip, position } => {
+        EditOp::MoveClip {
+            clip,
+            position,
+            exact,
+            ripple,
+        } => {
             let wanted = finite(*position, "clip position")?;
             let others = lane_spans(state, Some(*clip));
-            let target = state
-                .clip_mut(*clip)
-                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?;
-            target.position = free_position(&others, target.source.duration, wanted);
+            let duration = state
+                .clip(*clip)
+                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?
+                .source
+                .duration;
+            let at = if *ripple {
+                let (at, shift) = ripple_insert(&others, duration, wanted);
+                for other in state.clips.iter_mut().filter(|other| other.id != *clip) {
+                    if other.position >= at - 1e-9 {
+                        other.position += shift;
+                    }
+                }
+                at
+            } else if *exact {
+                wanted.max(0.0)
+            } else {
+                free_position(&others, duration, wanted)
+            };
+            if let Some(target) = state.clip_mut(*clip) {
+                target.position = at;
+            }
         }
         EditOp::RemoveClip { clip } => {
             let before = state.clips.len();
@@ -1286,11 +1388,48 @@ mod tests {
         let op = EditOp::MovePitch {
             blobs: vec![BlobId(1), BlobId(2)],
             semitones: 1.5,
+            anchors: false,
         };
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
         assert!((s.clips[0].blobs.get(BlobId(1)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
         assert!((s.clips[0].blobs.get(BlobId(2)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn moving_pitch_carries_drawn_anchors_when_asked() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddAnchor {
+                blob: BlobId(1),
+                anchor: Anchor::new(0.5, 60.0),
+            },
+        )
+        .unwrap();
+        let moved = |anchors: bool| EditOp::MovePitch {
+            blobs: vec![BlobId(1)],
+            semitones: 2.0,
+            anchors,
+        };
+        apply(&mut s, None, &moved(false)).unwrap();
+        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 60.0);
+        apply(&mut s, None, &moved(true)).unwrap();
+        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 62.0);
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetPitchOffset {
+                blob: BlobId(1),
+                semitones: 1.0,
+                anchors: true,
+            },
+        )
+        .unwrap();
+        let blob = s.blob(BlobId(1)).unwrap();
+        assert_eq!(blob.pitch_offset, 1.0);
+        assert_eq!(blob.curve.anchors()[0].midi, 59.0);
     }
 
     #[test]
@@ -1302,6 +1441,7 @@ mod tests {
             &EditOp::MovePitch {
                 blobs: vec![BlobId(1), BlobId(99)],
                 semitones: 1.0,
+                anchors: false,
             },
         )
         .unwrap_err();
@@ -1315,6 +1455,7 @@ mod tests {
         let op = EditOp::SetPitchOffset {
             blob: BlobId(1),
             semitones: -2.0,
+            anchors: false,
         };
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
@@ -1802,6 +1943,7 @@ mod tests {
             &EditOp::SetPitchOffset {
                 blob: BlobId(2),
                 semitones: 4.0,
+                anchors: false,
             },
         )
         .unwrap();
@@ -1848,6 +1990,7 @@ mod tests {
             &EditOp::SetPitchOffset {
                 blob: BlobId(2),
                 semitones: 4.0,
+                anchors: false,
             },
         )
         .unwrap();
@@ -1915,6 +2058,7 @@ mod tests {
             &EditOp::SetPitchOffset {
                 blob: BlobId(1),
                 semitones: 3.0,
+                anchors: false,
             },
         )
         .unwrap();
@@ -2391,10 +2535,12 @@ mod tests {
             EditOp::MovePitch {
                 blobs: vec![missing],
                 semitones: 1.0,
+                anchors: false,
             },
             EditOp::SetPitchOffset {
                 blob: missing,
                 semitones: 1.0,
+                anchors: false,
             },
             EditOp::MoveTime {
                 blobs: vec![missing],
@@ -2474,10 +2620,12 @@ mod tests {
             EditOp::MovePitch {
                 blobs: vec![],
                 semitones: 0.0,
+                anchors: false,
             },
             EditOp::SetPitchOffset {
                 blob: BlobId(1),
                 semitones: 0.0,
+                anchors: false,
             },
             EditOp::MoveTime {
                 blobs: vec![],
@@ -2646,6 +2794,7 @@ mod tests {
             EditOp::MovePitch {
                 blobs: vec![BlobId(1)],
                 semitones: 2.0,
+                anchors: false,
             },
             EditOp::AddAnchor {
                 blob: BlobId(2),
@@ -2680,6 +2829,7 @@ mod tests {
         let op = EditOp::MovePitch {
             blobs: vec![BlobId(1), BlobId(2)],
             semitones: -1.25,
+            anchors: false,
         };
         let json = serde_json::to_string(&op).unwrap();
         assert!(json.contains("\"type\":\"movePitch\""), "{json}");
@@ -2725,6 +2875,7 @@ mod tests {
             &EditOp::AddClip {
                 clip: second_clip(5.0),
                 ripple: false,
+                exact: false,
             },
         )
         .unwrap();
@@ -2775,6 +2926,7 @@ mod tests {
             &EditOp::AddClip {
                 clip: second_clip(1.5),
                 ripple: false,
+                exact: false,
             },
         )
         .unwrap();
@@ -2801,7 +2953,16 @@ mod tests {
         let mut clip = second_clip(4.0);
         clip.id = ClipId(2);
         clip.blobs = crate::clip::renumber(&clip.blobs, ClipId(2)).unwrap();
-        apply(&mut s, None, &EditOp::AddClip { clip, ripple: true }).unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip,
+                ripple: true,
+                exact: false,
+            },
+        )
+        .unwrap();
         assert_eq!(s.clip(ClipId(0)).unwrap().position, 0.0);
         assert_eq!(s.clip(ClipId(2)).unwrap().position, 4.0);
         assert_eq!(s.clip(ClipId(1)).unwrap().position, 6.0);
@@ -2817,6 +2978,8 @@ mod tests {
             &EditOp::MoveClip {
                 clip: ClipId(1),
                 position: 9.0,
+                ripple: false,
+                exact: false,
             },
         )
         .unwrap();
@@ -2824,7 +2987,12 @@ mod tests {
         assert_eq!(clip.position, 9.0);
         assert_eq!(clip.blobs, before);
         assert_eq!(
-            s.project_blobs().unwrap().blobs().last().unwrap().start,
+            s.layer_blobs(&[ClipId(0), ClipId(1)])
+                .unwrap()
+                .blobs()
+                .last()
+                .unwrap()
+                .start,
             9.5
         );
     }
@@ -2839,6 +3007,7 @@ mod tests {
             &EditOp::AddClip {
                 clip: second_clip(2.0),
                 ripple: false,
+                exact: false,
             },
         )
         .unwrap();
@@ -2853,7 +3022,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.blob(BlobId(2)).unwrap().end, 2.0);
-        assert!(s.project_blobs().is_ok());
+        assert!(s.layer_blobs(&[ClipId(0), ClipId(1)]).is_ok());
     }
 
     #[test]
@@ -2865,6 +3034,8 @@ mod tests {
             &EditOp::MoveClip {
                 clip: ClipId(1),
                 position: 0.5,
+                ripple: false,
+                exact: false,
             },
         )
         .unwrap();
@@ -2975,6 +3146,142 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_clip_lands_over_another_and_moves_nothing() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(1.5),
+                ripple: false,
+                exact: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.clip(ClipId(0)).unwrap().position, 0.0);
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 1.5);
+        let place = |position: f64| EditOp::MoveClip {
+            clip: ClipId(1),
+            position,
+            ripple: false,
+            exact: true,
+        };
+        apply(&mut s, None, &place(0.25)).unwrap();
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 0.25);
+        apply(&mut s, None, &place(-3.0)).unwrap();
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 0.0);
+    }
+
+    #[test]
+    fn a_recorded_clip_move_without_exact_keeps_the_old_placement() {
+        let op: EditOp =
+            serde_json::from_str(r#"{"type":"moveClip","clip":1,"position":0.5}"#).unwrap();
+        let mut s = two_clips();
+        apply(&mut s, None, &op).unwrap();
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 2.0);
+        let json = serde_json::to_string(&EditOp::MoveClip {
+            clip: ClipId(1),
+            position: 1.0,
+            ripple: false,
+            exact: false,
+        })
+        .unwrap();
+        assert!(!json.contains("exact"));
+    }
+
+    #[test]
+    fn a_clip_moved_with_ripple_pushes_the_clips_after_it() {
+        // Clip 0 at 0..2 and clip 1 at 5..7; clip 0 moved to 4.0 needs 1 s of room.
+        let mut s = two_clips();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveClip {
+                clip: ClipId(0),
+                position: 4.0,
+                exact: false,
+                ripple: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.clip(ClipId(0)).unwrap().position, 4.0);
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 6.0);
+    }
+
+    #[test]
+    fn overlapping_clips_are_edited_on_their_own() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(0.0),
+                ripple: false,
+                exact: true,
+            },
+        )
+        .unwrap();
+        let id = ClipId(1).first_blob();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MovePitch {
+                blobs: vec![id],
+                semitones: 2.0,
+                anchors: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blob(id).unwrap().pitch_offset, 2.0);
+        assert_eq!(s.blob(BlobId(1)).unwrap().pitch_offset, 0.0);
+        assert!(s.layer_blobs(&[ClipId(0), ClipId(1)]).is_err());
+        assert!(s.layer_blobs(&[ClipId(1)]).is_ok());
+    }
+
+    #[test]
+    fn conflicts_are_reported_per_clip() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(0.0),
+                ripple: false,
+                exact: true,
+            },
+        )
+        .unwrap();
+        // Two clips sounding at once are not a timing problem.
+        assert!(s.conflicts().is_empty());
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveTime {
+                blobs: vec![BlobId(1)],
+                seconds: 0.5,
+            },
+        )
+        .unwrap();
+        // Blob 1 now overlaps blob 2, which is allowed.
+        assert!(s.conflicts().is_empty());
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveTime {
+                blobs: vec![BlobId(1)],
+                seconds: -1.0,
+            },
+        )
+        .unwrap();
+        let conflicts = s.conflicts();
+        assert!(!conflicts.is_empty());
+        assert!(conflicts.iter().all(|c| clip_of(c.first) == ClipId(0)));
+    }
+
+    #[test]
     fn a_clip_whose_blobs_belong_to_another_is_refused() {
         let mut s = state();
         let mut clip = second_clip(5.0);
@@ -2985,6 +3292,7 @@ mod tests {
             &EditOp::AddClip {
                 clip,
                 ripple: false,
+                exact: false,
             }
         )
         .is_err());

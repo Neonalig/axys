@@ -50,6 +50,9 @@ export interface DialogOptions {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/** Where a press leaves a non-blocking panel open. */
+const KEEPS_PANEL_OPEN = '.axys-canvas-area, .axys-toolbar, .axys-mixer, .axys-menu';
+
 /** Distance in pixels a panel is kept from the viewport edge while it is dragged. */
 const MARGIN = 8;
 
@@ -118,6 +121,8 @@ export class Dialog {
   readonly #element: HTMLElement;
   readonly #backdrop: HTMLElement | null;
   readonly #body: HTMLElement;
+  /** The foot of the panel holding its buttons, present while it has any. */
+  #footer: HTMLElement | null = null;
   readonly #opener: Element | null;
   readonly #onClose: (() => void) | undefined;
   readonly #blocking: boolean;
@@ -163,6 +168,10 @@ export class Dialog {
 
     const heading = document.createElement('h2');
     heading.textContent = options.title;
+    // A title cut short shows in full on hover.
+    heading.addEventListener('pointerenter', () => {
+      if (heading.scrollWidth > heading.clientWidth) setTooltip(heading, options.title);
+    });
     head.append(heading);
 
     // The gap between the title and the close button was already the grab area; the dots are
@@ -190,34 +199,40 @@ export class Dialog {
     element.append(body);
     this.#body = body;
 
-    const actions = options.actions ?? [];
-    if (actions.length > 0) {
-      const footer = document.createElement('div');
-      footer.className = 'axys-group axys-dialog-actions';
-      for (const action of actions) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = action.label;
-        setTooltip(button, action.label);
-        if (action.kind === 'primary') {
-          button.classList.add('is-active');
-        } else if (action.kind === 'danger') {
-          button.classList.add('axys-danger');
-        }
-        button.addEventListener('click', () => {
-          action.onSelect(this);
-        });
-        footer.append(button);
-      }
-      element.append(footer);
-    }
+    this.#element = element;
+    this.setActions(options.actions ?? []);
 
     element.addEventListener('keydown', (event: KeyboardEvent) => {
       this.#onKeyDown(event);
     });
 
     parent.append(element);
-    this.#element = element;
+  }
+
+  /** Replaces the buttons along the foot of the panel, removing the foot with none. */
+  setActions(actions: readonly DialogAction[]): void {
+    this.#footer?.remove();
+    this.#footer = null;
+    if (actions.length === 0) return;
+    const footer = document.createElement('div');
+    footer.className = 'axys-group axys-dialog-actions';
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = action.label;
+      setTooltip(button, action.label);
+      if (action.kind === 'primary') {
+        button.classList.add('is-active');
+      } else if (action.kind === 'danger') {
+        button.classList.add('axys-danger');
+      }
+      button.addEventListener('click', () => {
+        action.onSelect(this);
+      });
+      footer.append(button);
+    }
+    this.#element.append(footer);
+    this.#footer = footer;
   }
 
   /** Opens a panel and focuses its first control. */
@@ -318,10 +333,11 @@ export class Dialog {
 
   #onOutside = (event: Event): void => {
     if (event.target instanceof Node && !this.#element.contains(event.target)) {
-      // Only a press on another panel or on the page chrome dismisses it; the editor canvas is
-      // where this panel's result is shown, so pressing there is part of using it.
+      // Only a press on another panel or elsewhere on the page dismisses it. The canvas shows
+      // this panel's result, and the toolbar and mixer play it, so pressing there is part of
+      // using it, and a menu open from one of its drop-downs belongs to it.
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('.axys-canvas-area') === null) {
+      if (target?.closest(KEEPS_PANEL_OPEN) === null) {
         this.close();
       }
     }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::{F0Params, PitchTrack};
 use crate::analysis::segment::SegmentParams;
-use crate::blob::{Blob, BlobId, BlobSet};
+use crate::blob::{Blob, BlobId, BlobSet, ConflictKind, TimingConflict};
 use crate::clip::{clip_of, Clip, ClipId, Reference, ReferenceId};
 use crate::dsp::formant::FormantMode;
 use crate::edit::History;
@@ -153,12 +153,49 @@ impl EditState {
         self.clip_mut(clip_of(id))?.blobs.get_mut(id)
     }
 
-    /// Every blob on the lane in project seconds, as one ordered set.
+    /// The blobs of some clips in project seconds, as one ordered set.
     ///
-    /// Clips never overlap on the lane, so neither do their blobs.
-    pub fn project_blobs(&self) -> Result<BlobSet> {
-        let blobs: Vec<Blob> = self.clips.iter().flat_map(Clip::project_blobs).collect();
+    /// Errors when two of the clips overlap; a [`crate::clip::layer`] never does.
+    pub fn layer_blobs(&self, clips: &[ClipId]) -> Result<BlobSet> {
+        let blobs: Vec<Blob> = self
+            .clips
+            .iter()
+            .filter(|clip| clips.contains(&clip.id))
+            .flat_map(Clip::project_blobs)
+            .collect();
         BlobSet::from_blobs(blobs)
+    }
+
+    /// Every blob of every clip in project seconds, in start order.
+    ///
+    /// Blobs of clips that overlap may overlap each other.
+    pub fn all_blobs(&self) -> Vec<Blob> {
+        let mut blobs: Vec<Blob> = self.clips.iter().flat_map(Clip::project_blobs).collect();
+        blobs.sort_by(|a, b| a.start.total_cmp(&b.start));
+        blobs
+    }
+
+    /// Gaps timing edits opened between neighbouring blobs, in project seconds, each within one
+    /// clip.
+    ///
+    /// Blobs sounding at once, of one clip or of two, are not a conflict: each overlapping blob
+    /// sounds in a voice of its own.
+    pub fn conflicts(&self) -> Vec<TimingConflict> {
+        let mut conflicts: Vec<TimingConflict> = self
+            .clips
+            .iter()
+            .flat_map(|clip| {
+                let mut conflicts = clip.blobs.timing_conflicts();
+                conflicts.retain(|conflict| conflict.kind == ConflictKind::Gap);
+                for conflict in &mut conflicts {
+                    conflict.start += clip.position;
+                    conflict.end += clip.position;
+                }
+                conflicts
+            })
+            .collect();
+        conflicts.sort_by(|a, b| a.start.total_cmp(&b.start));
+        conflicts
     }
 
     /// Project seconds at which the last clip or reference ends.
@@ -217,6 +254,25 @@ pub struct ViewState {
     /// Loop region end in source seconds, when a loop is set.
     #[serde(default)]
     pub loop_end: Option<f64>,
+    /// The clip in front, which the editor edits and whose layer it builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_clip: Option<ClipId>,
+    /// How the clips outside the active layer are shown.
+    #[serde(default)]
+    pub others: OthersView,
+}
+
+/// How the clips outside the active layer are shown and reached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OthersView {
+    /// Drawn behind the active layer; a click on one brings its clip forward.
+    #[default]
+    Show,
+    /// Drawn faintly and never hit; only the active clip is edited.
+    Dim,
+    /// Not drawn; only the active clip is edited.
+    Hide,
 }
 
 impl Default for ViewState {
@@ -231,6 +287,8 @@ impl Default for ViewState {
             playhead: 0.0,
             loop_start: None,
             loop_end: None,
+            active_clip: None,
+            others: OthersView::Show,
         }
     }
 }
@@ -324,7 +382,7 @@ impl Project {
             .map_err(|e| AxysError::Invalid(format!("project is not valid JSON: {e}")))?;
         let migrated = migrate(value)?;
         serde_json::from_value(migrated)
-            .map_err(|e| AxysError::Invalid(format!("project document is malformed: {e}")))
+            .map_err(|e| AxysError::Invalid(format!("project file is malformed: {e}")))
     }
 
     /// True when `other` describes the same media as one of the project's clips.
@@ -373,9 +431,7 @@ pub fn fingerprint(samples: &[f32]) -> String {
 pub fn migrate(value: serde_json::Value) -> Result<serde_json::Value> {
     let mut value = value;
     if !value.is_object() {
-        return Err(AxysError::Invalid(
-            "project document is not an object".to_string(),
-        ));
+        return Err(AxysError::Invalid("project file is malformed".to_string()));
     }
     let version = read_schema_version(&value)?;
     match version {
@@ -383,12 +439,12 @@ pub fn migrate(value: serde_json::Value) -> Result<serde_json::Value> {
         1 => upgrade_1_to_2(&mut value)?,
         v if v > SCHEMA_VERSION => {
             return Err(AxysError::Unsupported(format!(
-                "project schema version {v} is newer than {SCHEMA_VERSION}"
+                "project format {v} is newer than this version of Axys supports"
             )))
         }
         v => {
             return Err(AxysError::Invalid(format!(
-                "project schema version {v} is not understood"
+                "project format {v} is not supported"
             )))
         }
     }
@@ -411,10 +467,10 @@ fn upgrade_1_to_2(value: &mut serde_json::Value) -> Result<()> {
 
     let object = value
         .as_object_mut()
-        .ok_or_else(|| AxysError::Invalid("project document is not an object".into()))?;
+        .ok_or_else(|| AxysError::Invalid("project file is malformed".into()))?;
     let source = object
         .remove("source")
-        .ok_or_else(|| AxysError::Invalid("project document has no source".into()))?;
+        .ok_or_else(|| AxysError::Invalid("project file has no source audio".into()))?;
     let analysis = object.remove("analysis");
     let track = object.remove("track");
 
@@ -712,6 +768,8 @@ mod tests {
             playhead: 1.75,
             loop_start: Some(1.0),
             loop_end: Some(3.0),
+            active_clip: Some(ClipId(0)),
+            others: OthersView::Dim,
         };
         project
             .history
@@ -719,6 +777,7 @@ mod tests {
         project.history.push(EditOp::SetPitchOffset {
             blob: BlobId(1),
             semitones: -1.5,
+            anchors: false,
         });
         project
     }

@@ -175,7 +175,7 @@ abstract class WorkerClient {
       this.#breakDown(event.message);
     });
     worker.addEventListener('messageerror', () => {
-      this.#breakDown('a worker message could not be read');
+      this.#breakDown('Background task failed');
     });
     this.#worker = worker;
     return worker;

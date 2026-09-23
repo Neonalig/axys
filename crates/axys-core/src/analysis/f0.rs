@@ -13,6 +13,10 @@
 //! The difference function is evaluated through an FFT cross-correlation, so the cost per
 //! frame is set by the frame length rather than by the product of window length and lag
 //! range, and every buffer is allocated once for the whole run.
+//!
+//! Three observers feed the one decoder, chosen by [`F0Method`]: YIN's absolute threshold, pYIN's
+//! distribution over thresholds, and SWIPE's spectral harmonic strength (see [`super::swipe`]).
+//! Each supplies per-frame candidates with a cost, and an unvoiced cost where it has one.
 
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
@@ -20,6 +24,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::swipe::Swipe;
 use crate::{limits, AxysError, Result};
 
 /// Serde shim mapping the NaN that marks an unvoiced frame to and from JSON null.
@@ -67,6 +72,19 @@ mod nan_vec_as_null {
     }
 }
 
+/// Which observer turns audio into pitch candidates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum F0Method {
+    /// YIN with an absolute threshold, optionally raised to suit the clip.
+    #[default]
+    Yin,
+    /// pYIN: YIN's minima weighed over a Beta distribution of thresholds centred on `threshold`.
+    Pyin,
+    /// SWIPE': pitch as the strength of a harmonic kernel over the loudness spectrum.
+    Swipe,
+}
+
 /// Parameters controlling fundamental-frequency estimation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,10 +97,27 @@ pub struct F0Params {
     pub frame_seconds: f64,
     /// Spacing between frame centres, in seconds.
     pub hop_seconds: f64,
-    /// YIN absolute threshold on the normalised difference function.
+    /// The observer.
+    #[serde(default)]
+    pub method: F0Method,
+    /// YIN's absolute threshold on the normalised difference function, or with pYIN the mean
+    /// of the threshold distribution.
     pub threshold: f64,
+    /// SWIPE strength, from -1 to 1, above which a frame reads as voiced.
+    #[serde(default = "default_strength")]
+    pub strength: f64,
     /// Frame RMS below which a frame can only be unvoiced.
     pub voiced_rms_floor: f32,
+    /// Raises `threshold` to suit the clip, for material whose pitch dips less deeply than a dry
+    /// vocal's: reverb, compression, lossy encoding or doubled parts.
+    ///
+    /// Off for analyses stored before it existed, so they decode as they did.
+    #[serde(default)]
+    pub auto_threshold: bool,
+}
+
+fn default_strength() -> f64 {
+    0.25
 }
 
 impl Default for F0Params {
@@ -92,8 +127,11 @@ impl Default for F0Params {
             max_hz: 1000.0,
             frame_seconds: 0.0464,
             hop_seconds: 0.005,
+            method: F0Method::Yin,
             threshold: 0.15,
+            strength: default_strength(),
             voiced_rms_floor: 0.0015,
+            auto_threshold: true,
         }
     }
 }
@@ -346,7 +384,12 @@ impl F0Frames {
     pub fn new(len: usize, sample_rate: f64, params: &F0Params) -> Result<Self> {
         validate(len, sample_rate, params)?;
         let hop_samples = ((params.hop_seconds * sample_rate).round() as usize).max(1);
-        let frame_len = ((params.frame_seconds * sample_rate).round() as usize).max(4);
+        let frame_len = match params.method {
+            F0Method::Swipe => Swipe::frame_len(sample_rate, params),
+            F0Method::Yin | F0Method::Pyin => {
+                ((params.frame_seconds * sample_rate).round() as usize).max(4)
+            }
+        };
         let count = len.div_ceil(hop_samples);
         if count > MAX_FRAMES {
             return Err(AxysError::Invalid(format!(
@@ -436,7 +479,21 @@ pub fn observe_f0(
     if frames.is_empty() {
         return Ok(candidates);
     }
+    if params.method == F0Method::Swipe {
+        let mut swipe = Swipe::new(layout.sample_rate, layout.frame_len, params)?;
+        for index in frames {
+            let start = layout.window_start(index);
+            let end = (start + layout.frame_len).min(layout.len);
+            swipe.observe(
+                &window[start - offset..end - offset],
+                params,
+                &mut candidates,
+            );
+        }
+        return Ok(candidates);
+    }
     let mut yin = Yin::new(layout, params)?;
+    let prior = (params.method == F0Method::Pyin).then(|| threshold_prior(params.threshold));
     for index in frames {
         let start = layout.window_start(index);
         let end = (start + layout.frame_len).min(layout.len);
@@ -445,7 +502,12 @@ pub fn observe_f0(
         yin.difference();
         candidates.begin_frame(rms);
         if rms >= params.voiced_rms_floor {
-            yin.collect_candidates(params.threshold, &mut candidates);
+            match &prior {
+                Some(prior) => yin.collect_probabilities(prior, &mut candidates),
+                None => yin.collect_candidates(params.threshold, &mut candidates),
+            }
+        } else if prior.is_some() {
+            candidates.set_unvoiced(0.0);
         }
         candidates.end_frame();
     }
@@ -468,13 +530,62 @@ pub fn decode_f0(
             layout.count
         )));
     }
-    let states = decode(candidates, params.threshold);
+    let states = decode(candidates, voicing_threshold(candidates, params));
     let hop_seconds = layout.hop_seconds();
     Ok(PitchTrack {
         sample_rate: layout.sample_rate,
         hop_seconds,
         frames: candidates.to_frames(&states, hop_seconds),
     })
+}
+
+/// The voicing threshold decoding uses: YIN's own, raised to suit the clip when
+/// `auto_threshold` is set.
+pub fn voicing_threshold(candidates: &F0Candidates, params: &F0Params) -> f64 {
+    if params.auto_threshold && params.method == F0Method::Yin {
+        clip_threshold(candidates, params)
+    } else {
+        params.threshold
+    }
+}
+
+/// Fraction of the clip's 95th percentile frame RMS above which a frame counts as sung.
+const AUTO_LOUD_FRACTION: f32 = 0.15;
+
+/// Quantile of the sung frames' best dip that the automatic threshold lets through.
+const AUTO_QUANTILE: f64 = 0.6;
+
+/// Highest threshold the automatic threshold reaches, past which noise starts to read as pitch.
+const AUTO_CEILING: f64 = 0.35;
+
+/// The voicing threshold that suits a clip: the depth most of its sung frames dip to.
+///
+/// Sung frames are those well above the clip's own level floor. Their best dips' quantile
+/// becomes the threshold, never below `params.threshold` and never above [`AUTO_CEILING`], so a
+/// clean take decodes exactly as with the fixed threshold.
+fn clip_threshold(candidates: &F0Candidates, params: &F0Params) -> f64 {
+    let rms = candidates.rms();
+    let mut levels: Vec<f32> = rms.to_vec();
+    levels.sort_by(f32::total_cmp);
+    let Some(loud) = levels.get(levels.len() * 95 / 100).copied() else {
+        return params.threshold;
+    };
+    let floor = (loud * AUTO_LOUD_FRACTION).max(params.voiced_rms_floor);
+    let mut best: Vec<f64> = (0..candidates.len())
+        .filter(|frame| rms[*frame] > floor)
+        .map(|frame| {
+            candidates.dprime[candidates.range(frame)]
+                .iter()
+                .copied()
+                .fold(1.0, f64::min)
+        })
+        .collect();
+    if best.is_empty() {
+        return params.threshold;
+    }
+    best.sort_by(f64::total_cmp);
+    let at = ((best.len() as f64 * AUTO_QUANTILE) as usize).min(best.len() - 1);
+    best[at].clamp(params.threshold, AUTO_CEILING.max(params.threshold))
 }
 
 fn validate(len: usize, sample_rate: f64, params: &F0Params) -> Result<()> {
@@ -738,6 +849,58 @@ impl Yin {
         }
     }
 
+    /// Pushes YIN's minima weighed by how much of a threshold distribution picks each, pYIN's
+    /// observation, and the probability that the frame is voiced at all.
+    ///
+    /// Each threshold picks the first minimum below it, or the global minimum with a small
+    /// weight when none is. A candidate costs one less its probability, and the unvoiced state
+    /// costs the voiced probability, so a frame voices when most thresholds agree that it does.
+    fn collect_probabilities(&self, prior: &[f64], out: &mut F0Candidates) {
+        let lo = self.min_lag.max(2);
+        let hi = self.max_lag.saturating_sub(1);
+        let mut minima: Vec<(usize, f64)> = Vec::with_capacity(MAX_CANDIDATES * 2);
+        for lag in lo..=hi {
+            let here = self.dprime[lag];
+            if here < self.dprime[lag - 1] && here <= self.dprime[lag + 1] && here < 1.0 {
+                minima.push((lag, here));
+            }
+        }
+        if minima.is_empty() {
+            out.set_unvoiced(0.0);
+            return;
+        }
+        let global = minima
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))
+            .map_or(0, |(index, _)| index);
+        let mut weight = vec![0.0f64; minima.len()];
+        for (step, share) in prior.iter().enumerate() {
+            let threshold = (step + 1) as f64 / prior.len() as f64;
+            match minima.iter().position(|(_, value)| *value < threshold) {
+                Some(index) => weight[index] += share,
+                None => weight[global] += share * GLOBAL_MINIMUM_WEIGHT,
+            }
+        }
+        let voiced: f64 = weight.iter().sum();
+        let mut ranked: Vec<(usize, f64)> = weight
+            .iter()
+            .enumerate()
+            .filter(|(_, share)| **share > 1e-4)
+            .map(|(index, share)| (index, *share))
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        ranked.truncate(MAX_CANDIDATES);
+        for (index, share) in ranked {
+            let (lag, value) = minima[index];
+            let refined = self.refine(lag);
+            if refined > 0.0 {
+                out.push_candidate(self.sample_rate / refined, value, 1.0 - share);
+            }
+        }
+        out.set_unvoiced(voiced.min(1.0));
+    }
+
     /// Parabolic interpolation of the normalised difference around an integer lag.
     fn refine(&self, lag: usize) -> f64 {
         if lag == 0 || lag + 1 > self.max_lag {
@@ -755,6 +918,38 @@ impl Yin {
     }
 }
 
+/// An unvoiced cost left for the decoder to take from the threshold.
+const UNSET: f64 = -1.0;
+
+/// Thresholds pYIN weighs a frame's minima over, from 0.01 to 1.
+const PRIOR_STEPS: usize = 100;
+
+/// Share a threshold that no minimum clears gives the global minimum, pYIN's `p_a`.
+const GLOBAL_MINIMUM_WEIGHT: f64 = 0.01;
+
+/// Shape parameter `a` of pYIN's Beta threshold distribution.
+const PRIOR_SHAPE: f64 = 2.0;
+
+/// A Beta(2, b) distribution over [`PRIOR_STEPS`] thresholds with its mean at `mean`, summing to
+/// one.
+fn threshold_prior(mean: f64) -> Vec<f64> {
+    let mean = mean.clamp(0.02, 0.6);
+    let b = PRIOR_SHAPE * (1.0 - mean) / mean;
+    let mut prior: Vec<f64> = (1..=PRIOR_STEPS)
+        .map(|step| {
+            let x = (step as f64 - 0.5) / PRIOR_STEPS as f64;
+            x.powf(PRIOR_SHAPE - 1.0) * (1.0 - x).powf(b - 1.0)
+        })
+        .collect();
+    let total: f64 = prior.iter().sum();
+    if total > 0.0 {
+        for share in &mut prior {
+            *share /= total;
+        }
+    }
+    prior
+}
+
 /// YIN candidate lags per frame in flat arrays, collected before Viterbi decoding.
 #[derive(Debug, Clone, PartialEq)]
 pub struct F0Candidates {
@@ -763,11 +958,14 @@ pub struct F0Candidates {
     cost: Vec<f64>,
     offsets: Vec<usize>,
     rms: Vec<f32>,
+    /// Cost of the unvoiced state per frame, or [`UNSET`] to take it from the threshold.
+    unvoiced: Vec<f64>,
 }
 
 impl F0Candidates {
     /// Rebuilds candidates from their flat arrays: `counts` holds the candidates per frame, and
-    /// `freq`, `dprime` and `cost` hold every frame's candidates back to back.
+    /// `freq`, `dprime` and `cost` hold every frame's candidates back to back. `unvoiced` holds
+    /// each frame's unvoiced cost, negative where the threshold sets it.
     ///
     /// # Errors
     /// Arrays whose lengths disagree, a frame with more candidates than one frame may hold, or a
@@ -778,8 +976,9 @@ impl F0Candidates {
         cost: Vec<f64>,
         counts: &[u32],
         rms: Vec<f32>,
+        unvoiced: Vec<f64>,
     ) -> Result<Self> {
-        if counts.len() != rms.len() {
+        if counts.len() != rms.len() || unvoiced.len() != rms.len() {
             return Err(AxysError::Invalid(format!(
                 "{} candidate counts for {} frames",
                 counts.len(),
@@ -809,7 +1008,8 @@ impl F0Candidates {
         }
         let finite = freq.iter().all(|f| f.is_finite() && *f > 0.0)
             && dprime.iter().chain(&cost).all(|v| v.is_finite())
-            && rms.iter().all(|r| r.is_finite() && *r >= 0.0);
+            && rms.iter().all(|r| r.is_finite() && *r >= 0.0)
+            && unvoiced.iter().all(|u| u.is_finite());
         if !finite {
             return Err(AxysError::Invalid(
                 "candidates contain a non-finite or negative value".into(),
@@ -821,6 +1021,7 @@ impl F0Candidates {
             cost,
             offsets,
             rms,
+            unvoiced,
         })
     }
 
@@ -833,6 +1034,7 @@ impl F0Candidates {
         self.offsets
             .extend(next.offsets.iter().skip(1).map(|offset| base + offset));
         self.rms.extend(next.rms);
+        self.unvoiced.extend(next.unvoiced);
     }
 
     /// Candidate frequencies in Hz, every frame's back to back.
@@ -863,7 +1065,12 @@ impl F0Candidates {
         &self.rms
     }
 
-    fn with_capacity(frames: usize) -> Self {
+    /// Unvoiced cost per frame, negative where the threshold sets it.
+    pub fn unvoiced(&self) -> &[f64] {
+        &self.unvoiced
+    }
+
+    pub(super) fn with_capacity(frames: usize) -> Self {
         let mut offsets = Vec::with_capacity(frames + 1);
         offsets.push(0);
         Self {
@@ -872,20 +1079,29 @@ impl F0Candidates {
             cost: Vec::with_capacity(frames * 4),
             offsets,
             rms: Vec::with_capacity(frames),
+            unvoiced: Vec::with_capacity(frames),
         }
     }
 
-    fn begin_frame(&mut self, rms: f32) {
+    pub(super) fn begin_frame(&mut self, rms: f32) {
         self.rms.push(rms);
+        self.unvoiced.push(UNSET);
     }
 
-    fn push_candidate(&mut self, freq: f64, dprime: f64, cost: f64) {
+    /// Sets the unvoiced cost of the frame being collected.
+    pub(super) fn set_unvoiced(&mut self, cost: f64) {
+        if let Some(last) = self.unvoiced.last_mut() {
+            *last = cost;
+        }
+    }
+
+    pub(super) fn push_candidate(&mut self, freq: f64, dprime: f64, cost: f64) {
         self.freq.push(freq);
         self.dprime.push(dprime);
         self.cost.push(cost);
     }
 
-    fn end_frame(&mut self) {
+    pub(super) fn end_frame(&mut self) {
         self.offsets.push(self.freq.len());
     }
 
@@ -967,11 +1183,15 @@ fn decode(obs: &F0Candidates, threshold: f64) -> Vec<usize> {
         for (slot, source) in cur_freq.iter_mut().zip(range.clone()) {
             *slot = obs.freq[source];
         }
+        let unvoiced = match obs.unvoiced.get(frame) {
+            Some(cost) if *cost >= 0.0 => *cost,
+            _ => unvoiced_cost,
+        };
         for state in 0..=count {
             let observation = if state < count {
                 obs.cost[range.start + state]
             } else {
-                unvoiced_cost
+                unvoiced
             };
             if frame == 0 {
                 cur[state] = observation;
@@ -1044,16 +1264,58 @@ mod tests {
 
     #[test]
     fn spans_collected_apart_decode_as_one_run() {
-        let params = F0Params::default();
         let long = swept(1.3, 0.5, |t| 180.0 + 90.0 * t);
         let short = sine(220.0, 0.03, 0.5);
-        for audio in [&long, &short] {
-            let whole = serde_json::to_string(&detect_f0(audio, SR, &params).unwrap()).unwrap();
-            for pieces in [1, 2, 3, 7] {
-                let split =
-                    serde_json::to_string(&detect_in_pieces(audio, &params, pieces)).unwrap();
-                assert_eq!(split, whole, "{pieces} pieces of {} samples", audio.len());
+        for method in [F0Method::Yin, F0Method::Pyin, F0Method::Swipe] {
+            let params = F0Params {
+                method,
+                ..F0Params::default()
+            };
+            for audio in [&long, &short] {
+                let whole = serde_json::to_string(&detect_f0(audio, SR, &params).unwrap()).unwrap();
+                for pieces in [1, 2, 3, 7] {
+                    let split =
+                        serde_json::to_string(&detect_in_pieces(audio, &params, pieces)).unwrap();
+                    assert_eq!(
+                        split,
+                        whole,
+                        "{method:?}, {pieces} pieces of {}",
+                        audio.len()
+                    );
+                }
             }
+        }
+    }
+
+    #[test]
+    fn every_method_finds_a_tone_and_leaves_noise_unvoiced() {
+        let mut state = 0x1234_5678_u32;
+        let noise: Vec<f32> = (0..(SR * 0.6) as usize)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state as f32 / u32::MAX as f32 - 0.5) * 0.6
+            })
+            .collect();
+        for method in [F0Method::Yin, F0Method::Pyin, F0Method::Swipe] {
+            let params = F0Params {
+                method,
+                ..F0Params::default()
+            };
+            for hz in [110.0, 220.0, 440.0] {
+                let track = detect_f0(&sine(hz, 0.6, 0.5), SR, &params).unwrap();
+                let expected = 69.0 + 12.0 * (hz / 440.0f64).log2();
+                let median = track.median_midi(0.1, 0.5).unwrap_or(f64::NAN);
+                assert!(
+                    (median - expected).abs() < 0.3,
+                    "{method:?} read {hz} Hz as MIDI {median:.2}"
+                );
+                assert!(
+                    voiced_share(&track) > 0.85,
+                    "{method:?} voiced too little of {hz} Hz"
+                );
+            }
+            let track = detect_f0(&noise, SR, &params).unwrap();
+            assert!(voiced_share(&track) < 0.2, "{method:?} voiced noise");
         }
     }
 
@@ -1079,10 +1341,55 @@ mod tests {
             candidates.cost().to_vec(),
             &candidates.counts(),
             candidates.rms().to_vec(),
+            candidates.unvoiced().to_vec(),
         )
         .unwrap();
         assert_eq!(rebuilt, candidates);
-        assert!(F0Candidates::from_parts(vec![220.0], vec![], vec![], &[1], vec![0.1]).is_err());
+        assert!(
+            F0Candidates::from_parts(vec![220.0], vec![], vec![], &[1], vec![0.1], vec![-1.0])
+                .is_err()
+        );
+    }
+
+    /// Fraction of frames a track marks voiced.
+    fn voiced_share(track: &PitchTrack) -> f64 {
+        let voiced = track.frames.iter().filter(|frame| frame.voiced).count();
+        voiced as f64 / track.frames.len().max(1) as f64
+    }
+
+    #[test]
+    fn the_automatic_threshold_leaves_a_clean_tone_alone() {
+        let audio = sine(220.0, 1.0, 0.5);
+        let fixed = F0Params {
+            auto_threshold: false,
+            ..F0Params::default()
+        };
+        let clean = detect_f0(&audio, SR, &fixed).unwrap();
+        let auto = detect_f0(&audio, SR, &F0Params::default()).unwrap();
+        assert_eq!(clean.frames, auto.frames);
+    }
+
+    #[test]
+    fn the_automatic_threshold_voices_a_noisy_tone() {
+        // A tone under enough noise that its dips sit above the fixed threshold.
+        let mut state = 0x2545_f491_u32;
+        let audio: Vec<f32> = sine(220.0, 1.0, 0.5)
+            .into_iter()
+            .map(|sample| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                sample + (state as f32 / u32::MAX as f32 - 0.5) * 0.9
+            })
+            .collect();
+        let fixed = F0Params {
+            auto_threshold: false,
+            ..F0Params::default()
+        };
+        let before = voiced_share(&detect_f0(&audio, SR, &fixed).unwrap());
+        let after = voiced_share(&detect_f0(&audio, SR, &F0Params::default()).unwrap());
+        assert!(
+            after > before + 0.2,
+            "voiced {before:.2} fixed, {after:.2} automatic"
+        );
     }
 
     fn sine(freq: f64, seconds: f64, amp: f32) -> Vec<f32> {

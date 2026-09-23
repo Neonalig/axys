@@ -104,7 +104,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isNumber(value: unknown): value is number {
+export function isNumber(value: unknown): value is number {
   return typeof value === 'number';
 }
 
@@ -138,6 +138,8 @@ const EDGES = ['start', 'end'] as const;
 const CONFLICT_KINDS = ['overlap', 'gap'] as const;
 const GUIDE_MODES = ['visualOnly', 'pitchOnly', 'timingOnly', 'combined'] as const;
 const TIME_DISPLAYS = ['seconds', 'barsBeats'] as const;
+const OTHERS_VIEWS = ['show', 'dim', 'hide'] as const;
+const F0_METHOD_NAMES = ['yin', 'pyin', 'swipe'] as const;
 const ACCIDENTAL_STYLES = ['sharps', 'flats'] as const;
 
 /** Accepts one curve anchor. */
@@ -241,7 +243,7 @@ export function pitchTrackToArrays(track: PitchTrack): PitchTrackArrays {
   };
 }
 
-function isF0Params(value: unknown): value is F0Params {
+export function isF0Params(value: unknown): value is F0Params {
   return (
     isRecord(value) &&
     isNumber(value.minHz) &&
@@ -249,7 +251,10 @@ function isF0Params(value: unknown): value is F0Params {
     isNumber(value.frameSeconds) &&
     isNumber(value.hopSeconds) &&
     isNumber(value.threshold) &&
-    isNumber(value.voicedRmsFloor)
+    isNumber(value.voicedRmsFloor) &&
+    (value.method === undefined || isLiteral(F0_METHOD_NAMES, value.method)) &&
+    (value.strength === undefined || isNumber(value.strength)) &&
+    (value.autoThreshold === undefined || typeof value.autoThreshold === 'boolean')
   );
 }
 
@@ -690,13 +695,21 @@ export interface ClipPlan {
   clip: number;
   /** Project seconds at which the clip's output second 0 sits. */
   position: number;
+  /** The clip's first voice. */
   plan: RenderPlan;
+  /** Every further voice, one per set of blobs a timing edit laid over the others. */
+  layers?: RenderPlan[];
 }
 
 /** Accepts one clip's placed plan. */
 export function isClipPlan(value: unknown): value is ClipPlan {
   return (
-    isRecord(value) && isNumber(value.clip) && isNumber(value.position) && isRenderPlan(value.plan)
+    isRecord(value) &&
+    isNumber(value.clip) &&
+    isNumber(value.position) &&
+    isRenderPlan(value.plan) &&
+    (value.layers === undefined ||
+      (Array.isArray(value.layers) && value.layers.every(isRenderPlan)))
   );
 }
 
@@ -756,7 +769,9 @@ export function isViewState(value: unknown): value is ViewState {
     isNumber(value.snapDivision) &&
     isNumber(value.playhead) &&
     isNullableNumber(value.loopStart) &&
-    isNullableNumber(value.loopEnd)
+    isNullableNumber(value.loopEnd) &&
+    (value.activeClip === undefined || isNumber(value.activeClip)) &&
+    (value.others === undefined || isLiteral(OTHERS_VIEWS, value.others))
   );
 }
 

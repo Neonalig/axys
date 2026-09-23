@@ -85,11 +85,36 @@ export interface F0Params {
   frameSeconds: number;
   /** Frame spacing in seconds. */
   hopSeconds: number;
-  /** YIN absolute threshold. */
+  /** Which estimator turns audio into pitch candidates; absent is `yin`. */
+  method?: F0Method;
+  /** YIN's absolute threshold, or pYIN's threshold mean. */
   threshold: number;
+  /** SWIPE strength above which a frame is voiced, from -1 to 1. */
+  strength?: number;
   /** RMS below which a frame cannot be voiced. */
   voicedRmsFloor: number;
+  /** Raises YIN's threshold to suit the clip. */
+  autoThreshold?: boolean;
 }
+
+/** A pitch estimator: YIN, pYIN or SWIPE. */
+export type F0Method = 'yin' | 'pyin' | 'swipe';
+
+/** Every {@link F0Method}, in the order they are offered. */
+export const F0_METHODS: readonly F0Method[] = ['yin', 'pyin', 'swipe'];
+
+/** The estimator defaults the core uses, for a first import. */
+export const DEFAULT_F0: F0Params = {
+  minHz: 65,
+  maxHz: 1000,
+  frameSeconds: 0.0464,
+  hopSeconds: 0.005,
+  method: 'yin',
+  threshold: 0.15,
+  strength: 0.25,
+  voicedRmsFloor: 0.0015,
+  autoThreshold: true,
+};
 
 /** Short-time energy and onset evidence on the pitch track's hop grid. */
 export interface EnergyTrack {
@@ -376,8 +401,8 @@ export type EditOp =
   | { type: 'joinBlobs'; first: BlobId; second: BlobId }
   | { type: 'moveBoundary'; blob: BlobId; edge: Edge; time: number }
   | { type: 'setVoicing'; blob: BlobId; start: number; end: number; voicing: Voicing }
-  | { type: 'movePitch'; blobs: BlobId[]; semitones: number }
-  | { type: 'setPitchOffset'; blob: BlobId; semitones: number }
+  | { type: 'movePitch'; blobs: BlobId[]; semitones: number; anchors?: boolean }
+  | { type: 'setPitchOffset'; blob: BlobId; semitones: number; anchors?: boolean }
   | { type: 'moveTime'; blobs: BlobId[]; seconds: number }
   | { type: 'setTimeScale'; blob: BlobId; scale: number }
   | { type: 'addAnchor'; blob: BlobId; anchor: Anchor }
@@ -391,8 +416,8 @@ export type EditOp =
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setGain'; blob: BlobId; gainDb: number }
   | { type: 'deleteBlobs'; blobs: BlobId[] }
-  | { type: 'addClip'; clip: Clip }
-  | { type: 'moveClip'; clip: ClipId; position: number }
+  | { type: 'addClip'; clip: Clip; ripple?: boolean; exact?: boolean }
+  | { type: 'moveClip'; clip: ClipId; position: number; exact?: boolean; ripple?: boolean }
   | { type: 'removeClip'; clip: ClipId }
   | { type: 'addReference'; reference: Reference }
   | { type: 'moveReference'; reference: ReferenceId; position: number }
@@ -621,7 +646,22 @@ export interface ViewState {
   playhead: number;
   loopStart: number | null;
   loopEnd: number | null;
+  /** The clip in front, which the editor edits; absent is the first clip. */
+  activeClip?: ClipId;
+  /** How the clips outside the active layer are shown; absent is `show`. */
+  others?: OthersView;
 }
+
+/**
+ * How the clips outside the active layer are shown and reached.
+ *
+ * @remarks `show` draws them behind the layer, where a click brings one forward. `dim` and `hide`
+ * edit the active clip alone, with the others faint or not drawn.
+ */
+export type OthersView = 'show' | 'dim' | 'hide';
+
+/** Every {@link OthersView}, in the order they are offered. */
+export const OTHERS_VIEWS: readonly OthersView[] = ['show', 'dim', 'hide'];
 
 /** A complete saved project. */
 export interface Project {

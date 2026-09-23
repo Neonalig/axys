@@ -17,10 +17,10 @@ export type RequestId = number;
 export const RENDER_CHUNK_FRAMES = 1 << 16;
 
 /** Where the analysis worker has reached. */
-export type AnalysisStage = 'Load Core' | 'Analyse Audio' | 'Read Track' | 'Read Blobs';
+export type AnalysisStage = 'Load Engine' | 'Analyse Audio' | 'Read Pitch' | 'Read Blobs';
 
 /** Where the render worker has reached. */
-export type RenderStage = 'Load Core' | 'Build Renderer' | 'Render Audio' | 'Encode WAV';
+export type RenderStage = 'Load Engine' | 'Prepare Render' | 'Render Audio' | 'Encode WAV';
 
 /** Analyses one mono source buffer into pitch, energy and provisional blobs. */
 export interface AnalyseRequest {
@@ -64,6 +64,8 @@ export interface AnalysisResult {
   trackJson: string;
   energyJson: string;
   blobsJson: string;
+  /** The voicing threshold decoding used, raised from the one asked for by Auto Threshold. */
+  threshold: number;
   times: Float32Array;
   midi: Float32Array;
   confidence: Float32Array;
@@ -96,6 +98,7 @@ export interface ObserveSpanRequest {
  *
  * @remarks `counts` holds the pitch candidates per frame; `freq`, `dprime` and `cost` hold every
  * frame's candidates back to back. `rms` is per pitch window and `energyRms` per energy window.
+ * `unvoiced` is each frame's unvoiced cost, negative where the threshold sets it.
  * `flux` is not yet normalised over the whole take.
  */
 export interface SpanMeasures {
@@ -104,6 +107,7 @@ export interface SpanMeasures {
   cost: Float64Array;
   counts: Uint32Array;
   rms: Float32Array;
+  unvoiced: Float64Array;
   energyRms: Float32Array;
   flux: Float32Array;
   zcr: Float32Array;

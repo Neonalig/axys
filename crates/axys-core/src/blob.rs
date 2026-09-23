@@ -400,7 +400,7 @@ impl BlobSet {
         let original = self.blobs[index].clone();
         if time < original.start + MIN_BLOB_SECONDS || time > original.end - MIN_BLOB_SECONDS {
             return Err(AxysError::Invalid(format!(
-                "split at {time} leaves a side under {MIN_BLOB_SECONDS} s"
+                "split leaves a blob shorter than {MIN_BLOB_SECONDS} s"
             )));
         }
         let right_id = self.next_id();
@@ -448,7 +448,7 @@ impl BlobSet {
         let (lo, hi) = if a < b { (a, b) } else { (b, a) };
         if hi != lo + 1 {
             return Err(AxysError::Invalid(format!(
-                "blobs {} and {} are not neighbours",
+                "blobs {} and {} are not adjacent",
                 first.0, second.0
             )));
         }
