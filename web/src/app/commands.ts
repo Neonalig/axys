@@ -37,7 +37,7 @@ import type {
   MappingProposal,
   TimelineMap,
 } from '../core/types.js';
-import type { ClipPart } from '../core/wasm.js';
+import type { ClipPart, PasteMode } from '../core/wasm.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
@@ -109,7 +109,7 @@ export interface Workspace {
    *
    * @remarks The earliest part lands at `at` and the rest keep their distance from it.
    */
-  pasteClips(parts: readonly ClipPart[], at: number): void;
+  pasteClips(parts: readonly ClipPart[], at: number, mode?: PasteMode): void;
 
   /**
    * Takes project spans out of clips on the lane, as one undo step.
@@ -117,7 +117,7 @@ export interface Workspace {
    * @remarks A span covering a clip removes it, one reaching an end trims it, and one inside it
    * leaves the clip in two.
    */
-  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void;
+  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[], ripple?: boolean): void;
 
   /** Undoes the newest edit. False when there was nothing to undo. */
   undo(): boolean;
@@ -446,6 +446,75 @@ function clipAtPlayhead(state: AppState): NonNullable<AppState['edits']>['clips'
   );
 }
 
+/**
+ * Cuts what the edit mode edits from the selection.
+ *
+ * @remarks With `ripple`, clips after a cut move earlier by its length. Blobs and pitch lines have
+ * no gap to close, so they cut the same either way.
+ */
+function cutSelection(ctx: CommandContext, ripple: boolean): void {
+  const state = ctx.store.state;
+  const content = copyFor(state);
+  if (content === null) {
+    ctx.toast.warn(`Select ${modeNoun(state.editMode)} to cut`);
+    return;
+  }
+  ctx.store.update({ clipboard: content });
+  if (state.editMode === 'both') {
+    ctx.workspace.cutClips(cutClipSpans(state), ripple);
+  } else {
+    const ops =
+      state.editMode === 'blob'
+        ? cutBlobOps(state)
+        : cutPitchOps(state, state.selection.ranges, state.pitchCutFill);
+    if (ops.length > 0) ctx.workspace.apply(grouped(ops));
+  }
+  ctx.editor.clearSelection();
+}
+
+/**
+ * Pastes the clipboard at the playhead.
+ *
+ * @remarks Clips land over what is there, move what starts after the playhead later, or replace
+ * what is under them, as `mode` says. Blobs cannot lie over each other, so without `replace` they
+ * fill the space the blobs already there leave. Pitch always replaces the line it lands on.
+ */
+function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
+  const state = ctx.store.state;
+  const content = state.clipboard;
+  if (content === null) return;
+  const wanted = modeFor(content);
+  if (wanted !== state.editMode) {
+    ctx.toast.warn(`Switch to ${editModeLabel(wanted)} to paste ${modeNoun(wanted)}`);
+    return;
+  }
+  const at = playheadOf(state);
+  if (content.kind === 'clips') {
+    ctx.workspace.pasteClips(content.parts, at, mode);
+    return;
+  }
+  const ops =
+    content.kind === 'blobs'
+      ? pasteBlobOps(state, content, at, mode === 'replace')
+      : [
+          ...pastePitchOps(
+            state,
+            placePitch(content, selectedRange(state), at),
+            state.outsidePitch,
+          ),
+          ...placeStrokes(state, content, selectedRange(state), at),
+        ];
+  if (ops.length === 0) {
+    ctx.toast.warn(
+      content.kind === 'blobs'
+        ? 'Move the playhead over free audio in a clip to paste blobs'
+        : 'Move the playhead over a blob to paste pitch',
+    );
+    return;
+  }
+  ctx.workspace.apply(grouped(ops));
+}
+
 /** Sets the edit mode. */
 function setEditMode(ctx: CommandContext, mode: EditMode): void {
   if (ctx.store.state.editMode !== mode) ctx.store.update({ editMode: mode });
@@ -649,66 +718,50 @@ export function buildCommands(): Command[] {
       shortcut: 'Ctrl+X',
       enabled: (ctx) => editable(ctx) && ctx.store.state.selection.ranges.length > 0,
       run: (ctx) => {
-        const state = ctx.store.state;
-        const content = copyFor(state);
-        if (content === null) {
-          ctx.toast.warn(`Select ${modeNoun(state.editMode)} to cut`);
-          return;
-        }
-        ctx.store.update({ clipboard: content });
-        if (state.editMode === 'both') {
-          ctx.workspace.cutClips(cutClipSpans(state));
-        } else {
-          const ops =
-            state.editMode === 'blob'
-              ? cutBlobOps(state)
-              : cutPitchOps(state, state.selection.ranges, state.pitchCutFill);
-          if (ops.length > 0) ctx.workspace.apply(grouped(ops));
-        }
-        ctx.editor.clearSelection();
+        cutSelection(ctx, false);
       },
     },
     {
-      // Paste lands at the playhead. Pitch pasted over a selection is fitted to it instead.
+      // Clips after the cut close up the gap it leaves. Blobs and pitch have no gap to close.
+      id: 'edit.rippleCut',
+      label: 'Ripple Cut',
+      group: 'Edit',
+      shortcut: 'Ctrl+Shift+X',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.selection.ranges.length > 0,
+      run: (ctx) => {
+        cutSelection(ctx, true);
+      },
+    },
+    {
+      // Paste lands at the playhead over whatever is there. Pitch pasted over a selection is
+      // fitted to it instead.
       id: 'edit.paste',
       label: 'Paste',
       group: 'Edit',
       shortcut: 'Ctrl+V',
       enabled: (ctx) => editable(ctx) && ctx.store.state.clipboard !== null,
       run: (ctx) => {
-        const state = ctx.store.state;
-        const content = state.clipboard;
-        if (content === null) return;
-        const wanted = modeFor(content);
-        if (wanted !== state.editMode) {
-          ctx.toast.warn(`Switch to ${editModeLabel(wanted)} to paste ${modeNoun(wanted)}`);
-          return;
-        }
-        const at = playheadOf(state);
-        if (content.kind === 'clips') {
-          ctx.workspace.pasteClips(content.parts, at);
-          return;
-        }
-        const ops =
-          content.kind === 'blobs'
-            ? pasteBlobOps(state, content, at)
-            : [
-                ...pastePitchOps(
-                  state,
-                  placePitch(content, selectedRange(state), at),
-                  state.outsidePitch,
-                ),
-                ...placeStrokes(state, content, selectedRange(state), at),
-              ];
-        if (ops.length === 0) {
-          ctx.toast.warn(
-            content.kind === 'blobs'
-              ? 'Move the playhead over a clip to paste blobs'
-              : 'Move the playhead over a blob to paste pitch',
-          );
-          return;
-        }
-        ctx.workspace.apply(grouped(ops));
+        pasteClipboard(ctx, 'overlap');
+      },
+    },
+    {
+      id: 'edit.pasteInsert',
+      label: 'Paste Insert',
+      group: 'Edit',
+      shortcut: 'Ctrl+Shift+V',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.clipboard !== null,
+      run: (ctx) => {
+        pasteClipboard(ctx, 'ripple');
+      },
+    },
+    {
+      id: 'edit.pasteReplace',
+      label: 'Paste Replace',
+      group: 'Edit',
+      shortcut: 'Ctrl+Alt+V',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.clipboard !== null,
+      run: (ctx) => {
+        pasteClipboard(ctx, 'replace');
       },
     },
     {

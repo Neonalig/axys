@@ -132,6 +132,12 @@ export interface ClipInput extends Omit<AnalysedSessionInput, 'sampleRate'> {
   exact?: boolean;
 }
 
+/**
+ * What a paste does to what is already there: lands over it, moves what starts after it later by
+ * the length pasted, or takes out what is under it first.
+ */
+export type PasteMode = 'overlap' | 'ripple' | 'replace';
+
 /** A copied part of a clip: the clip as it was copied, and the project span taken from it. */
 export interface ClipPart {
   clip: Clip;
@@ -384,11 +390,11 @@ export class Session {
    * @remarks Each part is the clip as it was copied and the project span taken from it. The
    * earliest lands at `at`, project seconds, and the rest keep their distance from it.
    */
-  pasteClips(parts: readonly ClipPart[], at: number): ClipId[] {
+  pasteClips(parts: readonly ClipPart[], at: number, mode: PasteMode = 'overlap'): ClipId[] {
     const json = JSON.stringify(parts);
     return this.#read(
       'Paste Clips',
-      () => this.#alive().pasteClips(json, at),
+      () => this.#alive().pasteClips(json, at, mode),
       arrayOf(isNumber),
       'clip ids',
     );
@@ -400,10 +406,10 @@ export class Session {
    * @remarks A span covering a clip removes it, one reaching an end trims it, and one inside it
    * leaves the clip in two.
    */
-  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void {
+  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[], ripple = false): void {
     const json = JSON.stringify(parts);
     call('Cut Clips', () => {
-      this.#alive().cutClips(json);
+      this.#alive().cutClips(json, ripple);
     });
   }
 

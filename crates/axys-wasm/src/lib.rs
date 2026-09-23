@@ -601,6 +601,27 @@ struct CutPart {
     end: f64,
 }
 
+/// The project spans some cut parts cover, merged where they touch, in time order.
+fn merged_spans(parts: &[CutPart]) -> Vec<Span> {
+    let mut spans: Vec<Span> = parts
+        .iter()
+        .filter(|part| part.end > part.start)
+        .map(|part| Span {
+            start: part.start,
+            end: part.end,
+        })
+        .collect();
+    spans.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut merged: Vec<Span> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.start <= last.end + 1e-9 => last.end = last.end.max(span.end),
+            _ => merged.push(span),
+        }
+    }
+    merged
+}
+
 /// Shortest part of a clip a cut or a paste keeps, in seconds.
 const MIN_PART_SECONDS: f64 = 0.01;
 
@@ -1369,9 +1390,16 @@ impl Session {
     /// `parts_json` is an array of `{ clip, start, end }`: each clip as it was when it was
     /// copied, and the project span taken from it. The earliest part lands at `at`, project
     /// seconds, and the others keep their distance from it. Each copy keeps its blobs, edits and
-    /// analysis and lands over whatever is already there.
+    /// analysis. `mode` says what happens to what is already there: `overlap` lands over it,
+    /// `ripple` moves every clip starting at or after `at` later by the length pasted, and
+    /// `replace` takes the pasted span out of every clip it reaches first.
     #[wasm_bindgen(js_name = pasteClips)]
-    pub fn paste_clips(&mut self, parts_json: &str, at: f64) -> Result<String, JsValue> {
+    pub fn paste_clips(
+        &mut self,
+        parts_json: &str,
+        at: f64,
+        mode: &str,
+    ) -> Result<String, JsValue> {
         let parts: Vec<CopiedPart> = parse(parts_json)?;
         if !at.is_finite() {
             return Err(JsValue::from_str("paste position is not finite"));
@@ -1380,16 +1408,54 @@ impl Session {
             .iter()
             .map(|part| part.start)
             .fold(f64::INFINITY, f64::min);
-        if !origin.is_finite() {
+        let last = parts
+            .iter()
+            .map(|part| part.end)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if !origin.is_finite() || !last.is_finite() {
             return Err(JsValue::from_str("nothing to paste"));
         }
+        let length = last - origin;
         if self.state.clips.len() + parts.len() > MAX_CLIPS {
             return Err(JsValue::from_str(&format!(
                 "a project holds at most {MAX_CLIPS} clips"
             )));
         }
-        let mut ops = Vec::with_capacity(parts.len());
         let mut added = Vec::with_capacity(parts.len());
+        // What is there already goes first, so the pasted clips land on the lane it leaves.
+        let mut ops = match mode {
+            "ripple" => self
+                .state
+                .clips
+                .iter()
+                .filter(|clip| clip.start() >= at - 1e-9)
+                .map(|clip| EditOp::MoveClip {
+                    clip: clip.id,
+                    position: clip.position + length,
+                    exact: true,
+                    ripple: false,
+                })
+                .collect(),
+            "replace" => {
+                let under: Vec<CutPart> = self
+                    .state
+                    .clips
+                    .iter()
+                    .filter(|clip| clip.end() > at + 1e-9 && clip.start() < at + length - 1e-9)
+                    .map(|clip| CutPart {
+                        clip: clip.id,
+                        start: at,
+                        end: at + length,
+                    })
+                    .collect();
+                match self.cut_ops(&under, &mut added) {
+                    Ok(ops) => ops,
+                    Err(message) => return self.forget(added, &message),
+                }
+            }
+            _ => Vec::new(),
+        };
+        let mut pasted = Vec::with_capacity(parts.len());
         for part in &parts {
             let Some(from) = self.clips.iter().find(|r| r.id == part.clip.id) else {
                 return self.forget(added, "copied clip is not in this project");
@@ -1414,44 +1480,88 @@ impl Session {
             }
             clip.blobs = match renumber(&clip.blobs, id) {
                 Ok(blobs) => blobs,
-                Err(error) => {
-                    self.clips.retain(|r| !added.contains(&r.id));
-                    return Err(to_js(error));
-                }
+                Err(error) => return self.forget(added, &error.to_string()),
             };
             clip.id = id;
             clip.window = Some(Span { start, end });
             clip.position = at + (clip.position + start - origin) - start;
             self.clips.push(runtime);
             added.push(id);
+            pasted.push(id);
             ops.push(EditOp::AddClip {
                 clip,
                 ripple: false,
                 exact: true,
             });
         }
-        if ops.is_empty() {
-            return Err(JsValue::from_str("nothing to paste"));
+        if pasted.is_empty() {
+            return self.forget(added, "nothing to paste");
         }
         if let Err(error) = self.apply_op(EditOp::Group { ops }) {
             self.clips.retain(|r| !added.contains(&r.id));
             return Err(error);
         }
-        dump(&added)
+        dump(&pasted)
     }
 
     /// Takes spans out of clips on the lane, as one undoable edit.
     ///
     /// `parts_json` is an array of `{ clip, start, end }` in project seconds. A span covering a
     /// clip removes it, one reaching an end trims it, and one inside it leaves the clip in two.
+    /// With `ripple`, every clip after a span moves earlier by its length, so the gap closes.
     #[wasm_bindgen(js_name = cutClips)]
-    pub fn cut_clips(&mut self, parts_json: &str) -> Result<(), JsValue> {
+    pub fn cut_clips(&mut self, parts_json: &str, ripple: bool) -> Result<(), JsValue> {
         let parts: Vec<CutPart> = parse(parts_json)?;
-        let mut ops = Vec::new();
         let mut added = Vec::new();
-        for part in &parts {
+        let mut ops = match self.cut_ops(&parts, &mut added) {
+            Ok(ops) => ops,
+            Err(message) => return self.forget(added, &message),
+        };
+        if ops.is_empty() {
+            return Ok(());
+        }
+        if ripple {
+            // Measured against the lane the cut leaves, so a tail it split off moves with the rest.
+            let mut after = self.state.clone();
+            let group = EditOp::Group { ops: ops.clone() };
+            if let Err(error) = apply_in(&mut after, &Sources(&self.clips), &group) {
+                return self.forget(added, &error.to_string());
+            }
+            let gaps = merged_spans(&parts);
+            for clip in &after.clips {
+                let shift: f64 = gaps
+                    .iter()
+                    .filter(|gap| gap.end <= clip.start() + 1e-9)
+                    .map(|gap| gap.end - gap.start)
+                    .sum();
+                if shift > 0.0 {
+                    ops.push(EditOp::MoveClip {
+                        clip: clip.id,
+                        position: clip.position - shift,
+                        exact: true,
+                        ripple: false,
+                    });
+                }
+            }
+        }
+        if let Err(error) = self.apply_op(EditOp::Group { ops }) {
+            self.clips.retain(|r| !added.contains(&r.id));
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The edits that take project spans out of clips, with a runtime made for each tail a span
+    /// splits off, whose id goes in `added`.
+    fn cut_ops(
+        &mut self,
+        parts: &[CutPart],
+        added: &mut Vec<ClipId>,
+    ) -> Result<Vec<EditOp>, String> {
+        let mut ops = Vec::new();
+        for part in parts {
             let Some(clip) = self.state.clip(part.clip).cloned() else {
-                return self.forget(added, &format!("the project has no clip {}", part.clip.0));
+                return Err(format!("the project has no clip {}", part.clip.0));
             };
             let (heard_from, heard_to) = (clip.start(), clip.end());
             let start = part.start.max(heard_from);
@@ -1475,18 +1585,13 @@ impl Session {
                 }),
                 (true, true) => {
                     let id = self.next_clip_id();
-                    let runtime = match self.runtime(clip.id)?.duplicate(id, self.sample_rate) {
-                        Ok(runtime) => runtime,
-                        Err(error) => {
-                            return self.forget(added, &error.as_string().unwrap_or_default())
-                        }
-                    };
+                    let runtime = self
+                        .runtime(clip.id)
+                        .and_then(|runtime| runtime.duplicate(id, self.sample_rate))
+                        .map_err(|error| error.as_string().unwrap_or_default())?;
                     let mut tail = clip.clone();
                     tail.id = id;
-                    tail.blobs = match renumber(&clip.blobs, id) {
-                        Ok(blobs) => blobs,
-                        Err(error) => return self.forget(added, &error.to_string()),
-                    };
+                    tail.blobs = renumber(&clip.blobs, id).map_err(|error| error.to_string())?;
                     tail.window = Some(Span {
                         start: end - clip.position,
                         end: heard_to - clip.position,
@@ -1506,14 +1611,7 @@ impl Session {
                 }
             }
         }
-        if ops.is_empty() {
-            return Ok(());
-        }
-        if let Err(error) = self.apply_op(EditOp::Group { ops }) {
-            self.clips.retain(|r| !added.contains(&r.id));
-            return Err(error);
-        }
-        Ok(())
+        Ok(ops)
     }
 
     /// Drops runtimes made for an edit that did not happen, and reports why.
@@ -2431,7 +2529,7 @@ mod analysis_handoff_tests {
         let parts = serde_json::json!([{ "clip": clip, "start": 0.2, "end": 0.7 }]);
         let ids = json(
             session
-                .paste_clips(&parts.to_string(), 3.0)
+                .paste_clips(&parts.to_string(), 3.0, "overlap")
                 .expect("pasted"),
         );
         assert_eq!(ids, serde_json::json!([1]));
@@ -2455,7 +2553,7 @@ mod analysis_handoff_tests {
     fn cutting_inside_a_clip_leaves_it_in_two_and_cutting_all_of_it_removes_it() {
         let mut session = one_clip();
         session
-            .cut_clips(r#"[{ "clip": 0, "start": 0.3, "end": 0.6 }]"#)
+            .cut_clips(r#"[{ "clip": 0, "start": 0.3, "end": 0.6 }]"#, false)
             .expect("cut");
         let clips = clips_of(&session);
         assert_eq!(clips.len(), 2);
@@ -2465,13 +2563,58 @@ mod analysis_handoff_tests {
         assert_eq!(clips_of(&session).len(), 1);
 
         session
-            .cut_clips(r#"[{ "clip": 0, "start": 0.0, "end": 0.5 }]"#)
+            .cut_clips(r#"[{ "clip": 0, "start": 0.0, "end": 0.5 }]"#, false)
             .expect("cut");
         assert_eq!(clips_of(&session)[0]["window"]["start"], 0.5);
         session
-            .cut_clips(r#"[{ "clip": 0, "start": 0.0, "end": 5.0 }]"#)
+            .cut_clips(r#"[{ "clip": 0, "start": 0.0, "end": 5.0 }]"#, false)
             .expect("cut");
         assert!(clips_of(&session).is_empty());
+    }
+
+    #[test]
+    fn a_ripple_cut_closes_the_gap_and_a_ripple_paste_opens_one() {
+        let (mut session, _) = placed_clips(2.0, true);
+        session
+            .cut_clips(r#"[{ "clip": 0, "start": 0.2, "end": 0.5 }]"#, true)
+            .expect("cut");
+        let clips = clips_of(&session);
+        // The tail split off at 0.5 and the clip at 2.0 both move 0.3 earlier.
+        let starts: Vec<f64> = clips
+            .iter()
+            .map(|clip| {
+                clip["position"].as_f64().unwrap() + clip["window"]["start"].as_f64().unwrap_or(0.0)
+            })
+            .collect();
+        assert_eq!(starts.len(), 3);
+        assert!((starts[1] - 1.7).abs() < 1e-9, "{starts:?}");
+        assert!((starts[2] - 0.2).abs() < 1e-9, "{starts:?}");
+        assert!(session.undo().expect("undo"));
+
+        let clip = clips_of(&session)[0].clone();
+        let parts = serde_json::json!([{ "clip": clip, "start": 0.0, "end": 0.5 }]);
+        session
+            .paste_clips(&parts.to_string(), 1.0, "ripple")
+            .expect("pasted");
+        let later = clips_of(&session)[1]["position"].as_f64().unwrap();
+        assert!((later - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_replacing_paste_takes_out_what_is_under_it() {
+        let mut session = one_clip();
+        let clip = clips_of(&session)[0].clone();
+        let parts = serde_json::json!([{ "clip": clip, "start": 0.0, "end": 0.2 }]);
+        session
+            .paste_clips(&parts.to_string(), 0.4, "replace")
+            .expect("pasted");
+        let clips = clips_of(&session);
+        // The first clip ends at 0.4, a tail picks up at 0.6, and the paste sits between.
+        assert_eq!(clips.len(), 3);
+        assert!((clips[0]["window"]["end"].as_f64().unwrap() - 0.4).abs() < 1e-9);
+        assert!((clips[1]["window"]["start"].as_f64().unwrap() - 0.6).abs() < 1e-9);
+        assert!(session.undo().expect("undo"));
+        assert_eq!(clips_of(&session).len(), 1);
     }
 
     #[test]

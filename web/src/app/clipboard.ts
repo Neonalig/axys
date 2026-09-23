@@ -160,13 +160,20 @@ function newBlob(clip: ClipId, start: number, end: number, fields: Partial<Blob>
 }
 
 /**
- * Lays copied blobs over the audio at `at`, replacing the blobs already there.
+ * Lays copied blobs over the audio at `at`.
  *
  * @remarks The audio does not move: each blob lands over whatever the clip heard at its new time
  * holds, keeping its offset, level and exclusion. Its drawn curve belonged to the audio it came
- * from, so it is left behind. A blob landing outside every clip is dropped.
+ * from, so it is left behind. With `replace` the blobs already there make way; without it a blob
+ * fills the space around them instead, as one blob per free stretch. A blob landing outside every
+ * clip is dropped.
  */
-export function pasteBlobOps(state: AppState, content: ClipboardContent, at: number): EditOp[] {
+export function pasteBlobOps(
+  state: AppState,
+  content: ClipboardContent,
+  at: number,
+  replace = true,
+): EditOp[] {
   if (content.kind !== 'blobs') return [];
   const shift = at - content.start;
   const replaced = new Set<number>();
@@ -178,17 +185,26 @@ export function pasteBlobOps(state: AppState, content: ClipboardContent, at: num
     const start = Math.max(wanted.start, clipStart(clip));
     const end = Math.min(wanted.end, clipEnd(clip));
     if (end - start < MIN_BLOB_SECONDS) continue;
-    for (const existing of state.blobs) {
-      if (clipOf(existing.id) !== clip.id) continue;
-      if (existing.end > start + EPS && existing.start < end - EPS) replaced.add(existing.id);
-    }
-    added.push(
-      newBlob(clip.id, start, end, {
-        pitchOffset: blob.pitchOffset,
-        gainDb: blob.gainDb,
-        excluded: blob.excluded,
-      }),
+    const there = state.blobs.filter(
+      (existing) =>
+        clipOf(existing.id) === clip.id && existing.end > start + EPS && existing.start < end - EPS,
     );
+    const fields = { pitchOffset: blob.pitchOffset, gainDb: blob.gainDb, excluded: blob.excluded };
+    if (replace) {
+      for (const existing of there) replaced.add(existing.id);
+      added.push(newBlob(clip.id, start, end, fields));
+      continue;
+    }
+    let from = start;
+    for (const existing of [...there, ...added.filter((a) => clipOf(a.id) === clip.id)].sort(
+      (a, b) => a.start - b.start,
+    )) {
+      if (existing.start - from >= MIN_BLOB_SECONDS && existing.start < end) {
+        added.push(newBlob(clip.id, from, Math.min(existing.start, end), fields));
+      }
+      from = Math.max(from, existing.end);
+    }
+    if (end - from >= MIN_BLOB_SECONDS) added.push(newBlob(clip.id, from, end, fields));
   }
   const ops: EditOp[] = [];
   if (replaced.size > 0) ops.push({ type: 'deleteBlobs', blobs: [...replaced], keepAudio: true });

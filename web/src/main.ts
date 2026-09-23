@@ -32,7 +32,7 @@ import type { Capability } from './capabilities.js';
 import { isViewState } from './core/json.js';
 import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
-import type { AxysCore, ClipPart, Session } from './core/wasm.js';
+import type { AxysCore, ClipPart, PasteMode, Session } from './core/wasm.js';
 import { clipEnd, clipStart, sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
@@ -461,13 +461,13 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  pasteClips(parts: readonly ClipPart[], at: number): void {
+  pasteClips(parts: readonly ClipPart[], at: number, mode: PasteMode = 'overlap'): void {
     const session = this.#session;
     if (!session) return;
     this.commitPreview();
     let added: ClipId[];
     try {
-      added = session.pasteClips(parts, at);
+      added = session.pasteClips(parts, at, mode);
     } catch (error) {
       this.#fail('Paste Clips', error);
       return;
@@ -476,13 +476,13 @@ class AxysWorkspace implements Workspace {
     this.#publish();
   }
 
-  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void {
+  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[], ripple = false): void {
     const session = this.#session;
     if (!session) return;
     this.commitPreview();
     const before = new Set(session.state().clips.map((clip) => clip.id));
     try {
-      session.cutClips(parts);
+      session.cutClips(parts, ripple);
     } catch (error) {
       this.#fail('Cut Clips', error);
       return;

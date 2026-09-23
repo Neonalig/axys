@@ -268,7 +268,9 @@ describe('editing modes', () => {
       const copied = copyClips(part);
       expect(copied?.kind).toBe('clips');
       if (copied?.kind !== 'clips') return;
-      const added = JSON.parse(scoped.pasteClips(JSON.stringify(copied.parts), 0.5)) as number[];
+      const added = JSON.parse(
+        scoped.pasteClips(JSON.stringify(copied.parts), 0.5, 'overlap'),
+      ) as number[];
       expect(added).toEqual([1]);
       const clips = (JSON.parse(scoped.stateJson()) as EditState).clips;
       expect(clips).toHaveLength(2);
@@ -290,7 +292,7 @@ describe('editing modes', () => {
         ...state,
         selection: { blobs: [], anchors: [], ranges: [{ start: 0.6, end: 0.8 }] },
       };
-      scoped.cutClips(JSON.stringify(cutClipSpans(middle)));
+      scoped.cutClips(JSON.stringify(cutClipSpans(middle)), false);
       const clips = (JSON.parse(scoped.stateJson()) as EditState).clips;
       expect(clips).toHaveLength(2);
       expect(clips[0]!.window?.end).toBeCloseTo(0.6, 9);
