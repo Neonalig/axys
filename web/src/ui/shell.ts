@@ -16,7 +16,7 @@ import {
   INSPECTOR_MIN_WIDTH,
 } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
-import { toolDefinition } from '../editor/tools.js';
+import { toolDefinition, toolWorksIn } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
 import { editModeLabel, projectEnd } from '../app/store.js';
 import type { AppState, EditMode, FollowMode, ToolId } from '../app/store.js';
@@ -309,6 +309,64 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       },
     ],
   },
+  'view.followPlayhead': {
+    hint: 'Right-click for follow modes',
+    entries: (shell) => {
+      const state = shell.state;
+      const follow = state?.follow === true;
+      const mode = state?.followMode;
+      const choose = (chosen: FollowMode): void => {
+        shell.setFollowMode(chosen);
+        if (!follow) shell.run('view.followPlayhead');
+      };
+      return [
+        {
+          label: 'Off',
+          checked: !follow,
+          run: () => {
+            if (follow) shell.run('view.followPlayhead');
+          },
+        },
+        {
+          label: 'Page Ahead',
+          checked: follow && mode === 'page',
+          run: () => {
+            choose('page');
+          },
+        },
+        {
+          label: 'Keep Centred',
+          checked: follow && mode === 'centre',
+          run: () => {
+            choose('centre');
+          },
+        },
+      ];
+    },
+  },
+  'transport.toggleMetronome': {
+    hint: 'Right-click for Count In',
+    entries: (shell) => [
+      {
+        label: 'Metronome',
+        icon: 'metronome',
+        key: 'M',
+        checked: shell.state?.transport.metronome === true,
+        enabled: shell.can('transport.toggleMetronome'),
+        run: () => {
+          shell.run('transport.toggleMetronome');
+        },
+      },
+      {
+        label: 'Count In',
+        checked: shell.state?.transport.countIn === true,
+        enabled: shell.can('transport.toggleCountIn'),
+        run: () => {
+          shell.run('transport.toggleCountIn');
+        },
+      },
+    ],
+  },
   'file.saveProject': {
     hint: 'Right-click for Save As (Ctrl+Shift+S)',
     entries: (shell) => [
@@ -413,6 +471,8 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   // Deleting is done to what is under the hand: the key, or the menu over the blob.
   'edit.deleteBlobs',
   'edit.deletePitch',
+  // In the Metronome button's menu.
+  'transport.toggleCountIn',
   'edit.deleteClip',
   // Both live in the Sources button's menu and on their keys.
   'view.previousSource',
@@ -654,6 +714,7 @@ export class AppShell {
   readonly #modeButtons = new Map<EditMode, HTMLButtonElement>();
   readonly #header: HTMLElement;
   readonly #footer: HTMLElement;
+  #state: AppState | null = null;
   readonly #mixerToggle: HTMLButtonElement;
   readonly #themeButton: HTMLButtonElement;
   readonly #title: HTMLButtonElement;
@@ -1079,6 +1140,7 @@ export class AppShell {
 
   /** Reflects application state in every control. */
   update(state: AppState): void {
+    this.#state = state;
     for (const [id, entry] of this.#commandButtons) {
       entry.button.disabled = !this.#hooks.isCommandEnabled(id);
     }
@@ -1097,7 +1159,7 @@ export class AppShell {
     }
     for (const [tool, button] of this.#toolButtons) {
       button.setAttribute('aria-pressed', String(state.tool === tool));
-      button.disabled = state.phase !== 'ready';
+      button.disabled = state.phase !== 'ready' || !toolWorksIn(tool, state.editMode);
     }
 
     // Following, looping and the metronome are switches, so each says whether it is on rather
@@ -1359,6 +1421,11 @@ export class AppShell {
     button.addEventListener('click', (event) => {
       this.#press(this.#variantOf(command.id, event), button);
     });
+    // Every button answers a right-click; one with nothing more to offer lists its own command.
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      void this.#openButtonMenu(button, menu?.entries ?? ((shell) => menuOf(shell, [command.id])));
+    });
     if (MODIFIED[command.id] !== undefined) {
       button.addEventListener('pointermove', (event) => {
         this.#showVariant(command.id, event);
@@ -1366,11 +1433,6 @@ export class AppShell {
     }
     if (menu !== undefined) {
       setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
-      const open = (event: Event): void => {
-        event.preventDefault();
-        this.#openButtonMenu(button, menu.entries);
-      };
-      button.addEventListener('contextmenu', open);
     }
     this.#commandButtons.set(command.id, {
       button,
@@ -1447,6 +1509,16 @@ export class AppShell {
   /** Takes a project off the recent list. */
   forgetRecent(id: string): void {
     this.#hooks.forgetRecent(id);
+  }
+
+  /** The state the chrome last reflected, or `null` before the first update. */
+  get state(): AppState | null {
+    return this.#state;
+  }
+
+  /** Chooses how the view keeps up with a playing playhead. */
+  setFollowMode(mode: FollowMode): void {
+    this.#hooks.setFollowMode(mode);
   }
 
   /** Runs a command from a button menu. */
@@ -1684,6 +1756,21 @@ ${tool.tooltip}`,
         this.#hooks.setTool(tool.id);
         this.announce(`${tool.label} selected`);
       });
+      button.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        void this.#openButtonMenu(button, (shell) =>
+          TOOLS.map((entry) => ({
+            label: entry.label,
+            icon: entry.icon,
+            key: toolDefinition(entry.id).key,
+            checked: shell.state?.tool === entry.id,
+            enabled: shell.can(`tools.${entry.id}`),
+            run: () => {
+              shell.run(`tools.${entry.id}`);
+            },
+          })),
+        );
+      });
       this.#toolButtons.set(tool.id, button);
       section.append(button);
     }
@@ -1707,6 +1794,22 @@ Next Edit Mode (Q)`,
         this.#hooks.runCommand(`tools.editMode.${mode.id}`);
         this.announce(`${label} selected`);
       });
+      button.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        void this.#openButtonMenu(button, (shell) => [
+          ...MODES.map((entry) => ({
+            label: `${editModeLabel(entry.id)} Mode`,
+            icon: entry.icon,
+            checked: shell.state?.editMode === entry.id,
+            enabled: shell.can(`tools.editMode.${entry.id}`),
+            run: () => {
+              shell.run(`tools.editMode.${entry.id}`);
+            },
+          })),
+          { separator: true as const },
+          ...menuOf(shell, ['tools.nextEditMode', 'tools.previousEditMode']),
+        ]);
+      });
       this.#modeButtons.set(mode.id, button);
       section.append(button);
     }
@@ -1728,8 +1831,9 @@ Next Edit Mode (Q)`,
     });
     button.setAttribute('aria-label', 'Choose a Theme');
     button.setAttribute('aria-haspopup', 'menu');
-    button.addEventListener('click', () => {
-      this.#openButtonMenu(button, (shell) =>
+    const open = (event: Event): void => {
+      event.preventDefault();
+      void this.#openButtonMenu(button, (shell) =>
         // No icon per entry: four copies of the same palette would say nothing, and the mark
         // against the current choice is what the menu is here to show.
         [
@@ -1744,7 +1848,9 @@ Next Edit Mode (Q)`,
           { render: () => buildAccentRow(shell) },
         ],
       );
-    });
+    };
+    button.addEventListener('click', open);
+    button.addEventListener('contextmenu', open);
     return button;
   }
 }

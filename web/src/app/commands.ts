@@ -39,6 +39,7 @@ import type {
 import type { ClipPart, PasteMode } from '../core/wasm.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
+import { toolWorksIn } from '../editor/tools.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
 import { showAlignGuide } from '../ui/align-guide.js';
 import { openDiagnostics } from '../ui/diagnostics.js';
@@ -501,13 +502,17 @@ function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
   ctx.workspace.apply(grouped(ops));
 }
 
-/** Sets the edit mode. */
-/** Sets the edit mode, reading the selected spans again as the new mode selects them. */
+/**
+ * Sets the edit mode, reading the selected spans again as the new mode selects them.
+ *
+ * @remarks A tool with nothing to edit in the new mode gives way to the Select tool.
+ */
 function setEditMode(ctx: CommandContext, mode: EditMode): void {
   const state = ctx.store.state;
   if (state.editMode === mode) return;
   const selection = selectionInMode(selectionForRanges(state.blobs, state.selection.ranges), mode);
-  ctx.store.update({ editMode: mode, selection });
+  const tool = toolWorksIn(state.tool, mode) ? state.tool : 'select';
+  ctx.store.update({ editMode: mode, selection, tool });
 }
 
 function timelineOf(state: AppState): TimelineMap | null {
@@ -526,7 +531,8 @@ function toolCommand(
     group: 'Tools',
     shortcut,
     ...(alt === undefined ? {} : { altShortcut: alt }),
-    enabled: (ctx) => ctx.store.state.phase === 'ready',
+    enabled: (ctx) =>
+      ctx.store.state.phase === 'ready' && toolWorksIn(id, ctx.store.state.editMode),
     run: (ctx) => {
       ctx.store.update({ tool: id });
     },
@@ -1048,6 +1054,16 @@ export function buildCommands(): Command[] {
         const timeline = timelineOf(ctx.store.state);
         if (!timeline) return;
         ctx.audio.setMetronome(!ctx.store.state.transport.metronome, timeline);
+      },
+    },
+
+    {
+      id: 'transport.toggleCountIn',
+      label: 'Count In',
+      group: 'Transport',
+      enabled: (ctx) => timelineOf(ctx.store.state) !== null,
+      run: (ctx) => {
+        ctx.audio.setCountIn(!ctx.store.state.transport.countIn);
       },
     },
 

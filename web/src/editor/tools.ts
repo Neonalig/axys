@@ -101,6 +101,18 @@ export const TOOLS: readonly ToolDefinition[] = [
   },
 ];
 
+/**
+ * Whether a tool edits anything in an edit mode.
+ *
+ * @remarks Blob mode leaves pitch alone, so the Pitch, Draw and Bezier tools have nothing to do
+ * there; Pitch mode leaves blobs alone, so Slice has nothing to split.
+ */
+export function toolWorksIn(tool: ToolId, mode: EditMode): boolean {
+  if (mode === 'blob') return tool !== 'pitch' && tool !== 'pen' && tool !== 'bezier';
+  if (mode === 'pitch') return tool !== 'split';
+  return true;
+}
+
 /** The definition of one tool. */
 export function toolDefinition(id: ToolId): ToolDefinition {
   const found = TOOLS.find((tool) => tool.id === id);

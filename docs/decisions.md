@@ -953,6 +953,16 @@ new, which is not what copying a blob means once blobs are the parts sources are
 In Pitch mode Delete resets the selected span to the detected pitch and removes the curves drawn
 over it. It is Cut with nothing copied and the Cut Fill setting ignored.
 
+### Every toolbar button has a menu
+
+A right-click on any toolbar button opens a menu under it. A button whose click already opens a
+menu opens the same one. Follow lists Off, Page Ahead and Keep Centred, Metronome carries Count In,
+a tool or mode button lists every tool or mode, and a button with nothing more to offer lists its
+own command, so right-clicking never falls through to the browser's menu.
+
+Tools that have nothing to edit in the edit mode are disabled: Pitch, Draw and Bezier in Blob mode,
+Slice in Pitch mode. Switching to a mode that disables the active tool picks the Select tool.
+
 ### Shortcuts are drawn as keys
 
 Every chord a tooltip, menu, palette or cheatsheet names is drawn one box per key, `Ctrl` `Shift`
