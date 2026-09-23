@@ -692,6 +692,7 @@ export class EditorController {
       }
     }
     this.#renderer?.setHover({ x: point.x, y: point.y, text: describeHit(hit, state) });
+    this.#renderer?.setHoverBlob(hit.blob);
   }
 
   #onPointerLeave = (): void => {
@@ -699,6 +700,7 @@ export class EditorController {
     if (this.#gesture === null) {
       this.#hover = null;
       this.#renderer?.setHover(null);
+      this.#renderer?.setHoverBlob(null);
     }
   };
 

@@ -2,7 +2,14 @@
 
 import { DEFAULT_MIXER, vocalMonitor } from '../../audio/mixer.js';
 import type { AppState } from '../../app/store.js';
-import type { Blob, Clip, PitchCurve, PitchTrackArrays, TimingConflict } from '../../core/types.js';
+import type {
+  Blob,
+  BlobId,
+  Clip,
+  PitchCurve,
+  PitchTrackArrays,
+  TimingConflict,
+} from '../../core/types.js';
 import { clipOf, displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
@@ -260,7 +267,9 @@ export function drawBlobs(
   state: AppState,
   viewport: Viewport,
   theme: Theme,
-): void {
+  marquee: TitleMarquee | null = null,
+): boolean {
+  let scrolling = false;
   const selected = new Set(state.selection.blobs);
   // What is being heard is drawn solid and what is not is drawn transient, so the picture and
   // the mixer never disagree. Hearing both puts both between the two. Each clip has its own
@@ -305,13 +314,45 @@ export function drawBlobs(
     const alpha = monitor === 'processed' ? 1 : monitor === 'original' ? 0.28 : 0.55;
     const isSelected = selected.has(blob.id);
     drawBlob(ctx, state, viewport, theme, blob, isSelected, alpha, showHandles);
-    drawTitle(ctx, state, viewport, theme, blob, isSelected, alpha);
+    const scrolled = marquee !== null && marquee.blob === blob.id ? marquee.elapsed : null;
+    scrolling =
+      drawTitle(ctx, state, viewport, theme, blob, isSelected, alpha, scrolled) || scrolling;
   }
 
   for (const conflict of state.conflicts) {
     drawConflict(ctx, viewport, theme, conflict);
   }
   ctx.restore();
+  return scrolling;
+}
+
+/**
+ * A blob whose title scrolls when it does not fit, and how long it has been scrolling.
+ *
+ * @remarks `elapsed` is milliseconds since the pointer arrived over the blob.
+ */
+export interface TitleMarquee {
+  blob: BlobId;
+  elapsed: number;
+}
+
+/** How fast a title too long for its tab scrolls, in pixels per second. */
+const MARQUEE_SPEED = 30;
+
+/** Fraction of each pass a scrolling title rests at either end. */
+const MARQUEE_REST = 0.15;
+
+/**
+ * How far a title `overflow` pixels too long has scrolled after `elapsed` milliseconds.
+ *
+ * @remarks Back and forth, resting at each end, the way the mixer's names scroll.
+ */
+function marqueeOffset(overflow: number, elapsed: number): number {
+  const pass = (1 + overflow / MARQUEE_SPEED) * 1000;
+  const cycle = (elapsed % (pass * 2)) / pass;
+  const phase = cycle < 1 ? cycle : 2 - cycle;
+  const moved = Math.min(Math.max((phase - MARQUEE_REST) / (1 - MARQUEE_REST * 2), 0), 1);
+  return -overflow * moved;
 }
 
 /**
@@ -444,11 +485,12 @@ function drawTitle(
   blob: Blob,
   isSelected: boolean,
   alpha: number,
-): void {
+  scrolled: number | null,
+): boolean {
   const rect = titleRect(blob, state.track, viewport);
   const clip = clipOfBlob(state, blob);
   if (rect === null || clip === undefined) {
-    return;
+    return false;
   }
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -458,11 +500,24 @@ function drawTitle(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.bg;
-  const text = fitText(ctx, displayTitle(clip), rect.width - TITLE_PADDING * 2);
+  const title = displayTitle(clip);
+  const room = rect.width - TITLE_PADDING * 2;
+  const overflow = scrolled === null ? 0 : ctx.measureText(title).width - room;
+  if (overflow > 0 && scrolled !== null) {
+    ctx.beginPath();
+    ctx.rect(rect.x + TITLE_PADDING, rect.y, room, rect.height);
+    ctx.clip();
+    const offset = marqueeOffset(overflow, scrolled);
+    ctx.fillText(title, rect.x + TITLE_PADDING + offset, rect.y + rect.height / 2 + 0.5);
+    ctx.restore();
+    return true;
+  }
+  const text = fitText(ctx, title, room);
   if (text !== '') {
     ctx.fillText(text, rect.x + TITLE_PADDING, rect.y + rect.height / 2 + 0.5);
   }
   ctx.restore();
+  return false;
 }
 
 /**

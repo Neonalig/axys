@@ -60,6 +60,10 @@ export class EditorRenderer {
   #disposed = false;
   #base: HTMLCanvasElement | null = null;
   #baseKey: BaseKey | null = null;
+  /** The blob under the pointer, whose title scrolls when it does not fit, and since when. */
+  #hoverBlob: { id: BlobId; since: number } | null = null;
+  /** Whether the last frame scrolled a title, which needs the frames after it too. */
+  #scrolling = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.#canvas = canvas;
@@ -122,6 +126,20 @@ export class EditorRenderer {
       this.#hover = hover;
       this.invalidate();
     }
+  }
+
+  /**
+   * Sets the blob under the pointer, whose title scrolls when it is too long for its tab.
+   *
+   * @remarks Held still under reduced motion, where the title stays cut short.
+   */
+  setHoverBlob(id: BlobId | null): void {
+    const wanted = id === null || prefersReducedMotion() ? null : id;
+    if ((this.#hoverBlob?.id ?? null) === wanted) {
+      return;
+    }
+    this.#hoverBlob = wanted === null ? null : { id: wanted, since: performance.now() };
+    this.invalidate();
   }
 
   /** Marks the canvas as needing a redraw on the next animation frame. */
@@ -193,7 +211,13 @@ export class EditorRenderer {
    */
   #baseLayers(state: AppState, viewport: Viewport, theme: Theme): HTMLCanvasElement {
     const base = (this.#base ??= document.createElement('canvas'));
-    const key = baseKey(state, viewport, theme, this.#ratio);
+    const hover = this.#hoverBlob;
+    const marquee =
+      hover === null ? null : { blob: hover.id, elapsed: performance.now() - hover.since };
+    const key = baseKey(state, viewport, theme, this.#ratio, [
+      hover?.id ?? -1,
+      this.#scrolling && marquee !== null ? marquee.elapsed : 0,
+    ]);
     if (this.#baseKey !== null && sameBaseKey(this.#baseKey, key)) {
       return base;
     }
@@ -213,7 +237,10 @@ export class EditorRenderer {
     drawWaveform(ctx, state, viewport, theme);
     drawMidi(ctx, state, viewport, theme);
     drawReferences(ctx, state, viewport, theme);
-    drawBlobs(ctx, state, viewport, theme);
+    this.#scrolling = drawBlobs(ctx, state, viewport, theme, marquee);
+    if (this.#scrolling) {
+      this.invalidate();
+    }
     drawPitch(ctx, state, viewport, theme);
     drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
@@ -369,7 +396,13 @@ interface BaseKey {
   numbers: readonly (number | string)[];
 }
 
-function baseKey(state: AppState, viewport: Viewport, theme: Theme, ratio: number): BaseKey {
+function baseKey(
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  ratio: number,
+  extra: readonly number[],
+): BaseKey {
   const view = viewport.view;
   return {
     refs: [
@@ -394,6 +427,7 @@ function baseKey(state: AppState, viewport: Viewport, theme: Theme, ratio: numbe
       view.highMidi,
       view.timeDisplay,
       view.snapDivision,
+      ...extra,
     ],
   };
 }
