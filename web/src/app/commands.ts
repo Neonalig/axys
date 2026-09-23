@@ -475,9 +475,8 @@ function cutSelection(ctx: CommandContext, ripple: boolean): void {
 /**
  * Pastes the clipboard at the playhead.
  *
- * @remarks Clips land over what is there, move what starts after the playhead later, or replace
- * what is under them, as `mode` says. Blobs cannot lie over each other, so without `replace` they
- * fill the space the blobs already there leave. Pitch always replaces the line it lands on.
+ * @remarks Clips and blobs land over what is there, move what starts after the playhead later, or
+ * replace what is under them, as `mode` says. Pitch always replaces the line it lands on.
  */
 function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
   const state = ctx.store.state;
@@ -495,7 +494,7 @@ function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
   }
   const ops =
     content.kind === 'blobs'
-      ? pasteBlobOps(state, content, at, mode === 'replace')
+      ? pasteBlobOps(state, content, at, mode)
       : [
           ...pastePitchOps(state, placePitch(content, selectedRange(state), at)),
           ...placeStrokes(state, content, selectedRange(state), at),
@@ -503,7 +502,7 @@ function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
   if (ops.length === 0) {
     ctx.toast.warn(
       content.kind === 'blobs'
-        ? 'Move the playhead over free audio in a clip to paste blobs'
+        ? 'Move the playhead over a clip to paste blobs'
         : 'Move the playhead over a blob to paste pitch',
     );
     return;
@@ -950,6 +949,23 @@ export function buildCommands(): Command[] {
         if (blobs.length === 0) return;
         ctx.workspace.apply({ type: 'deleteBlobs', blobs });
         ctx.editor.clearSelection();
+      },
+    },
+    {
+      // Pitch mode selects no blobs, so the same key falls through to here.
+      id: 'edit.deletePitch',
+      label: 'Delete Pitch',
+      group: 'Edit',
+      shortcut: 'Delete',
+      altShortcut: 'Backspace',
+      enabled: (ctx) =>
+        editable(ctx) &&
+        ctx.store.state.editMode === 'pitch' &&
+        ctx.store.state.selection.ranges.length > 0,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const ops = cutPitchOps(state, state.selection.ranges, 'sung');
+        if (ops.length > 0) ctx.workspace.apply(grouped(ops));
       },
     },
     {

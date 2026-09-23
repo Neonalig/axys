@@ -198,9 +198,11 @@ export class EditorController {
   #current: Point = { x: 0, y: 0 };
   /** Where the pointer last was over the canvas, or `null` once it has left. */
   #pointer: Point | null = null;
-  /** The view and blobs the hover readout was last read against. */
+  /** The state the hover readout and cursor were last read against. */
   #hoverView: unknown = null;
   #hoverBlobs: unknown = null;
+  #hoverTool: unknown = null;
+  #hoverMode: unknown = null;
   #moved = false;
   #gesture: Gesture | null = null;
   #hover: Hit | null = null;
@@ -239,11 +241,14 @@ export class EditorController {
         }
       }
       this.render();
-      // A view that scrolls under a still pointer, as Follow does during playback, leaves the
-      // readout naming what used to be there unless it is read again.
+      // A view that scrolls under a still pointer, as Follow does during playback, or a tool
+      // picked from the keyboard, leaves the readout and cursor stale unless read again.
       if (
         this.#pointer !== null &&
-        (state.view !== this.#hoverView || state.blobs !== this.#hoverBlobs)
+        (state.view !== this.#hoverView ||
+          state.blobs !== this.#hoverBlobs ||
+          state.tool !== this.#hoverTool ||
+          state.editMode !== this.#hoverMode)
       ) {
         this.#readHover(this.#pointer);
       }
@@ -824,6 +829,8 @@ export class EditorController {
     const state = this.#store.state;
     this.#hoverView = state.view;
     this.#hoverBlobs = state.blobs;
+    this.#hoverTool = state.tool;
+    this.#hoverMode = state.editMode;
     const hit = this.hitTest(point.x, point.y);
     if (this.#gesture === null) {
       this.#hover = hit;

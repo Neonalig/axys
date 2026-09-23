@@ -826,8 +826,8 @@ Decided where the backlog left it open:
   again from the audio it now covers. The same rule as resizing, so the two cannot disagree.
 - **Pasted pitch replaces what it lands on.** No blend at the edges: the span sounds the copied
   line and the rest of the blob sounds as it did. Each blob is given the part of the line over it.
-- **Cut pitch leaves the sung pitch by default.** Cut Pitch in the inspector chooses Sung Pitch or
-  Flat Line, a device preference.
+- **Cut pitch leaves the sung pitch by default.** Cut Fill in the inspector chooses Detected Pitch
+  or Flat Pitch, a device preference.
 - **Editing pitch outside blobs makes a blob.** A drag, a stroke or a paste over pitch outside every
   blob adds a blob over that stretch carrying the edit, in the same undo step. The alternative, a
   curve belonging to the clip rather than to a blob, would have been a second way for pitch to be
@@ -936,9 +936,14 @@ tool keeps one meaning in every mode.
 Paste lays clips over what is there, Paste Insert on `Ctrl+Shift+V` moves every clip starting at or
 after the playhead later by the length pasted, and Paste Replace on `Ctrl+Alt+V` cuts the pasted
 span out of every clip it reaches first. Ripple Cut on `Ctrl+Shift+X` closes the gap a cut leaves by
-moving every later clip earlier by its length. Blobs cannot lie over each other, so a plain paste of
-blobs fills the audio the blobs already there leave free, and Paste Replace puts them in place of
-those. Pitch always replaces the line it lands on. Each is one undo step.
+moving every later clip earlier by its length. Blobs paste the same three ways. Blobs cannot lie
+over each other, so a plain paste trims or splits the blobs it lands on back to where it does not
+reach, Paste Insert moves the blobs from the playhead on later first, splitting one across it, and
+Paste Replace removes every blob it touches. Pitch always replaces the line it lands on. Each is one
+undo step.
+
+In Pitch mode Delete resets the selected span to the detected pitch and removes the curves drawn
+over it. It is Cut with nothing copied and the Cut Fill setting ignored.
 
 ### Shortcuts are drawn as keys
 

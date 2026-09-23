@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { analyseFixture, loadTestCore, type TestCore } from './helpers/core';
 import {
+  copyBlobs,
   copyClips,
   copyPitch,
   cutBlobOps,
@@ -20,6 +21,7 @@ import {
   drawStrokeOps,
   liftRunOps,
   outsideRuns,
+  pasteBlobOps,
   pastePitchOps,
   placePitch,
   placeStrokes,
@@ -105,6 +107,33 @@ describe('editing modes', () => {
       expect(stateOf(scoped).blobs).toHaveLength(before.blobs.length - 1);
     } finally {
       scoped.free();
+    }
+  });
+
+  it('pastes a blob over others by trimming them, and ripples the blobs after it with Insert', () => {
+    for (const mode of ['overlap', 'ripple'] as const) {
+      const scoped = session();
+      try {
+        const state = stateOf(scoped, { editMode: 'blob' });
+        const [source, under] = [state.blobs[0]!, state.blobs[2]!];
+        const copied = copyBlobs(selecting(state, source))!;
+        const at = (under.start + under.end) / 2;
+        const later = state.blobs.find((blob) => blob.start >= at)!;
+        apply(scoped, pasteBlobOps(state, copied, at, mode));
+        const after = stateOf(scoped).blobs;
+        const pasted = after.find((blob) => Math.abs(blob.start - at) < 1e-6);
+        expect(pasted?.end).toBeCloseTo(at + (source.end - source.start), 6);
+        // The blob it landed on keeps its part before the paste, and nothing overlaps.
+        expect(after.find((blob) => blob.id === under.id)!.end).toBeCloseTo(at, 6);
+        for (let i = 1; i < after.length; i += 1) {
+          expect(after[i]!.start).toBeGreaterThanOrEqual(after[i - 1]!.end - 1e-6);
+        }
+        const next = after.find((blob) => blob.id === later.id)!;
+        if (mode === 'overlap') expect(next.start).toBeCloseTo(pasted!.end, 6);
+        else expect(next.start).toBeCloseTo(later.start + (source.end - source.start), 6);
+      } finally {
+        scoped.free();
+      }
     }
   });
 

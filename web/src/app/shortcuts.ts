@@ -307,14 +307,13 @@ export function bindShortcuts(
       }
     }
 
+    // A key bound to several commands runs the first one enabled.
     const pressed = chordOf(event);
-    for (const binding of bindings) {
-      if (!sameChord(pressed, binding.chord)) continue;
-      event.preventDefault();
-      if (!binding.command.enabled(ctx)) return;
-      void binding.command.run(ctx);
-      return;
-    }
+    const matching = bindings.filter((binding) => sameChord(pressed, binding.chord));
+    if (matching.length === 0) return;
+    event.preventDefault();
+    const binding = matching.find((candidate) => candidate.command.enabled(ctx));
+    if (binding !== undefined) void binding.command.run(ctx);
   };
 
   target.addEventListener('keydown', onKeyDown);
