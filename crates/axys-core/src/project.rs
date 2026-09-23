@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::{F0Params, PitchTrack};
 use crate::analysis::segment::SegmentParams;
-use crate::blob::{Blob, BlobId, BlobSet};
+use crate::blob::{Blob, BlobId, BlobSet, TimingConflict};
 use crate::clip::{clip_of, Clip, ClipId, Reference, ReferenceId};
 use crate::dsp::formant::FormantMode;
 use crate::edit::History;
@@ -153,12 +153,46 @@ impl EditState {
         self.clip_mut(clip_of(id))?.blobs.get_mut(id)
     }
 
-    /// Every blob on the lane in project seconds, as one ordered set.
+    /// The blobs of some clips in project seconds, as one ordered set.
     ///
-    /// Clips never overlap on the lane, so neither do their blobs.
-    pub fn project_blobs(&self) -> Result<BlobSet> {
-        let blobs: Vec<Blob> = self.clips.iter().flat_map(Clip::project_blobs).collect();
+    /// Errors when two of the clips overlap; a [`crate::clip::layer`] never does.
+    pub fn layer_blobs(&self, clips: &[ClipId]) -> Result<BlobSet> {
+        let blobs: Vec<Blob> = self
+            .clips
+            .iter()
+            .filter(|clip| clips.contains(&clip.id))
+            .flat_map(Clip::project_blobs)
+            .collect();
         BlobSet::from_blobs(blobs)
+    }
+
+    /// Every blob of every clip in project seconds, in start order.
+    ///
+    /// Blobs of clips that overlap may overlap each other.
+    pub fn all_blobs(&self) -> Vec<Blob> {
+        let mut blobs: Vec<Blob> = self.clips.iter().flat_map(Clip::project_blobs).collect();
+        blobs.sort_by(|a, b| a.start.total_cmp(&b.start));
+        blobs
+    }
+
+    /// Overlaps and gaps timing edits produced, in project seconds, each within one clip.
+    ///
+    /// Two clips sounding at once is not a conflict.
+    pub fn conflicts(&self) -> Vec<TimingConflict> {
+        let mut conflicts: Vec<TimingConflict> = self
+            .clips
+            .iter()
+            .flat_map(|clip| {
+                let mut conflicts = clip.blobs.timing_conflicts();
+                for conflict in &mut conflicts {
+                    conflict.start += clip.position;
+                    conflict.end += clip.position;
+                }
+                conflicts
+            })
+            .collect();
+        conflicts.sort_by(|a, b| a.start.total_cmp(&b.start));
+        conflicts
     }
 
     /// Project seconds at which the last clip or reference ends.
@@ -217,6 +251,25 @@ pub struct ViewState {
     /// Loop region end in source seconds, when a loop is set.
     #[serde(default)]
     pub loop_end: Option<f64>,
+    /// The clip in front, which the editor edits and whose layer it builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_clip: Option<ClipId>,
+    /// How the clips outside the active layer are shown.
+    #[serde(default)]
+    pub others: OthersView,
+}
+
+/// How the clips outside the active layer are shown and reached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OthersView {
+    /// Drawn behind the active layer; a click on one brings its clip forward.
+    #[default]
+    Show,
+    /// Drawn faintly and never hit; only the active clip is edited.
+    Dim,
+    /// Not drawn; only the active clip is edited.
+    Hide,
 }
 
 impl Default for ViewState {
@@ -231,6 +284,8 @@ impl Default for ViewState {
             playhead: 0.0,
             loop_start: None,
             loop_end: None,
+            active_clip: None,
+            others: OthersView::Show,
         }
     }
 }
@@ -712,6 +767,8 @@ mod tests {
             playhead: 1.75,
             loop_start: Some(1.0),
             loop_end: Some(3.0),
+            active_clip: Some(ClipId(0)),
+            others: OthersView::Dim,
         };
         project
             .history

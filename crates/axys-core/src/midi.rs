@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::blob::{BlobId, BlobSet};
+use crate::blob::{Blob, BlobId, BlobSet};
 use crate::limits;
 use crate::timeline::{MeterEvent, TempoEvent, TimelineMap};
 use crate::{AxysError, Result};
@@ -705,7 +705,7 @@ pub struct DriftReport {
 
 /// Measures alignment error between mapped blobs and their guide notes.
 pub fn measure_drift(
-    blobs: &BlobSet,
+    blobs: &[Blob],
     notes: &[MidiNote],
     mappings: &[NoteMapping],
     timeline: &TimelineMap,
@@ -715,7 +715,8 @@ pub fn measure_drift(
         if mapping.opted_out {
             continue;
         }
-        let (Some(note), Some(blob)) = (mapping.note, blobs.get(mapping.blob)) else {
+        let blob = blobs.iter().find(|blob| blob.id == mapping.blob);
+        let (Some(note), Some(blob)) = (mapping.note, blob) else {
             continue;
         };
         let Some(note) = notes.get(note) else {
@@ -1187,7 +1188,7 @@ mod tests {
                 opted_out: false,
             })
             .collect();
-        let report = measure_drift(&blobs, &notes, &mappings, &guide_timeline()).unwrap();
+        let report = measure_drift(blobs.blobs(), &notes, &mappings, &guide_timeline()).unwrap();
         assert_eq!(report.pairs_compared, 3);
         assert!((report.offset_seconds + 0.1).abs() < 1e-9);
         assert!(report.drift_seconds_per_second.abs() < 1e-9);
@@ -1195,7 +1196,7 @@ mod tests {
 
         // Blobs progressively later: a growing error the tempo map has to absorb.
         let drifting = blob_set(&[(0.0, 0.2, 60.0), (1.1, 1.3, 62.0), (2.2, 2.4, 64.0)]);
-        let report = measure_drift(&drifting, &notes, &mappings, &guide_timeline()).unwrap();
+        let report = measure_drift(drifting.blobs(), &notes, &mappings, &guide_timeline()).unwrap();
         assert!(report.drift_seconds_per_second < -0.04);
         assert!((report.early_error_seconds).abs() < 1e-9);
         assert!((report.late_error_seconds + 0.2).abs() < 1e-9);
@@ -1205,21 +1206,21 @@ mod tests {
     fn drift_needs_at_least_one_pair() {
         let blobs = blob_set(&[(0.0, 0.2, 60.0)]);
         let notes = [note(60, 0, 240)];
-        assert!(measure_drift(&blobs, &notes, &[], &guide_timeline()).is_none());
+        assert!(measure_drift(blobs.blobs(), &notes, &[], &guide_timeline()).is_none());
         let opted = [NoteMapping {
             blob: BlobId(0),
             note: Some(0),
             manual: false,
             opted_out: true,
         }];
-        assert!(measure_drift(&blobs, &notes, &opted, &guide_timeline()).is_none());
+        assert!(measure_drift(blobs.blobs(), &notes, &opted, &guide_timeline()).is_none());
         let dangling = [NoteMapping {
             blob: BlobId(0),
             note: Some(7),
             manual: true,
             opted_out: false,
         }];
-        assert!(measure_drift(&blobs, &notes, &dangling, &guide_timeline()).is_none());
+        assert!(measure_drift(blobs.blobs(), &notes, &dangling, &guide_timeline()).is_none());
     }
 
     #[test]

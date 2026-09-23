@@ -22,7 +22,7 @@ use axys_core::analysis::f0::{
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
-use axys_core::clip::{fit_to_source, renumber, Clip, ClipId, Reference, ReferenceId};
+use axys_core::clip::{fit_to_source, layer, renumber, Clip, ClipId, Reference, ReferenceId};
 use axys_core::dsp::formant::FormantMode;
 use axys_core::edit::{apply_in, ClipSources, EditOp, History};
 use axys_core::midi::{
@@ -589,6 +589,10 @@ pub struct Session {
     last_report: Option<ExportReport>,
     /// Each attached reference's channels at the project rate, for an export that includes them.
     reference_audio: Vec<(ReferenceId, Vec<Vec<f32>>)>,
+    /// The clip in front, which the editor's layer is built from; `None` is the first clip.
+    active: Option<ClipId>,
+    /// Whether the layer is the active clip alone.
+    isolate: bool,
 }
 
 #[wasm_bindgen]
@@ -687,6 +691,8 @@ impl Session {
             plan_hop: 0.005,
             last_report: None,
             reference_audio: Vec::new(),
+            active: None,
+            isolate: false,
         };
         session.recompile()?;
         Ok(session)
@@ -745,6 +751,8 @@ impl Session {
             plan_hop: 0.005,
             last_report: None,
             reference_audio: Vec::new(),
+            active: None,
+            isolate: false,
         };
         session.recompile()?;
         Ok(session)
@@ -777,11 +785,12 @@ impl Session {
         self.recompile()
     }
 
-    /// Imports another vocal onto the lane as one undoable edit, returning the new clip's id.
+    /// Imports another vocal as one undoable edit, returning the new clip's id.
     ///
-    /// `samples` must be mono at the project rate. `position` is project seconds; a position
-    /// that would overlap a clip lands on the nearest free one, or with `ripple` stays where it
-    /// is and moves the clips after it later.
+    /// `samples` must be mono at the project rate. `position` is project seconds. With `exact`
+    /// the clip lands there over whatever is already there; with `ripple` it stays there and
+    /// moves the clips after it later; with neither, a position that would overlap a clip lands
+    /// on the nearest free one.
     #[wasm_bindgen(js_name = addClip)]
     #[allow(clippy::too_many_arguments)]
     pub fn add_clip(
@@ -793,6 +802,7 @@ impl Session {
         params_json: &str,
         position: f64,
         ripple: bool,
+        exact: bool,
     ) -> Result<u32, JsValue> {
         let params = AnalysisParams::from_json(params_json)?;
         let track: PitchTrack = parse(track_json)?;
@@ -819,6 +829,7 @@ impl Session {
         let op = EditOp::AddClip {
             clip: Clip::new(id, source, position, analysed),
             ripple,
+            exact,
         };
         if let Err(error) = self.apply_op(op) {
             self.clips.retain(|r| r.id != id);
@@ -991,23 +1002,57 @@ impl Session {
         dump(&self.state)
     }
 
-    /// Every blob on the lane, in project seconds, as JSON.
+    /// Brings a clip forward and sets whether the editor edits it alone.
+    ///
+    /// A negative `active` is the first clip. The layer the editor edits is the active clip and,
+    /// unless `isolate`, every clip that sits beside it without overlapping.
+    #[wasm_bindgen(js_name = setFocus)]
+    pub fn set_focus(&mut self, active: i32, isolate: bool) {
+        self.active = u32::try_from(active).ok().map(ClipId);
+        self.isolate = isolate;
+    }
+
+    /// The clips of the editor's layer, active clip first, as a JSON array of ids.
+    #[wasm_bindgen(js_name = layerJson)]
+    pub fn layer_json(&self) -> Result<String, JsValue> {
+        dump(&self.layer_ids())
+    }
+
+    fn layer_ids(&self) -> Vec<ClipId> {
+        layer(&self.state.clips, self.active, self.isolate)
+    }
+
+    /// Every blob of the editor's layer, in project seconds, as JSON.
     #[wasm_bindgen(js_name = blobsJson)]
     pub fn blobs_json(&self) -> Result<String, JsValue> {
-        dump(self.project_blobs()?.blobs())
+        dump(self.layer_blobs()?.blobs())
     }
 
-    fn project_blobs(&self) -> Result<BlobSet, JsValue> {
-        self.state.project_blobs().map_err(to_js)
+    /// Every blob of the clips outside the editor's layer, in project seconds, as JSON.
+    #[wasm_bindgen(js_name = otherBlobsJson)]
+    pub fn other_blobs_json(&self) -> Result<String, JsValue> {
+        let layer = self.layer_ids();
+        let blobs: Vec<Blob> = self
+            .state
+            .clips
+            .iter()
+            .filter(|clip| !layer.contains(&clip.id))
+            .flat_map(Clip::project_blobs)
+            .collect();
+        dump(&blobs)
     }
 
-    /// Overlaps and gaps produced by timing edits, in project seconds, as JSON.
+    fn layer_blobs(&self) -> Result<BlobSet, JsValue> {
+        self.state.layer_blobs(&self.layer_ids()).map_err(to_js)
+    }
+
+    /// Overlaps and gaps timing edits produced within each clip, in project seconds, as JSON.
     #[wasm_bindgen(js_name = conflictsJson)]
     pub fn conflicts_json(&self) -> Result<String, JsValue> {
-        dump(&self.project_blobs()?.timing_conflicts())
+        dump(&self.state.conflicts())
     }
 
-    /// One plan for the whole lane in project seconds, as JSON, for the editor to draw from.
+    /// One plan for the editor's layer in project seconds, as JSON, for the editor to draw from.
     ///
     /// The time map joins each clip's own in project seconds and the target pitch is sampled
     /// on one grid across the lane. Playback and export read the per-clip plans instead, from
@@ -1031,9 +1076,19 @@ impl Session {
         dump(&plans)
     }
 
-    /// Clips on the lane with their runtime, in lane order.
+    /// Every clip on the timeline with its runtime, in time order.
     fn lane(&self) -> impl Iterator<Item = (&Clip, &ClipRuntime)> {
-        let mut clips: Vec<&Clip> = self.state.clips.iter().collect();
+        self.placed(|_| true)
+    }
+
+    /// Clips of the editor's layer with their runtime, in time order.
+    fn editor_lane(&self) -> impl Iterator<Item = (&Clip, &ClipRuntime)> {
+        let layer = self.layer_ids();
+        self.placed(move |clip| layer.contains(&clip.id))
+    }
+
+    fn placed(&self, keep: impl Fn(&Clip) -> bool) -> impl Iterator<Item = (&Clip, &ClipRuntime)> {
+        let mut clips: Vec<&Clip> = self.state.clips.iter().filter(|clip| keep(clip)).collect();
         clips.sort_by(|a, b| a.position.total_cmp(&b.position));
         clips.into_iter().filter_map(|clip| {
             self.clips
@@ -1044,7 +1099,7 @@ impl Session {
     }
 
     fn editor_plan(&self) -> RenderPlan {
-        let lane: Vec<(&Clip, &ClipRuntime)> = self.lane().collect();
+        let lane: Vec<(&Clip, &ClipRuntime)> = self.editor_lane().collect();
         // One clip at the start of the lane is the lane: its own plan is exact, where a copy
         // resampled onto the lane grid would only be close.
         if let [(clip, runtime)] = lane.as_slice() {
@@ -1119,7 +1174,7 @@ impl Session {
         }))
     }
 
-    /// Detected pitch across the lane in project seconds, as JSON.
+    /// Detected pitch across the editor's layer in project seconds, as JSON.
     ///
     /// Each clip's frames are moved to where the clip sits, with an unvoiced frame between clips
     /// so the drawn line breaks where one take ends and the next begins. Material deleted with its
@@ -1128,7 +1183,7 @@ impl Session {
     #[wasm_bindgen(js_name = trackJson)]
     pub fn track_json(&self) -> Result<String, JsValue> {
         let mut frames: Vec<PitchFrame> = Vec::new();
-        for (clip, runtime) in self.lane() {
+        for (clip, runtime) in self.editor_lane() {
             if let Some(last) = frames.last().copied() {
                 frames.push(PitchFrame {
                     time: last.time + runtime.track.hop_seconds.max(1e-3),
@@ -1224,37 +1279,65 @@ impl Session {
 
     /// Proposes blob-to-note mappings without applying them.
     ///
-    /// The caller decides which of the proposed mappings to keep and commits them as an
+    /// `clips_json` is a JSON array of the clips to map, or absent for every clip. Each clip is
+    /// matched against the guide on its own, so a double follows the same notes as its lead. The
+    /// caller decides which of the proposed mappings to keep and commits them as an
     /// [`EditOp::SetMappings`] of its own, so aligning against a selection and previewing an
     /// alignment are one edit that one undo takes back.
     #[wasm_bindgen(js_name = proposeMappingsPreview)]
-    pub fn propose_mappings_preview_js(&self) -> Result<String, JsValue> {
-        let Some(notes) = self.guide_notes() else {
-            return Err(JsValue::from_str("no MIDI guide is selected"));
-        };
-        let (mappings, report) = propose_mappings(
-            &self.project_blobs()?,
-            &notes,
-            &self.state.timeline,
-            &self.state.mappings,
-        );
+    pub fn propose_mappings_preview_js(
+        &self,
+        clips_json: Option<String>,
+    ) -> Result<String, JsValue> {
+        let (mappings, report) = self.propose(clips_json.as_deref())?;
         dump(&MappingProposal { mappings, report })
     }
 
-    /// Proposes blob-to-note mappings, keeping manual ones, and returns the report.
+    /// Proposes blob-to-note mappings for the clips in `clips_json`, or every clip, keeping
+    /// manual ones and every other clip's mappings, applies them and returns the report.
     #[wasm_bindgen(js_name = proposeMappings)]
-    pub fn propose_mappings_js(&mut self) -> Result<String, JsValue> {
+    pub fn propose_mappings_js(&mut self, clips_json: Option<String>) -> Result<String, JsValue> {
+        let (proposed, report) = self.propose(clips_json.as_deref())?;
+        let mut mappings: Vec<NoteMapping> = self
+            .state
+            .mappings
+            .iter()
+            .filter(|kept| !proposed.iter().any(|new| new.blob == kept.blob))
+            .copied()
+            .collect();
+        mappings.extend(proposed);
+        mappings.sort_by_key(|mapping| mapping.blob.0);
+        self.apply_op(EditOp::SetMappings { mappings })?;
+        dump(&report)
+    }
+
+    fn propose(
+        &self,
+        clips_json: Option<&str>,
+    ) -> Result<(Vec<NoteMapping>, MappingReport), JsValue> {
         let Some(notes) = self.guide_notes() else {
             return Err(JsValue::from_str("no MIDI guide is selected"));
         };
-        let (mappings, report) = propose_mappings(
-            &self.project_blobs()?,
-            &notes,
-            &self.state.timeline,
-            &self.state.mappings,
-        );
-        self.apply_op(EditOp::SetMappings { mappings })?;
-        dump(&report)
+        let wanted: Option<Vec<ClipId>> = match clips_json {
+            Some(json) => Some(parse(json)?),
+            None => None,
+        };
+        let mut mappings = Vec::new();
+        let mut reports = Vec::new();
+        for clip in &self.state.clips {
+            if wanted
+                .as_ref()
+                .is_some_and(|wanted| !wanted.contains(&clip.id))
+            {
+                continue;
+            }
+            let blobs = BlobSet::from_blobs(clip.project_blobs()).map_err(to_js)?;
+            let (proposed, report) =
+                propose_mappings(&blobs, &notes, &self.state.timeline, &self.state.mappings);
+            mappings.extend(proposed);
+            reports.push(report);
+        }
+        Ok((mappings, merge_reports(reports, notes.len())))
     }
 
     /// Overlapping note pairs in the selected guide, or `[]` when no guide is selected.
@@ -1292,7 +1375,7 @@ impl Session {
             return Ok("null".to_string());
         };
         match measure_drift(
-            &self.project_blobs()?,
+            &self.state.all_blobs(),
             &notes,
             &self.state.mappings,
             &self.state.timeline,
@@ -1625,8 +1708,8 @@ impl Session {
             .count();
 
         let conflicts = self
-            .project_blobs()?
-            .timing_conflicts()
+            .state
+            .conflicts()
             .iter()
             .filter(|c| c.end >= from && c.start <= to)
             .count();
@@ -1683,6 +1766,32 @@ fn place_on_lane(
             }
         }
     }
+}
+
+/// One report for mappings proposed clip by clip.
+///
+/// A note is unmapped only when no clip took it, and taken more than once when one clip took it
+/// more than once: a note every clip follows is the point of mapping them together.
+fn merge_reports(reports: Vec<MappingReport>, notes: usize) -> MappingReport {
+    let mut merged = MappingReport::default();
+    let mut unmapped = vec![!reports.is_empty(); notes];
+    for (index, report) in reports.into_iter().enumerate() {
+        merged.unmapped_blobs.extend(report.unmapped_blobs);
+        for (note, flag) in unmapped.iter_mut().enumerate() {
+            *flag = *flag && report.unmapped_notes.contains(&note);
+        }
+        for note in report.multiply_mapped_notes {
+            if !merged.multiply_mapped_notes.contains(&note) {
+                merged.multiply_mapped_notes.push(note);
+            }
+        }
+        if index == 0 {
+            merged.overlapping_notes = report.overlapping_notes;
+        }
+    }
+    merged.unmapped_notes = (0..notes).filter(|note| unmapped[*note]).collect();
+    merged.multiply_mapped_notes.sort_unstable();
+    merged
 }
 
 /// Facts recorded about mono PCM at import.
@@ -1786,6 +1895,11 @@ mod analysis_handoff_tests {
 
     /// A session with the tone as clip 0 and the tone again as clip 1 at `position`.
     fn two_clips(position: f64) -> (Session, u32) {
+        placed_clips(position, false)
+    }
+
+    /// [`two_clips`], with clip 1 placed exactly where asked when `exact` is set.
+    fn placed_clips(position: f64, exact: bool) -> (Session, u32) {
         let (samples, analysis) = analysed();
         let mut session = Session::create(
             samples.clone(),
@@ -1804,6 +1918,7 @@ mod analysis_handoff_tests {
                 "",
                 position,
                 false,
+                exact,
             )
             .expect("second clip");
         (session, clip)
@@ -1811,6 +1926,36 @@ mod analysis_handoff_tests {
 
     fn json(text: String) -> serde_json::Value {
         serde_json::from_str(&text).expect("json")
+    }
+
+    #[test]
+    fn an_overlapping_clip_is_edited_as_its_own_layer() {
+        let (mut session, clip) = placed_clips(0.25, true);
+        let first = json(session.layer_json().expect("layer"));
+        assert_eq!(first, serde_json::json!([0]));
+        let others = json(session.other_blobs_json().expect("others"));
+        let other_count = others.as_array().expect("array").len();
+        assert!(other_count > 0);
+        assert!(others
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|blob| blob["id"].as_u64().expect("id") >> 20 == u64::from(clip)));
+
+        session.set_focus(clip as i32, false);
+        assert_eq!(
+            json(session.layer_json().expect("layer")),
+            serde_json::json!([clip])
+        );
+        let blobs = json(session.blobs_json().expect("blobs"));
+        assert_eq!(blobs.as_array().expect("array").len(), other_count);
+        assert!(json(session.conflicts_json().expect("conflicts"))
+            .as_array()
+            .expect("array")
+            .is_empty());
+        // Both clips still play, each at its own position.
+        let plans = json(session.clip_plans_json().expect("plans"));
+        assert_eq!(plans.as_array().expect("array").len(), 2);
     }
 
     #[test]
@@ -2271,7 +2416,7 @@ mod guide_mapping_tests {
     fn proposing_mappings_is_one_undo_step() {
         let mut session = guided();
         assert_eq!(mappings(&session).as_array().map(Vec::len), Some(0));
-        session.propose_mappings_js().expect("propose");
+        session.propose_mappings_js(None).expect("propose");
         let proposed = mappings(&session);
         assert!(proposed.as_array().is_some_and(|m| !m.is_empty()));
 
@@ -2289,7 +2434,7 @@ mod guide_mapping_tests {
     #[test]
     fn undoing_an_override_restores_the_proposed_mappings() {
         let mut session = guided();
-        session.propose_mappings_js().expect("propose");
+        session.propose_mappings_js(None).expect("propose");
         let proposed = mappings(&session);
         let blob = proposed[0]["blob"].as_u64().expect("a mapped blob");
 
