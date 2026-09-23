@@ -47,7 +47,9 @@
   max-width: 280px;
   /* A rich tooltip is a title line and one supplementary line, so its newline is honoured */
   white-space: pre-line;
-  padding: 4px 8px;
+  /* Trimmed to the capital height and the baseline, so equal padding centres the text whatever the
+     font's own ascent and descent, on a whole-pixel line at any display scale */
+  padding: 9px 8px;
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius);
   background: var(--axys-veil-raised);
@@ -55,7 +57,8 @@
   box-shadow: var(--axys-elevation-2);
   color: var(--axys-text);
   font-size: var(--axys-size-sm);
-  line-height: 1.35;
+  line-height: 16px;
+  text-box: trim-both cap alphabetic;
   pointer-events: none;
   animation: axys-fade-in var(--axys-duration-fast) var(--axys-ease-standard);
 }

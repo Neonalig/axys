@@ -233,7 +233,10 @@ input[type='checkbox'] {
 }
 
 .axys-key {
-  padding: 0 var(--axys-space-1);
+  /* Trimmed to the capital height and the baseline, so the key's name sits in the middle of its box */
+  padding: 4px var(--axys-space-1);
+  line-height: 16px;
+  text-box: trim-both cap alphabetic;
   border: 1px solid var(--axys-border-strong);
   border-radius: var(--axys-radius-sm);
   font-family: var(--axys-font-mono);

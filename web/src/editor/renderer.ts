@@ -251,6 +251,9 @@ export class EditorRenderer {
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, viewport.width, viewport.height);
     drawGrid(ctx, state, viewport, theme);
+    // The ruler's lines run down through the plot under everything in it; drawn over it, they
+    // notched every outline they crossed, and the notches slid along it as the view moved.
+    drawRuler(ctx, state, viewport, theme, 'plot');
     this.#drawOthers(ctx, state, viewport, theme);
     // What the edit mode leaves alone is drawn faint, so it reads as out of reach: the blobs and
     // their audio in Pitch mode, the pitch lines in Blob mode.

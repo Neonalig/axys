@@ -955,6 +955,14 @@ new, which is not what copying a blob means once blobs are the parts sources are
 In Pitch mode Delete resets the selected span to the detected pitch and removes the curves drawn
 over it. It is Cut with nothing copied and the Cut Fill setting ignored.
 
+### Thin lines stay on the device grid and under what they cross
+
+Every outline, fill edge and waveform column is drawn from whole device pixels, and the ruler's
+gridlines are drawn under everything in the plot rather than over it. A line over an outline
+notched it, and the notches slid along the outline as a following view moved, which read as the
+outline shimmering. Text in a small box is centred on its capital height: canvas labels through
+`labelBaseline`, and tooltips and keys through `text-box: trim-both cap alphabetic`.
+
 ### Every toolbar button has a menu
 
 A right-click on any toolbar button opens a menu under it. A button whose click already opens a

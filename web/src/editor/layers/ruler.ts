@@ -44,22 +44,30 @@ export function formatBarBeat(timeline: TimelineMap, seconds: number): string {
 }
 
 /**
- * Draws the timeline ruler and its vertical gridlines.
+ * Draws the timeline ruler, or the vertical gridlines it carries down through the plot.
  *
  * @remarks Reads bars and beats through the project tempo and meter maps, so a tempo or meter
  * change moves the lines rather than only the numbers. Falls back to clock time whenever the
- * project has no edit state to read a timeline from.
+ * project has no edit state to read a timeline from. `part` is `plot` for the gridlines, drawn
+ * under everything in the plot, and `band` for the ruler itself, drawn over it.
  */
 export function drawRuler(
   ctx: CanvasRenderingContext2D,
   state: AppState,
   viewport: Viewport,
   theme: Theme,
+  part: 'plot' | 'band' = 'band',
 ): void {
   const timeline = state.edits?.timeline ?? null;
   const musical = state.view.timeDisplay === 'barsBeats' && timeline !== null;
 
   ctx.save();
+  // One drawing for both parts, each clipped to its own area.
+  ctx.beginPath();
+  // The band keeps the rule along its foot, which sits a pixel into the plot.
+  if (part === 'band') ctx.rect(0, 0, viewport.width, viewport.plotTop + 1);
+  else ctx.rect(0, viewport.plotTop, viewport.width, viewport.height - viewport.plotTop);
+  ctx.clip();
   ctx.font = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
   ctx.textBaseline = 'middle';
   if (musical && timeline !== null) {
