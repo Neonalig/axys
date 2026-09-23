@@ -134,6 +134,48 @@
   border-color: currentcolor;
 }
 
+/* Secondary text after a label, such as when a recent project was saved */
+
+.axys-menu-detail {
+  color: var(--axys-text-muted);
+  font-size: var(--axys-size-sm);
+}
+
+.axys-menu-item:hover:not(:disabled) .axys-menu-detail,
+.axys-menu-item:focus-visible .axys-menu-detail {
+  color: inherit;
+}
+
+/* An item with a remove button at the end of its row */
+
+.axys-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.axys-menu-row > .axys-menu-item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.axys-menu-remove {
+  flex: none;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--axys-radius-sm);
+  background: transparent;
+  color: var(--axys-text-muted);
+  --axys-icon: 14px;
+}
+
+.axys-menu-remove:hover {
+  color: var(--axys-text);
+}
+
 .axys-menu-separator {
   height: 1px;
   margin: 4px 6px;

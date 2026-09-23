@@ -12,7 +12,7 @@
  * only the levels of the references it includes.
  */
 
-import { MAX_GAIN_DB, MIN_GAIN_DB, sourceTitle } from '../core/types.js';
+import { displayTitle, MAX_GAIN_DB, MIN_GAIN_DB, sourceTitle } from '../core/types.js';
 import type {
   ClipId,
   EditOp,
@@ -34,7 +34,7 @@ import {
 } from '../audio/mixer.js';
 import type { VocalStrip } from '../audio/mixer.js';
 import type { MeterReport } from '../audio/engine.js';
-import { rangeInput, swapGlyph } from './controls/index.js';
+import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { setTooltip } from './tooltip.js';
 import type { AppState } from '../app/store.js';
@@ -88,6 +88,12 @@ const PAN_DETENT = 0.06;
  * seen rather than lost between two reports.
  */
 const METER_FALL = 1.5;
+
+/** How fast a source name too long for its header scrolls, in pixels per second. */
+const MARQUEE_SPEED = 30;
+
+/** Longest a clip or reference name may be, matching the limit the core enforces. */
+const MAX_SOURCE_NAME = 120;
 
 /** Where a level in decibels sits along a fader, from 0 at the floor to 1 at the top. */
 function travel(decibels: number): number {
@@ -166,9 +172,9 @@ function lineup(edits: EditState | null): string {
   if (edits === null) return '';
   const clips = [...edits.clips]
     .sort((a, b) => a.position - b.position)
-    .map((clip) => `c${String(clip.id)}:${clip.source.name}`);
+    .map((clip) => `c${String(clip.id)}:${displayTitle(clip)}`);
   const references = edits.references.map(
-    (reference) => `r${String(reference.id)}:${reference.source.name}`,
+    (reference) => `r${String(reference.id)}:${displayTitle(reference)}`,
   );
   return [...clips, ...references].join('|');
 }
@@ -290,15 +296,18 @@ export class MixerPanel {
     const outputs = group('is-outputs');
     const clips = edits === null ? [] : [...edits.clips].sort((a, b) => a.position - b.position);
     for (const clip of clips) {
-      const title = sourceTitle(clip.source.name);
+      const title = displayTitle(clip);
       const track = document.createElement('div');
       track.className = 'axys-mixer-track';
       track.setAttribute('role', 'group');
       track.setAttribute('aria-label', `${title} Track`);
       const head = document.createElement('div');
       head.className = 'axys-mixer-track-name';
-      head.textContent = title;
-      setTooltip(head, clip.source.name);
+      this.#bindSourceName(track, head, title, clip.source.name, (name) => ({
+        type: 'renameClip',
+        clip: clip.id,
+        name,
+      }));
       const pair = document.createElement('div');
       pair.className = 'axys-mixer-track-strips';
       for (const which of ['processed', 'original'] as const) {
@@ -314,10 +323,22 @@ export class MixerPanel {
       sources.append(track);
     }
     for (const reference of edits?.references ?? []) {
-      const title = sourceTitle(reference.source.name);
-      references.append(
-        this.#buildStrip({ kind: 'reference', reference: reference.id }, title, title, true),
+      const title = displayTitle(reference);
+      const strip = this.#buildStrip(
+        { kind: 'reference', reference: reference.id },
+        title,
+        title,
+        true,
       );
+      const head = strip.querySelector<HTMLElement>('.axys-mixer-name');
+      if (head !== null) {
+        this.#bindSourceName(strip, head, title, reference.source.name, (name) => ({
+          type: 'renameReference',
+          reference: reference.id,
+          name,
+        }));
+      }
+      references.append(strip);
     }
     outputs.append(
       this.#buildStrip({ kind: 'click' }, CLICK_NAME, CLICK_NAME, true),
@@ -422,6 +443,68 @@ export class MixerPanel {
       this.#commit(key, { pan: 0 });
     });
     return strip;
+  }
+
+  /**
+   * Heads a source's track or strip with its name, scrolled into view while the pointer is over
+   * the track when it does not fit, and renamed by a double-click.
+   *
+   * @remarks `file` is the source's file name. A name typed back to the file's own, or cleared,
+   * goes back to following the file.
+   */
+  #bindSourceName(
+    container: HTMLElement,
+    head: HTMLElement,
+    title: string,
+    file: string,
+    rename: (name: string | null) => EditOp,
+  ): void {
+    const text = document.createElement('span');
+    text.className = 'axys-marquee';
+    text.textContent = title;
+    head.replaceChildren(text);
+    setTooltip(head, `${file}\nDouble-click to rename`);
+
+    container.addEventListener('pointerenter', () => {
+      const overflow = head.scrollWidth - head.clientWidth;
+      head.classList.toggle('is-marquee', overflow > 0);
+      head.style.setProperty('--axys-marquee-shift', `${String(-Math.max(0, overflow))}px`);
+      head.style.setProperty('--axys-marquee-time', `${String(1 + overflow / MARQUEE_SPEED)}s`);
+    });
+    container.addEventListener('pointerleave', () => {
+      head.classList.remove('is-marquee');
+    });
+
+    head.addEventListener('dblclick', (event: MouseEvent) => {
+      event.preventDefault();
+      if (head.querySelector('input') !== null) return;
+      const input = textInput(MAX_SOURCE_NAME);
+      input.className = 'axys-mixer-rename';
+      input.value = title;
+      input.setAttribute('aria-label', `Rename ${title}`);
+      head.classList.remove('is-marquee');
+      head.replaceChildren(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = (keep: boolean): void => {
+        if (done) return;
+        done = true;
+        const typed = input.value.trim();
+        head.replaceChildren(text);
+        if (!keep || typed === title) return;
+        this.#hooks.applyEdit(rename(typed === '' || typed === sourceTitle(file) ? null : typed));
+      };
+      input.addEventListener('keydown', (key: KeyboardEvent) => {
+        // The editor's own shortcuts are not for a name being typed.
+        key.stopPropagation();
+        if (key.key === 'Enter') finish(true);
+        else if (key.key === 'Escape') finish(false);
+      });
+      input.addEventListener('blur', () => {
+        finish(true);
+      });
+    });
   }
 
   /**

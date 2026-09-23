@@ -32,6 +32,15 @@ export interface MenuItem {
   enabled?: boolean;
   /** Shows a mark against the label, for a setting the item toggles. */
   checked?: boolean;
+  /** Secondary text drawn muted after the label, such as when a recent project was saved. */
+  detail?: string;
+  /**
+   * Takes the item out of the list it comes from, from a button at the end of its row.
+   *
+   * @remarks The menu stays open and the row is removed from it. Delete on the focused item does
+   * the same.
+   */
+  remove?: { label: string; run(): void };
   run(): void;
 }
 
@@ -58,6 +67,7 @@ export type MenuEntry = MenuItem | MenuSeparator | MenuCustom;
 import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
 import { animateOut } from './motion.js';
+import { setTooltip } from './tooltip.js';
 
 /** Distance in pixels a menu is kept from the viewport edge. */
 const MARGIN = 8;
@@ -94,6 +104,8 @@ export function showContextMenu(
   element.tabIndex = -1;
 
   const buttons: HTMLButtonElement[] = [];
+  /** How each removable item takes itself out, for the Delete key. */
+  const removals = new Map<HTMLButtonElement, () => void>();
   for (const entry of entries) {
     if ('render' in entry) {
       element.append(
@@ -126,6 +138,13 @@ export function showContextMenu(
     label.textContent = entry.checked === true ? `${entry.label} ✓` : entry.label;
     button.append(mark, label);
 
+    if (entry.detail !== undefined) {
+      const detail = document.createElement('span');
+      detail.className = 'axys-menu-detail';
+      detail.textContent = entry.detail;
+      button.append(detail);
+    }
+
     if (entry.key !== undefined) {
       const key = document.createElement('kbd');
       key.className = 'axys-menu-key';
@@ -137,8 +156,33 @@ export function showContextMenu(
       close();
       entry.run();
     });
-    element.append(button);
     buttons.push(button);
+    const remove = entry.remove;
+    if (remove === undefined) {
+      element.append(button);
+      continue;
+    }
+    const row = document.createElement('div');
+    row.className = 'axys-menu-row';
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'axys-menu-remove';
+    removeButton.tabIndex = -1;
+    removeButton.innerHTML = ICONS.close;
+    removeButton.setAttribute('aria-label', `${remove.label} ${entry.label}`);
+    setTooltip(removeButton, remove.label);
+    const take = (): void => {
+      const index = buttons.indexOf(button);
+      if (index >= 0) buttons.splice(index, 1);
+      const focused = document.activeElement === button;
+      row.remove();
+      remove.run();
+      if (focused) (buttons[Math.min(index, buttons.length - 1)] ?? element).focus();
+    };
+    removeButton.addEventListener('click', take);
+    removals.set(button, take);
+    row.append(button, removeButton);
+    element.append(row);
   }
 
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -150,6 +194,14 @@ export function showContextMenu(
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       move(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (event.key === 'Delete') {
+      const take = removals.get(document.activeElement as HTMLButtonElement);
+      if (take !== undefined) {
+        event.preventDefault();
+        take();
+      }
       return;
     }
     if (event.ctrlKey || event.metaKey || event.altKey) {

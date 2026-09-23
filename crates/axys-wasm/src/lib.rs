@@ -780,7 +780,8 @@ impl Session {
     /// Imports another vocal onto the lane as one undoable edit, returning the new clip's id.
     ///
     /// `samples` must be mono at the project rate. `position` is project seconds; a position
-    /// that would overlap a clip lands on the nearest free one.
+    /// that would overlap a clip lands on the nearest free one, or with `ripple` stays where it
+    /// is and moves the clips after it later.
     #[wasm_bindgen(js_name = addClip)]
     #[allow(clippy::too_many_arguments)]
     pub fn add_clip(
@@ -791,6 +792,7 @@ impl Session {
         blobs_json: &str,
         params_json: &str,
         position: f64,
+        ripple: bool,
     ) -> Result<u32, JsValue> {
         let params = AnalysisParams::from_json(params_json)?;
         let track: PitchTrack = parse(track_json)?;
@@ -816,6 +818,7 @@ impl Session {
         });
         let op = EditOp::AddClip {
             clip: Clip::new(id, source, position, analysed),
+            ripple,
         };
         if let Err(error) = self.apply_op(op) {
             self.clips.retain(|r| r.id != id);
@@ -842,6 +845,7 @@ impl Session {
             id,
             source,
             position,
+            name: None,
         };
         self.apply_op(EditOp::AddReference {
             reference: reference.clone(),
@@ -1799,6 +1803,7 @@ mod analysis_handoff_tests {
                 &analysis.blobs_json().expect("blobs"),
                 "",
                 position,
+                false,
             )
             .expect("second clip");
         (session, clip)

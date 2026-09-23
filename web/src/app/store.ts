@@ -12,6 +12,7 @@ import type {
   TimingConflict,
   ViewState,
 } from '../core/types.js';
+import { barSecondsAt } from '../core/timeline.js';
 
 /** The whole application state. Replaced wholesale on each change, never mutated in place. */
 export interface AppState {
@@ -189,7 +190,7 @@ export function initialState(): AppState {
     },
     analysis: { running: false, progress: 0, stage: '' },
     follow: true,
-    followMode: 'page',
+    followMode: 'centre',
     toolbarLabels: false,
     inspectorCollapsed: false,
     mixerCollapsed: true,
@@ -216,6 +217,24 @@ export function projectEnd(state: AppState): number {
     end = Math.max(end, blob.start + blob.timeOffset + (blob.end - blob.start) * blob.timeScale);
   }
   return end;
+}
+
+/**
+ * Seconds playback runs past {@link projectEnd}: one bar at the tempo and meter there.
+ *
+ * @remarks Zero with nothing open.
+ */
+export function endLeniency(state: AppState): number {
+  const timeline = state.edits?.timeline;
+  if (timeline === undefined) return 0;
+  const bar = barSecondsAt(timeline, projectEnd(state));
+  return Number.isFinite(bar) && bar > 0 ? bar : 0;
+}
+
+/** Project seconds at which playback stops, or zero with nothing open. */
+export function playbackEnd(state: AppState): number {
+  const end = projectEnd(state);
+  return end > 0 ? end + endLeniency(state) : 0;
 }
 
 /** The sample rate every source in the open project is held at, or `null` with nothing open. */

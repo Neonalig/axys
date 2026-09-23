@@ -76,6 +76,9 @@ pub struct Clip {
     /// Ordered and never overlapping.
     #[serde(default)]
     pub silenced: Vec<Span>,
+    /// What the clip is called on the desk and over its blobs, in place of its file's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Clip {
@@ -87,6 +90,7 @@ impl Clip {
             position,
             blobs,
             silenced: Vec::new(),
+            name: None,
         }
     }
 
@@ -235,6 +239,38 @@ pub fn free_position(others: &[(f64, f64)], duration: f64, wanted: f64) -> f64 {
         .unwrap_or_else(|| others.iter().map(|(_, end)| *end).fold(0.0, f64::max))
 }
 
+/// Where a span of `duration` asked for at `wanted` is inserted, and how far the clips after it
+/// move to make room, as `(position, shift)`.
+///
+/// `others` are the `(start, end)` project spans of the clips on the lane. A position inside a
+/// clip moves to that clip's nearer edge. Every clip starting at or after the returned position
+/// moves later by `shift`, so the gaps between them are kept; `shift` is `0.0` when the span
+/// already fits. The position is never negative.
+pub fn ripple_insert(others: &[(f64, f64)], duration: f64, wanted: f64) -> (f64, f64) {
+    let mut at = if wanted.is_finite() {
+        wanted.max(0.0)
+    } else {
+        0.0
+    };
+    if let Some((start, end)) = others
+        .iter()
+        .find(|(start, end)| at > *start + 1e-9 && at < *end - 1e-9)
+    {
+        at = if at - start <= end - at { *start } else { *end };
+    }
+    let next = others
+        .iter()
+        .map(|(start, _)| *start)
+        .filter(|start| *start >= at - 1e-9)
+        .fold(f64::INFINITY, f64::min);
+    let shift = if next.is_finite() {
+        (at + duration.max(0.0) - next).max(0.0)
+    } else {
+        0.0
+    };
+    (at, shift)
+}
+
 /// Audio heard beside the vocal and never edited or warped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -245,6 +281,9 @@ pub struct Reference {
     pub source: SourceInfo,
     /// Project seconds at which the reference starts. Never negative.
     pub position: f64,
+    /// What the reference is called on the desk and on its band, in place of its file's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[cfg(test)]
@@ -285,6 +324,30 @@ mod tests {
         assert_eq!(ids, vec![base, base + 1]);
         assert!(numbered_for(&renumbered, ClipId(2)));
         assert!(!numbered_for(&set, ClipId(2)));
+    }
+
+    #[test]
+    fn a_rippled_clip_pushes_the_clips_after_it_by_its_overlap() {
+        // A 2-second clip at 3.0 before a clip at 4.0 needs one second of room.
+        assert_eq!(
+            ripple_insert(&[(0.0, 2.0), (4.0, 6.0)], 2.0, 3.0),
+            (3.0, 1.0)
+        );
+        assert_eq!(
+            ripple_insert(&[(0.0, 2.0), (8.0, 9.0)], 2.0, 3.0),
+            (3.0, 0.0)
+        );
+        assert_eq!(ripple_insert(&[], 2.0, -1.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_rippled_clip_asked_for_inside_another_lands_on_its_nearer_edge() {
+        // Near the start of 0..4 inserts before it, pushing it; near the end inserts after it.
+        assert_eq!(ripple_insert(&[(0.0, 4.0)], 1.0, 1.0), (0.0, 1.0));
+        assert_eq!(
+            ripple_insert(&[(0.0, 4.0), (5.0, 6.0)], 2.0, 3.0),
+            (4.0, 1.0)
+        );
     }
 
     #[test]

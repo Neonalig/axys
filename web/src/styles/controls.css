@@ -137,9 +137,39 @@ input[type='search'] {
   border-radius: var(--axys-radius);
 }
 
+/* A unit drawn inside a number field's right edge, clear of the digits */
+
+.axys-unit-field {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.axys-unit-field > input {
+  flex: 1;
+  min-width: 0;
+  padding-right: calc(12px + var(--axys-unit-chars) * 1ch);
+}
+
+.axys-unit {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: var(--axys-size-sm);
+  color: var(--axys-text-muted);
+}
+
 input[type='range'] {
   accent-color: var(--axys-accent);
   width: 100%;
+}
+
+/* A slider is dragged along its axis, so it takes that axis's cursor. A vertical one sets its own */
+
+input[type='range']:where(:not(:disabled)) {
+  cursor: ew-resize;
 }
 
 input[type='checkbox'] {

@@ -141,15 +141,24 @@ export interface Hit {
 /** Cursor shape for a tool over a given target. */
 export function cursorFor(tool: ToolId, hit: Hit): string {
   // A boundary is dragged, not resized in place, and `col-resize` is the shape every editor uses
-  // for a divider between two things that share a span.
-  if (hit.kind === 'loopEdge' || hit.kind === 'blobEdge') {
+  // for a divider between two things that share a span. Only the Time tool drags a blob's edges
+  // and only the Pitch tool drags an anchor; under any other tool they are part of the blob.
+  if (hit.kind === 'loopEdge' || (hit.kind === 'blobEdge' && tool === 'time')) {
     return 'col-resize';
   }
   if (hit.kind === 'conflict') {
     return 'help';
   }
-  if (hit.kind === 'anchor' || hit.kind === 'clipTitle' || hit.kind === 'reference') {
+  if (
+    (hit.kind === 'anchor' && tool === 'pitch') ||
+    hit.kind === 'clipTitle' ||
+    hit.kind === 'reference'
+  ) {
     return 'grab';
+  }
+  // The ruler places the playhead and draws a loop whatever tool is armed.
+  if (hit.kind === 'ruler') {
+    return 'default';
   }
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
     return 'default';
@@ -179,9 +188,9 @@ export function describeHit(hit: Hit, state: AppState): string {
     case 'blob':
       return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
-      return 'Move Clip';
+      return 'Move Clip  Ctrl Start  Shift Playhead';
     case 'reference':
-      return 'Move Reference';
+      return 'Move Reference  Ctrl Start  Shift Playhead';
     case 'conflict': {
       const conflict = hit.conflict;
       if (conflict === null) {
@@ -430,6 +439,46 @@ export function freePosition(
     if (best === null || Math.abs(candidate - asked) < Math.abs(best - asked)) best = candidate;
   }
   return best ?? Math.max(0, ...others.map(([, end]) => end));
+}
+
+/**
+ * Where a clip of `duration` asked for at `wanted` is inserted, and how far the clips after it
+ * move later to make room.
+ *
+ * @remarks Mirrors `axys_core::clip::ripple_insert`: a position inside a clip moves to that clip's
+ * nearer edge, and `shift` is zero when the clip already fits.
+ */
+export function rippleInsert(
+  others: readonly (readonly [number, number])[],
+  duration: number,
+  wanted: number,
+): { position: number; shift: number } {
+  const at = insertPoint(others, wanted);
+  let next = Number.POSITIVE_INFINITY;
+  for (const [start] of others) {
+    if (start >= at - 1e-9) next = Math.min(next, start);
+  }
+  const shift = Number.isFinite(next) ? Math.max(0, at + Math.max(0, duration) - next) : 0;
+  return { position: at, shift };
+}
+
+/**
+ * Where a clip asked for at `wanted` is inserted: there, or the nearer edge of a clip it is inside.
+ *
+ * @remarks The position {@link rippleInsert} uses, which does not depend on the clip's length, so
+ * a drop can show it before the file is read.
+ */
+export function insertPoint(
+  others: readonly (readonly [number, number])[],
+  wanted: number,
+): number {
+  const at = Number.isFinite(wanted) ? Math.max(0, wanted) : 0;
+  const inside = others.find(([start, end]) => at > start + 1e-9 && at < end - 1e-9);
+  if (inside === undefined) {
+    return at;
+  }
+  const [start, end] = inside;
+  return at - start <= end - at ? start : end;
 }
 
 /** A clip being imported, shown where it will land until the core has its blobs. */

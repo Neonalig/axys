@@ -30,13 +30,29 @@ export function guidedLabel(text: string, guide: string): HTMLLabelElement {
   label.className = 'axys-label';
   label.append(document.createTextNode(text));
   if (guide !== '') {
-    const mark = document.createElement('span');
-    mark.className = 'axys-info';
-    mark.innerHTML = ICONS.info;
-    label.append(mark);
+    label.append(infoMark());
     setTooltip(label, guide);
   }
   return label;
+}
+
+/**
+ * Gives an element that is not a control an explainer, marked with an info icon after its content.
+ *
+ * @remarks For a readout or a status word whose tooltip would otherwise go unfound. Safe to call
+ * again with a new explainer; the icon is added once. Setting `textContent` afterwards removes it.
+ */
+export function withInfo(element: HTMLElement, guide: string): void {
+  element.classList.add('axys-has-info');
+  if (element.querySelector(':scope > .axys-info') === null) element.append(infoMark());
+  setTooltip(element, guide);
+}
+
+function infoMark(): HTMLSpanElement {
+  const mark = document.createElement('span');
+  mark.className = 'axys-info';
+  mark.innerHTML = ICONS.info;
+  return mark;
 }
 
 /**
@@ -55,7 +71,12 @@ export const DRAG_HINT = 'Drag to set. Shift coarse, Alt fine';
  * modifier. The tooltip is not the only way to find it: the label and the field both take the
  * `ew-resize` cursor, which is what says the row can be dragged at all.
  */
-export function field(labelText: string, control: HTMLElement, guide: string): HTMLElement {
+export function field(
+  labelText: string,
+  control: HTMLElement,
+  guide: string,
+  unit?: string,
+): HTMLElement {
   const row = document.createElement('div');
   row.className = 'axys-field';
   if (control.id === '') {
@@ -66,9 +87,26 @@ export function field(labelText: string, control: HTMLElement, guide: string): H
   const explainer = scrubbable ? `${guide} ${DRAG_HINT}`.trim() : guide;
   const label = guidedLabel(labelText, explainer);
   label.htmlFor = control.id;
-  row.append(label, control);
+  row.append(label, unit === undefined ? control : withUnit(control, unit));
   bindDragAdjust(control, label);
   return row;
+}
+
+/**
+ * Wraps an input so its unit, such as `s` or `Hz`, is drawn inside its right edge.
+ *
+ * @remarks The unit takes no pointer events, so a drag that starts on it still adjusts the field.
+ */
+export function withUnit(control: HTMLElement, unit: string): HTMLElement {
+  const wrapper = document.createElement('span');
+  wrapper.className = 'axys-unit-field';
+  wrapper.style.setProperty('--axys-unit-chars', String(unit.length));
+  const suffix = document.createElement('span');
+  suffix.className = 'axys-unit';
+  suffix.textContent = unit;
+  suffix.setAttribute('aria-hidden', 'true');
+  wrapper.append(control, suffix);
+  return wrapper;
 }
 
 /** Focuses a field and offers its whole value, for a press the drag took over and gave back. */
@@ -123,8 +161,6 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
   if (!(control instanceof HTMLInputElement) || control.type !== 'number') return;
   const step = Number.parseFloat(control.step) || 1;
   const decimals = (control.step.split('.')[1] ?? '').length;
-  const low = control.min === '' ? Number.NEGATIVE_INFINITY : Number.parseFloat(control.min);
-  const high = control.max === '' ? Number.POSITIVE_INFINITY : Number.parseFloat(control.max);
 
   for (const handle of [control, ...handles]) {
     handle.classList.add('is-adjustable');
@@ -138,6 +174,10 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
     let dragged = false;
     let origin = 0;
     let last = 0;
+    /** The value the drag has reached, before it is rounded to the field's step. */
+    let value = 0;
+    /** How far one pixel of travel moves the value, for the range the field has now. */
+    let rate = step;
 
     handle.addEventListener('pointerdown', (event: PointerEvent) => {
       if (event.button !== 0 || control.disabled || control.readOnly) return;
@@ -157,12 +197,16 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
         if (Math.abs(event.clientX - origin) < DRAG_THRESHOLD) return;
         dragging = true;
         startDrag(control);
+        const current = Number.parseFloat(control.value);
+        value = Number.isFinite(current) ? current : 0;
+        rate = dragRate(control, step);
       }
       event.preventDefault();
       const scale = event.shiftKey ? DRAG_COARSE : event.altKey ? DRAG_FINE : 1;
-      const current = Number.parseFloat(control.value);
-      const from = Number.isFinite(current) ? current : 0;
-      const next = Math.min(Math.max(from + travel * step * scale, low), high);
+      const { low, high } = bounds(control);
+      value = Math.min(Math.max(value + travel * rate * scale, low), high);
+      const next = Math.min(Math.max(Math.round(value / step) * step, low), high);
+      if (next.toFixed(decimals) === control.value) return;
       control.value = next.toFixed(decimals);
       control.dispatchEvent(new Event('input', { bubbles: true }));
     });
@@ -197,6 +241,31 @@ export function bindDragAdjust(control: HTMLElement, ...handles: readonly HTMLEl
     });
   }
 }
+
+/** A number field's bounds as they stand now, which a field whose range follows the project can change. */
+function bounds(control: HTMLInputElement): { low: number; high: number } {
+  const low = Number.parseFloat(control.min);
+  const high = Number.parseFloat(control.max);
+  return {
+    low: Number.isFinite(low) ? low : Number.NEGATIVE_INFINITY,
+    high: Number.isFinite(high) ? high : Number.POSITIVE_INFINITY,
+  };
+}
+
+/**
+ * How far one pixel of travel moves a field: one step, or less where the whole range is short.
+ *
+ * @remarks A bounded field crosses its range in no less than {@link DRAG_RANGE_PIXELS}, so a field
+ * of four values is not swept end to end by a twitch.
+ */
+function dragRate(control: HTMLInputElement, step: number): number {
+  const { low, high } = bounds(control);
+  const range = high - low;
+  return Number.isFinite(range) && range > 0 ? Math.min(step, range / DRAG_RANGE_PIXELS) : step;
+}
+
+/** Fewest pixels a drag takes to cross a bounded field's whole range. */
+const DRAG_RANGE_PIXELS = 300;
 
 /** Numeric entry with explicit bounds and step. */
 export function numberInput(options: {

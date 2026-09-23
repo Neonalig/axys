@@ -355,6 +355,7 @@ function drawTarget(
   // following view slides the line past rather than resampling it into a different shape on
   // every frame.
   const step = viewport.secondsPerPixel;
+  ctx.beginPath();
   for (const blob of state.blobs) {
     const start = Math.max(blobOutputStart(blob), viewport.view.visibleStart);
     const end = Math.min(blobOutputEnd(blob), viewport.view.visibleEnd);
@@ -363,7 +364,6 @@ function drawTarget(
     }
     const from = Math.floor(start / step);
     const to = Math.ceil(end / step);
-    ctx.beginPath();
     let open = false;
     for (let column = from; column <= to; column += 1) {
       const outputTime = column * step;
@@ -388,8 +388,8 @@ function drawTarget(
         open = true;
       }
     }
-    ctx.stroke();
   }
+  ctx.stroke();
   ctx.restore();
 }
 

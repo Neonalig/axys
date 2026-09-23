@@ -43,6 +43,53 @@ export function meterAt(timeline: TimelineMap, tick: number): MeterEvent {
   return current;
 }
 
+/** Seconds the first beat lasts, at the tempo and meter in force at tick 0. */
+export function firstBeatSeconds(timeline: TimelineMap): number {
+  const meter = meterAt(timeline, 0);
+  const beatTicks = (ppqOf(timeline) * 4) / Math.max(1, meter.denominator);
+  return tickToSeconds(timeline, beatTicks) - tickToSeconds(timeline, 0);
+}
+
+/** Where the metronome's count starts against project zero. */
+export interface StartPosition {
+  /** Beat of the bar the first beat at or after zero is, from 1. */
+  beat: number;
+  /** Seconds from zero to that beat, less than one beat. */
+  offset: number;
+}
+
+/**
+ * The first beat at or after project zero, as its beat of the bar and when it falls.
+ *
+ * @remarks Read from the timeline origin at the tempo and meter of tick 0, which is where the
+ * count starts.
+ */
+export function startPosition(timeline: TimelineMap): StartPosition {
+  const beat = firstBeatSeconds(timeline);
+  const beats = Math.max(1, meterAt(timeline, 0).numerator);
+  if (!(beat > 0)) return { beat: 1, offset: 0 };
+  const origin = timeline.originSeconds;
+  const first = Math.ceil(-origin / beat - 1e-6);
+  return {
+    beat: (((first % beats) + beats) % beats) + 1,
+    offset: Math.max(0, origin + first * beat),
+  };
+}
+
+/** The timeline origin that puts beat `beat` of a bar `offset` seconds after project zero. */
+export function originFor(timeline: TimelineMap, beat: number, offset: number): number {
+  return offset - (beat - 1) * firstBeatSeconds(timeline);
+}
+
+/** Seconds one bar lasts from a source time, at the tempo and meter in force there. */
+export function barSecondsAt(timeline: TimelineMap, seconds: number): number {
+  const tick = secondsToTick(timeline, seconds);
+  const meter = meterAt(timeline, tick);
+  const barTicks =
+    ((ppqOf(timeline) * 4) / Math.max(1, meter.denominator)) * Math.max(1, meter.numerator);
+  return tickToSeconds(timeline, tick + barTicks) - seconds;
+}
+
 /** Tempo in beats per minute at a tick. */
 export function bpmAt(timeline: TimelineMap, tick: number): number {
   return 60_000_000 / Math.max(1, tempoAt(timeline, tick).microsPerQuarter);

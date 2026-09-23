@@ -70,7 +70,19 @@ export function drawChip(
   ctx.strokeStyle = theme.border;
   ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, Math.round(width), CHIP_HEIGHT);
   ctx.fillStyle = theme.text;
-  ctx.fillText(text, left + CHIP_PAD, top + CHIP_HEIGHT / 2);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(text, left + CHIP_PAD, top + CHIP_HEIGHT / 2 + figureHalfHeight(ctx));
   ctx.restore();
   return { width, height: CHIP_HEIGHT };
+}
+
+/**
+ * Half the ink height of a figure in {@link READOUT_FONT}, in pixels.
+ *
+ * @remarks A `middle` baseline centres the em box rather than the ink, which sets figures high in
+ * a chip. Measured on a figure rather than the text, so the baseline does not move with the text.
+ */
+function figureHalfHeight(ctx: CanvasRenderingContext2D): number {
+  const metrics = ctx.measureText('0');
+  return (metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) / 2;
 }

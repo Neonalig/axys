@@ -120,6 +120,55 @@
   white-space: nowrap;
 }
 
+/* A source name too long for its header scrolls end to end while the pointer is over its track.
+   The header takes the width its strips give it, so a long name does not widen the track */
+
+.axys-mixer-track-name,
+.axys-mixer-strip.is-standalone > .axys-mixer-name {
+  contain: inline-size;
+  width: 100%;
+}
+
+.axys-marquee {
+  display: inline;
+}
+
+.is-marquee {
+  text-overflow: clip;
+  text-align: left;
+}
+
+.is-marquee > .axys-marquee {
+  display: inline-block;
+  animation: axys-marquee var(--axys-marquee-time, 4s) linear infinite alternate;
+}
+
+@keyframes axys-marquee {
+  0%,
+  15% {
+    transform: translateX(0);
+  }
+
+  85%,
+  100% {
+    transform: translateX(var(--axys-marquee-shift, 0));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-marquee > .axys-marquee {
+    animation: none;
+  }
+}
+
+.axys-mixer-rename {
+  width: 100%;
+  height: 20px;
+  padding: 0 4px;
+  font-size: var(--axys-size-sm);
+  text-align: center;
+}
+
 .axys-mixer-pan {
   width: 100%;
   min-width: 0;
@@ -158,6 +207,10 @@
   appearance: none;
   background: transparent;
   cursor: ns-resize;
+}
+
+.axys-mixer .axys-mixer-fader:disabled {
+  cursor: default;
 }
 
 .axys-mixer-fader::-webkit-slider-runnable-track {

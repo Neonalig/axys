@@ -11,7 +11,7 @@ import type { TimeRange } from '../app/selection.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
-import { clipOf, MIN_BLOB_SECONDS, sourceTitle } from '../core/types.js';
+import { clipOf, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -47,6 +47,7 @@ import {
   FINE_FACTOR,
   freePosition,
   gestureAnchors,
+  insertPoint,
   modifiersOf,
   moveBezierHandle,
   sampleBezier,
@@ -691,6 +692,7 @@ export class EditorController {
       }
     }
     this.#renderer?.setHover({ x: point.x, y: point.y, text: describeHit(hit, state) });
+    this.#renderer?.setHoverBlob(hit.blob);
   }
 
   #onPointerLeave = (): void => {
@@ -698,6 +700,7 @@ export class EditorController {
     if (this.#gesture === null) {
       this.#hover = null;
       this.#renderer?.setHover(null);
+      this.#renderer?.setHoverBlob(null);
     }
   };
 
@@ -943,9 +946,10 @@ export class EditorController {
    * Shows where audio dragged in from outside would land, and returns that time.
    *
    * @remarks Client coordinates, as a drag event carries them. `null` when the pointer is not over
-   * the canvas, which also takes the marker away.
+   * the canvas, which also takes the marker away. Ctrl puts it at the start and Shift at the
+   * playhead, as they do for a clip being moved.
    */
-  previewDrop(clientX: number, clientY: number): number | null {
+  previewDrop(clientX: number, clientY: number, modifiers = NO_MODIFIERS): number | null {
     const rect = this.#canvas.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
@@ -953,11 +957,22 @@ export class EditorController {
       this.endDrop();
       return null;
     }
-    const time = Math.max(0, this.#snapTime(this.viewport.xToTime(x), NO_MODIFIERS));
+    const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false });
+    // A vocal cannot land inside another, so the marker goes where it will be inserted. A
+    // reference overlaps freely and lands where it was let go, which the label says when the two
+    // differ.
+    const spans = (this.#store.state.edits?.clips ?? []).map((clip): [number, number] => [
+      clip.position,
+      clip.position + clip.source.duration,
+    ]);
+    const vocal = insertPoint(spans, time);
     this.#renderer?.setPreview({
       kind: 'drop',
-      time,
-      label: `Import At ${formatClock(time, 0.001)}`,
+      time: vocal,
+      label:
+        vocal === time
+          ? `Import At ${formatClock(time, 0.001)}`
+          : `Vocal At ${formatClock(vocal, 0.001)}  Reference At ${formatClock(time, 0.001)}`,
     });
     return time;
   }
@@ -1130,12 +1145,12 @@ export class EditorController {
         break;
       }
       case 'clip': {
-        const wanted = this.#snapTime(time - gesture.grab, modifiers);
+        const wanted = this.#placeTime(time - gesture.grab, modifiers);
         gesture.position = freePosition(gesture.others, gesture.duration, wanted);
         break;
       }
       case 'reference':
-        gesture.position = Math.max(0, this.#snapTime(time - gesture.grab, modifiers));
+        gesture.position = this.#placeTime(time - gesture.grab, modifiers);
         break;
       case 'rubberBand':
         break;
@@ -1429,9 +1444,9 @@ export class EditorController {
       end = Math.max(end, blobOutputEnd(blob));
     }
     this.#selectSpan(start, end);
-    const name = state.edits?.clips.find((entry) => entry.id === clip)?.source.name;
-    if (name !== undefined) {
-      this.#announce(`${sourceTitle(name)} selected`);
+    const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+    if (entry !== undefined) {
+      this.#announce(`${displayTitle(entry)} selected`);
     }
   }
 
@@ -1556,6 +1571,16 @@ export class EditorController {
     }
     const moved = blobOutputStart(first) + raw;
     return snapTime(moved, this.#snapContext()) - blobOutputStart(first);
+  }
+
+  /**
+   * Where a clip, a reference or a dropped file is put: the start with Ctrl, the playhead with
+   * Shift, and otherwise `seconds` snapped. Never negative.
+   */
+  #placeTime(seconds: number, modifiers: Modifiers): number {
+    if (modifiers.snap) return 0;
+    if (modifiers.constrain) return this.#playhead();
+    return Math.max(0, this.#snapTime(seconds, modifiers));
   }
 
   #snapTime(seconds: number, modifiers: Modifiers): number {

@@ -18,6 +18,8 @@ export {
   numberInput,
   rangeInput,
   textInput,
+  withInfo,
+  withUnit,
 } from './field.js';
 export { selectInput } from './select.js';
 export type { SelectElement, SelectOption } from './select.js';

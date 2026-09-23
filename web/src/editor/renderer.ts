@@ -18,7 +18,7 @@ import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
-import { clipPeaks, drawWaveform } from './layers/waveform.js';
+import { clipPeaks, drawWaveform, fillEnvelope } from './layers/waveform.js';
 import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
 import { clipOf } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
@@ -58,11 +58,24 @@ export class EditorRenderer {
   #frame = 0;
   #lastFrameMs = 0;
   #disposed = false;
+  #base: HTMLCanvasElement | null = null;
+  #baseKey: BaseKey | null = null;
+  /** The blob under the pointer, whose title scrolls when it does not fit, and since when. */
+  #hoverBlob: { id: BlobId; since: number } | null = null;
+  /** Whether the last frame scrolled a title, which needs the frames after it too. */
+  #scrolling = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.#canvas = canvas;
     this.#ctx = canvas.getContext('2d', { alpha: false });
+    // Text drawn before a face arrived is set in the fallback, so the layers are drawn again.
+    document.fonts?.addEventListener('loadingdone', this.#onFonts);
   }
+
+  #onFonts = (): void => {
+    this.#baseKey = null;
+    this.invalidate();
+  };
 
   /** Milliseconds the most recent frame took to draw. */
   get lastFrameMs(): number {
@@ -115,6 +128,20 @@ export class EditorRenderer {
     }
   }
 
+  /**
+   * Sets the blob under the pointer, whose title scrolls when it is too long for its tab.
+   *
+   * @remarks Held still under reduced motion, where the title stays cut short.
+   */
+  setHoverBlob(id: BlobId | null): void {
+    const wanted = id === null || prefersReducedMotion() ? null : id;
+    if ((this.#hoverBlob?.id ?? null) === wanted) {
+      return;
+    }
+    this.#hoverBlob = wanted === null ? null : { id: wanted, since: performance.now() };
+    this.invalidate();
+  }
+
   /** Marks the canvas as needing a redraw on the next animation frame. */
   invalidate(): void {
     if (this.#disposed || this.#dirty) {
@@ -136,6 +163,9 @@ export class EditorRenderer {
       this.#frame = 0;
     }
     this.#dirty = false;
+    document.fonts?.removeEventListener('loadingdone', this.#onFonts);
+    this.#base = null;
+    this.#baseKey = null;
     this.#state = null;
     this.#viewport = null;
     this.#preview = null;
@@ -155,18 +185,9 @@ export class EditorRenderer {
     this.#resize(viewport);
 
     ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(this.#baseLayers(state, viewport, theme), 0, 0);
     ctx.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
-    ctx.fillStyle = theme.bg;
-    ctx.fillRect(0, 0, viewport.width, viewport.height);
-
-    drawGrid(ctx, state, viewport, theme);
-    drawWaveform(ctx, state, viewport, theme);
-    drawMidi(ctx, state, viewport, theme);
-    drawReferences(ctx, state, viewport, theme);
-    drawBlobs(ctx, state, viewport, theme);
-    drawPitch(ctx, state, viewport, theme);
-    drawPitchLabels(ctx, state, viewport, theme);
-    drawRuler(ctx, state, viewport, theme);
     drawOverlay(ctx, state, viewport, theme);
     this.#drawHoverGuides(ctx, state, viewport, theme);
     const pending = this.#pending;
@@ -178,6 +199,52 @@ export class EditorRenderer {
     ctx.restore();
 
     this.#lastFrameMs = performance.now() - started;
+  }
+
+  /**
+   * Everything under the overlay, drawn again only when something it shows has changed.
+   *
+   * @remarks The playhead, the hover readout and a gesture preview change on every frame they
+   * are up, while the blobs, the pitch and the waveforms under them do not. Those are kept on a
+   * canvas of their own and copied, so a playing or hovered editor costs one copy per frame
+   * however much is on screen.
+   */
+  #baseLayers(state: AppState, viewport: Viewport, theme: Theme): HTMLCanvasElement {
+    const base = (this.#base ??= document.createElement('canvas'));
+    const hover = this.#hoverBlob;
+    const marquee =
+      hover === null ? null : { blob: hover.id, elapsed: performance.now() - hover.since };
+    const key = baseKey(state, viewport, theme, this.#ratio, [
+      hover?.id ?? -1,
+      this.#scrolling && marquee !== null ? marquee.elapsed : 0,
+    ]);
+    if (this.#baseKey !== null && sameBaseKey(this.#baseKey, key)) {
+      return base;
+    }
+    this.#baseKey = key;
+    if (base.width !== this.#canvas.width || base.height !== this.#canvas.height) {
+      base.width = this.#canvas.width;
+      base.height = this.#canvas.height;
+    }
+    const ctx = base.getContext('2d', { alpha: false });
+    if (ctx === null) {
+      return base;
+    }
+    ctx.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
+    ctx.fillStyle = theme.bg;
+    ctx.fillRect(0, 0, viewport.width, viewport.height);
+    drawGrid(ctx, state, viewport, theme);
+    drawWaveform(ctx, state, viewport, theme);
+    drawMidi(ctx, state, viewport, theme);
+    drawReferences(ctx, state, viewport, theme);
+    this.#scrolling = drawBlobs(ctx, state, viewport, theme, marquee);
+    if (this.#scrolling) {
+      this.invalidate();
+    }
+    drawPitch(ctx, state, viewport, theme);
+    drawPitchLabels(ctx, state, viewport, theme);
+    drawRuler(ctx, state, viewport, theme);
+    return base;
   }
 
   #resolveTheme(): Theme {
@@ -321,6 +388,55 @@ export class EditorRenderer {
     }
     drawTooltip(ctx, viewport, theme, hover.text, hover.x + 14, hover.y + 16);
   }
+}
+
+/** What the layers under the overlay are drawn from, compared by identity. */
+interface BaseKey {
+  refs: readonly unknown[];
+  numbers: readonly (number | string)[];
+}
+
+function baseKey(
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  ratio: number,
+  extra: readonly number[],
+): BaseKey {
+  const view = viewport.view;
+  return {
+    refs: [
+      theme,
+      state.blobs,
+      state.track,
+      state.edits,
+      state.plan,
+      state.midi,
+      state.conflicts,
+      state.selection.blobs,
+      state.selection.anchors,
+    ],
+    numbers: [
+      state.tool,
+      viewport.width,
+      viewport.height,
+      ratio,
+      view.visibleStart,
+      view.visibleEnd,
+      view.lowMidi,
+      view.highMidi,
+      view.timeDisplay,
+      view.snapDivision,
+      ...extra,
+    ],
+  };
+}
+
+function sameBaseKey(a: BaseKey, b: BaseKey): boolean {
+  return (
+    a.refs.every((value, index) => value === b.refs[index]) &&
+    a.numbers.every((value, index) => value === b.numbers[index])
+  );
 }
 
 function sameViewport(a: Viewport | null, b: Viewport): boolean {
@@ -751,16 +867,9 @@ function drawWaveBand(
     const from = viewport.xToTime(left) - position;
     const to = viewport.xToTime(right) - position;
     const span = envelope.sample(from, to, columns);
-    const centre = top + bandHeight / 2;
-    const half = bandHeight / 2 - 2;
     ctx.globalAlpha = 0.8;
     ctx.fillStyle = theme.waveform;
-    for (let column = 0; column < span.count; column += 1) {
-      const lowest = span.min[column] ?? 0;
-      const highest = span.max[column] ?? 0;
-      const columnTop = centre - highest * half;
-      ctx.fillRect(left + column, columnTop, 1, Math.max(1, centre - lowest * half - columnTop));
-    }
+    fillEnvelope(ctx, span, left, top + bandHeight / 2, bandHeight / 2 - 2);
   }
   ctx.restore();
 }

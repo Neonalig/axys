@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { playbackEnd } from '../../app/store.js';
 import type { AppState } from '../../app/store.js';
 import type { TimelineMap } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
@@ -66,6 +67,8 @@ export function drawRuler(
   } else {
     drawClock(ctx, viewport, theme);
   }
+  const end = playbackEnd(state);
+  if (end > 0) drawLandmark(ctx, viewport, theme, end);
   ctx.restore();
 }
 
@@ -77,11 +80,21 @@ export function drawRuler(
  * Drawn after the rest of the grid, so it is not written over by it.
  */
 function drawOrigin(ctx: CanvasRenderingContext2D, viewport: Viewport, theme: Theme): void {
-  if (viewport.view.visibleStart > 0 || viewport.view.visibleEnd < 0) {
+  drawLandmark(ctx, viewport, theme, 0);
+}
+
+/** Draws a timeline landmark at `seconds`: the start, or where playback stops. */
+function drawLandmark(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  seconds: number,
+): void {
+  if (viewport.view.visibleStart > seconds || viewport.view.visibleEnd < seconds) {
     return;
   }
   const width = viewport.crispWidth(ORIGIN_WIDTH);
-  const x = viewport.crisp(viewport.timeToX(0), width);
+  const x = viewport.crisp(viewport.timeToX(seconds), width);
   ctx.save();
   ctx.lineWidth = width;
   ctx.strokeStyle = theme.gridLineOctave;

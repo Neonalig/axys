@@ -2,11 +2,12 @@
 
 import type { AppState } from '../../app/store.js';
 import type { Reference } from '../../core/types.js';
-import { sourceTitle } from '../../core/types.js';
+import { displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
+import { fillEnvelope } from './waveform.js';
 
 /** Height in pixels of one reference's band along the foot of the plot. */
 export const REFERENCE_BAND = 22;
@@ -93,16 +94,9 @@ export function drawReferenceBand(
     const from = viewport.xToTime(left) - position;
     const to = viewport.xToTime(right) - position;
     const span = envelope.sample(from, to, columns);
-    const centre = rect.y + rect.height / 2;
-    const half = rect.height / 2 - 1;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = theme.waveform;
-    for (let column = 0; column < span.count; column += 1) {
-      const low = span.min[column] ?? 0;
-      const high = span.max[column] ?? 0;
-      const top = centre - high * half;
-      ctx.fillRect(left + column, top, 1, Math.max(1, centre - low * half - top));
-    }
+    fillEnvelope(ctx, span, left, rect.y + rect.height / 2, rect.height / 2 - 1);
   }
 
   ctx.globalAlpha = alpha;
@@ -119,7 +113,7 @@ export function drawReferenceBand(
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.text;
   ctx.fillText(
-    sourceTitle(reference.source.name),
+    displayTitle(reference),
     Math.max(rect.x, PITCH_LABEL_GUTTER) + 4,
     rect.y + rect.height / 2,
   );
