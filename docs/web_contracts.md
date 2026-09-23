@@ -130,9 +130,10 @@ export function probeCapabilities(): Promise<Capability[]>;
 export function isSupported(caps: Capability[]): boolean;
 ```
 
-Probe: WebAssembly, `AudioWorklet`, `AudioContext`, IndexedDB, OPFS, OPFS sync access handles,
-secure context, `WebGPU`, `SharedArrayBuffer`, cross-origin isolation, WASM threads,
-`WebCodecs`, and `decodeAudioData` support for wav/flac/mp3/aac/ogg. Optional capabilities that
+Probe: WebAssembly, `AudioWorklet`, `AudioContext`, IndexedDB, OPFS, secure context, File System
+Access pickers, workers and logical cores for parallel analysis, cross-origin isolation, `WebGPU`,
+`WebCodecs`, and `decodeAudioData` support for wav/flac/mp3/aac/ogg. Each result carries the
+reason it was found available or not. Optional capabilities that
 are missing must never block startup.
 
 ## State: `app/store.ts`

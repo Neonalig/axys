@@ -97,6 +97,7 @@ export function renderCapabilities(capabilities: readonly Capability[]): HTMLEle
     const state = document.createElement('span');
     state.className = cap.available ? 'is-ok' : cap.required ? 'is-blocking' : 'is-missing';
     state.textContent = cap.available ? 'yes' : cap.required ? 'blocked' : 'no';
+    setTooltip(state, cap.reason);
     const label = document.createElement('span');
     label.textContent = cap.label;
     const detail = document.createElement('span');
