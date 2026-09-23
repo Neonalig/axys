@@ -18,7 +18,8 @@ import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
 import { AppStore, initialState } from './app/store.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
-import { decodeAudioFile, fingerprintOf } from './audio/decode.js';
+import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
+import { referencePeaksKey } from './editor/layers/references.js';
 import { AudioEngine } from './audio/engine.js';
 import type { EngineReport } from './audio/engine.js';
 import { browserLabel } from './browser.js';
@@ -53,7 +54,6 @@ import { MediaStore } from './persistence/opfs.js';
 import {
   AUDIO_KIND,
   EXPORT_KIND,
-  MIDI_KIND,
   openFile,
   OPENABLE,
   PROJECT_KIND,
@@ -113,7 +113,7 @@ interface MissingMedia {
 
 /** Key a reference's channels are cached under, apart from any clip made from the same file. */
 function referenceKey(fingerprint: string): string {
-  return `reference-${fingerprint}`;
+  return `${fingerprint}-reference`;
 }
 
 /**
@@ -517,7 +517,7 @@ class AxysWorkspace implements Workspace {
         mime: decoded.mime,
       };
       const reference = session.addReference(source, position);
-      this.#references.set(reference, channels);
+      this.#keepReference(reference, source, channels);
       this.#audio.loadReference(
         reference,
         channels.map((channel) => channel.slice()),
@@ -530,6 +530,17 @@ class AxysWorkspace implements Workspace {
     } catch (error) {
       this.#fail('Import Reference', error);
     }
+  }
+
+  /** Keeps a reference's channels for the engine, and its waveform for the reference lane. */
+  #keepReference(id: ReferenceId, source: SourceInfo, channels: Float32Array[]): void {
+    this.#references.set(id, channels);
+    const frames = channels[0]?.length ?? 0;
+    buildPeaks(
+      mixToMono(channels, frames),
+      source.sampleRate,
+      referencePeaksKey(source.fingerprint),
+    );
   }
 
   /** Runs the analysis worker over mono audio, reporting its stages as import progress. */
@@ -590,23 +601,6 @@ class AxysWorkspace implements Workspace {
       return !this.#store.state.dirty;
     }
     return true;
-  }
-
-  /** Asks for a MIDI file and imports it into the open project. */
-  async importMidi(): Promise<void> {
-    if (!this.#session) {
-      this.#toast.warn('Open a vocal before a MIDI guide');
-      return;
-    }
-    let picked;
-    try {
-      picked = await openFile(MIDI_KIND);
-    } catch (error) {
-      this.#fail('Open MIDI', error);
-      return;
-    }
-    if (picked === null) return;
-    await this.openMidiFile(picked.file);
   }
 
   async openMidiFile(file: File): Promise<void> {
@@ -917,7 +911,7 @@ class AxysWorkspace implements Workspace {
         void this.#cacheMedia(decoded.fingerprint, decoded.mono);
       } else if (reference) {
         const channels = stereoOf(decoded.channelData);
-        this.#references.set(reference.id, channels);
+        this.#keepReference(reference.id, reference.source, channels);
         this.#missing.references = this.#missing.references.filter((entry) => entry !== reference);
         this.#audio.loadReference(
           reference.id,
@@ -968,6 +962,7 @@ class AxysWorkspace implements Workspace {
     for (const reference of edits.references) {
       const channels = this.#references.get(reference.id);
       if (!channels) continue;
+      this.#keepReference(reference.id, reference.source, channels);
       this.#audio.loadReference(
         reference.id,
         channels.map((channel) => channel.slice()),
@@ -1294,6 +1289,19 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
   ];
 }
 
+/** The menu shown over a reference's band. */
+function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
+  return [
+    {
+      label: 'Delete Reference',
+      icon: 'delete',
+      run: () => {
+        hooks.applyEdit({ type: 'removeReference', reference });
+      },
+    },
+  ];
+}
+
 /** Which import a dropped file is, from its name and media type. */
 function kindOf(file: File): 'project' | 'midi' | 'audio' {
   const name = file.name.toLowerCase();
@@ -1317,10 +1325,10 @@ function bindDragAndDrop(
     const item = event.dataTransfer?.items[0];
     shell.setDropTarget(
       item?.kind !== 'file'
-        ? 'File'
+        ? 'Drop To Open File'
         : workspace.ready
-          ? 'Vocal, MIDI Or Project'
-          : 'Audio, MIDI Or Project',
+          ? 'Drop To Add Vocal Or MIDI'
+          : 'Drop To Open Audio, MIDI Or Project',
     );
   };
   const onDragEnter = (event: DragEvent): void => {
@@ -1790,7 +1798,13 @@ async function start(): Promise<void> {
       shell.announce(message);
     },
     contextMenu: (hit, at) => {
-      showContextMenu(blobMenu(hit.blob !== null, commands, hooks), at);
+      const reference = hit.reference;
+      showContextMenu(
+        reference === null
+          ? blobMenu(hit.blob !== null, commands, hooks)
+          : referenceMenu(reference, hooks),
+        at,
+      );
     },
   });
   context = { store, editor, audio, toast, workspace, chrome: shell };

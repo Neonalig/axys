@@ -893,12 +893,13 @@ export class AppShell {
   /**
    * Shows or clears the marker for a file being dragged over the editor.
    *
-   * @remarks `null` while nothing is being dragged. Opening a file replaces the whole project,
-   * so the marker names what would open rather than implying a position it would land at.
+   * @remarks `null` while nothing is being dragged. `text` is the whole line, because what a drop
+   * does depends on what is open: with nothing open it opens the file, and on an open project a
+   * vocal lands where it is let go.
    */
-  setDropTarget(name: string | null): void {
-    this.#drop.hidden = name === null;
-    this.#drop.textContent = name === null ? '' : `Drop To Open ${name}`;
+  setDropTarget(text: string | null): void {
+    this.#drop.hidden = text === null;
+    this.#drop.textContent = text ?? '';
   }
 
   /** Announces a selection change or an edit result through the off-screen live region. */
@@ -1182,10 +1183,14 @@ export class AppShell {
     // The toolbar's own shorter name where the command has one, while the accessible name stays
     // the command's, so a screen reader and the menus never disagree about what it is called.
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
-    button.addEventListener('click', () => {
-      this.#hooks.runCommand(command.id);
-    });
     const menu = BUTTON_MENUS[command.id];
+    // A button whose press opens its menu leaves the choice to the menu: running its own command
+    // as well would act before anything had been chosen.
+    if (menu?.onPress !== true) {
+      button.addEventListener('click', () => {
+        this.#hooks.runCommand(command.id);
+      });
+    }
     if (menu !== undefined) {
       setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
       const open = (event: Event): void => {

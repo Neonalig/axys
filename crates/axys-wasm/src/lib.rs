@@ -1096,7 +1096,9 @@ impl Session {
     /// Detected pitch across the lane in project seconds, as JSON.
     ///
     /// Each clip's frames are moved to where the clip sits, with an unvoiced frame between clips
-    /// so the drawn line breaks where one take ends and the next begins.
+    /// so the drawn line breaks where one take ends and the next begins. Material deleted with its
+    /// blobs reads as unvoiced, because it is silent. For drawing only; a renderer reads
+    /// [`Session::clip_track_json`].
     #[wasm_bindgen(js_name = trackJson)]
     pub fn track_json(&self) -> Result<String, JsValue> {
         let mut frames: Vec<PitchFrame> = Vec::new();
@@ -1111,9 +1113,25 @@ impl Session {
                     voiced: false,
                 });
             }
-            frames.extend(runtime.track.frames.iter().map(|frame| PitchFrame {
-                time: frame.time + clip.position,
-                ..*frame
+            // Deleted material is silent, so nothing is drawn as sung there either.
+            let silent = |time: f64| {
+                clip.silenced
+                    .iter()
+                    .any(|span| time >= span.start && time <= span.end)
+            };
+            frames.extend(runtime.track.frames.iter().map(|frame| {
+                let time = frame.time + clip.position;
+                if silent(frame.time) {
+                    PitchFrame {
+                        time,
+                        f0: 0.0,
+                        midi: f64::NAN,
+                        voiced: false,
+                        ..*frame
+                    }
+                } else {
+                    PitchFrame { time, ..*frame }
+                }
             }));
         }
         dump(&PitchTrack {

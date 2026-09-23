@@ -120,9 +120,6 @@ export interface Workspace {
   /** Opens whatever the user picked, routing it by what kind of file it turned out to be. */
   openAny(): Promise<void>;
 
-  /** Asks for a Standard MIDI File and imports it as the guide for the open project. */
-  importMidi(): Promise<void>;
-
   /**
    * Asks for a vocal and puts it on the lane of the open project, or starts a project with it.
    *

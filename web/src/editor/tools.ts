@@ -109,7 +109,15 @@ export function toolDefinition(id: ToolId): ToolDefinition {
 
 /** What kind of object a pointer position lands on. */
 export type HitKind =
-  'empty' | 'ruler' | 'loopEdge' | 'blob' | 'blobEdge' | 'anchor' | 'conflict' | 'clipTitle';
+  | 'empty'
+  | 'ruler'
+  | 'loopEdge'
+  | 'blob'
+  | 'blobEdge'
+  | 'anchor'
+  | 'conflict'
+  | 'clipTitle'
+  | 'reference';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -121,6 +129,8 @@ export interface Hit {
   anchor: number | null;
   /** The timing conflict the position falls in, when it is not over a blob. */
   conflict: TimingConflict | null;
+  /** The reference whose band the position is over. */
+  reference: number | null;
   /** Output seconds under the cursor. */
   time: number;
   /** Source seconds under the cursor; equal to `time` outside any blob. */
@@ -138,7 +148,7 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   if (hit.kind === 'conflict') {
     return 'help';
   }
-  if (hit.kind === 'anchor' || hit.kind === 'clipTitle') {
+  if (hit.kind === 'anchor' || hit.kind === 'clipTitle' || hit.kind === 'reference') {
     return 'grab';
   }
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
@@ -170,6 +180,8 @@ export function describeHit(hit: Hit, state: AppState): string {
       return `Blob ${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
     case 'clipTitle':
       return 'Move Clip';
+    case 'reference':
+      return 'Move Reference';
     case 'conflict': {
       const conflict = hit.conflict;
       if (conflict === null) {
@@ -546,5 +558,6 @@ export type EditorPreview =
     }
   | { kind: 'span'; blob: BlobId | null; start: number; end: number; label: string }
   | { kind: 'clipDrag'; clip: number; position: number; label: string }
+  | { kind: 'referenceDrag'; reference: number; position: number; label: string }
   | { kind: 'drop'; time: number; label: string }
   | { kind: 'split'; blob: BlobId; time: number; label: string };

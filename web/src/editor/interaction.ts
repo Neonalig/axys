@@ -21,6 +21,7 @@ import {
   titleRect,
 } from './layers/blobs.js';
 import { MARQUEE_CURSOR } from './cursors.js';
+import { referenceRect } from './layers/references.js';
 import { noteNameWithCents } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
 import type { EditorRenderer } from './renderer.js';
@@ -104,7 +105,8 @@ type Gesture =
       /** Every other clip's span, which the dragged clip may not land over. */
       others: [number, number][];
       position: number;
-    };
+    }
+  | { kind: 'reference'; reference: number; from: number; grab: number; position: number };
 
 const WHEEL_ZOOM = 0.002;
 
@@ -220,6 +222,7 @@ export class EditorController {
       edge: null,
       anchor: null,
       conflict: null,
+      reference: null,
       time,
       sourceTime: time,
       midi,
@@ -256,6 +259,18 @@ export class EditorController {
             midi: anchor.midi,
           };
         }
+      }
+    }
+
+    // A reference's band lies along the foot of the plot, under everything the pitch field
+    // draws, so it answers first where it is.
+    const references = state.edits?.references ?? [];
+    for (let index = 0; index < references.length; index += 1) {
+      const reference = references[index];
+      if (reference === undefined) continue;
+      const rect = referenceRect(reference, index, viewport);
+      if (x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height) {
+        return { ...base, kind: 'reference', reference: reference.id };
       }
     }
 
@@ -786,6 +801,19 @@ export class EditorController {
       return { kind: 'rulerDrag', anchorTime: hit.time, drawing: false };
     }
 
+    if (hit.kind === 'reference' && hit.reference !== null) {
+      const reference = state.edits?.references.find((entry) => entry.id === hit.reference);
+      if (reference !== undefined) {
+        return {
+          kind: 'reference',
+          reference: reference.id,
+          from: reference.position,
+          grab: hit.time - reference.position,
+          position: reference.position,
+        };
+      }
+    }
+
     if (
       hit.kind === 'clipTitle' &&
       hit.blob !== null &&
@@ -1071,6 +1099,9 @@ export class EditorController {
         gesture.position = freePosition(gesture.others, gesture.duration, wanted);
         break;
       }
+      case 'reference':
+        gesture.position = Math.max(0, this.#snapTime(time - gesture.grab, modifiers));
+        break;
       case 'rubberBand':
         break;
     }
@@ -1153,6 +1184,15 @@ export class EditorController {
               clip: gesture.clip,
               position: gesture.position,
               label: `Move Clip ${formatClock(gesture.position, 0.001)}`,
+            }
+          : null;
+      case 'reference':
+        return this.#moved
+          ? {
+              kind: 'referenceDrag',
+              reference: gesture.reference,
+              position: gesture.position,
+              label: `Move Reference ${formatClock(gesture.position, 0.001)}`,
             }
           : null;
       case 'pan':
@@ -1269,6 +1309,14 @@ export class EditorController {
       }
       case 'pan':
         this.#applyCursor(this.#hover);
+        break;
+      case 'reference':
+        if (this.#moved && gesture.position !== gesture.from) {
+          this.#commit(
+            { type: 'moveReference', reference: gesture.reference, position: gesture.position },
+            `Move Reference ${formatClock(gesture.position, 0.001)}`,
+          );
+        }
         break;
       case 'clip':
         if (this.#moved) {

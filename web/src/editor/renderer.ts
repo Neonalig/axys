@@ -19,6 +19,7 @@ import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { clipPeaks, drawWaveform } from './layers/waveform.js';
+import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
 import { clipOf } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview } from './tools.js';
 import type { Viewport } from './view.js';
@@ -149,6 +150,7 @@ export class EditorRenderer {
     drawGrid(ctx, state, viewport, theme);
     drawWaveform(ctx, state, viewport, theme);
     drawMidi(ctx, state, viewport, theme);
+    drawReferences(ctx, state, viewport, theme);
     drawBlobs(ctx, state, viewport, theme);
     drawPitch(ctx, state, viewport, theme);
     drawPitchLabels(ctx, state, viewport, theme);
@@ -245,6 +247,19 @@ export class EditorRenderer {
           y: viewport.plotTop + 24,
         });
         break;
+      case 'referenceDrag': {
+        const references = state.edits?.references ?? [];
+        const index = references.findIndex((entry) => entry.id === preview.reference);
+        const reference = references[index];
+        if (reference !== undefined) {
+          drawReferenceBand(ctx, viewport, theme, reference, index, preview.position, GHOST_ALPHA);
+          labelAt(ctx, viewport, theme, preview.label, {
+            x: viewport.timeToX(preview.position),
+            y: viewport.height - (index + 2) * REFERENCE_BAND,
+          });
+        }
+        break;
+      }
       case 'drop':
         drawDropMarker(ctx, viewport, theme, preview.time);
         labelAt(ctx, viewport, theme, preview.label, {
