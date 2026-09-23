@@ -205,6 +205,25 @@ interface ButtonMenu {
   entries(shell: AppShell): MenuEntry[] | Promise<MenuEntry[]>;
 }
 
+/** A button menu of commands, each with its icon and key. */
+function menuOf(shell: AppShell, ids: readonly string[]): MenuEntry[] {
+  return ids.flatMap((id) => {
+    const command = shell.command(id);
+    if (command === undefined) return [];
+    return [
+      {
+        label: command.label,
+        icon: iconFor(command),
+        key: command.shortcut,
+        enabled: shell.can(id),
+        run: () => {
+          shell.run(id);
+        },
+      },
+    ];
+  });
+}
+
 /** How long ago an epoch-millisecond time was, as a recent-list detail such as `3h ago`. */
 function ago(time: number): string {
   const minutes = Math.floor((Date.now() - time) / 60_000);
@@ -255,6 +274,14 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
             }))),
       ];
     },
+  },
+  'edit.cut': {
+    hint: 'Shift for Ripple Cut',
+    entries: (shell) => menuOf(shell, ['edit.cut', 'edit.rippleCut']),
+  },
+  'edit.paste': {
+    hint: 'Shift for Paste Insert, Alt for Paste Replace',
+    entries: (shell) => menuOf(shell, ['edit.paste', 'edit.pasteInsert', 'edit.pasteReplace']),
   },
   'view.sources': {
     hint: 'Set the front source and how other sources show',
@@ -389,10 +416,11 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   // Both live in the Sources button's menu and on their keys.
   'view.previousSource',
   'view.toggleOthers',
-  // The clipboard and trimming act on what is under the hand: the keys, or the canvas menu.
-  'edit.cut',
-  'edit.copy',
-  'edit.paste',
+  // The variants of cutting and pasting are the Cut and Paste buttons with a modifier held, and
+  // are in their menus; trimming acts on what is under the hand, from the keys or the canvas menu.
+  'edit.rippleCut',
+  'edit.pasteInsert',
+  'edit.pasteReplace',
   'edit.trimStart',
   'edit.trimEnd',
   'edit.resetTrim',
@@ -400,6 +428,20 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
 const HISTORY_COMMANDS: ReadonlySet<string> = new Set(['edit.undo', 'edit.redo']);
+
+/** Cut, Copy and Paste, drawn as their own group straight after undo and redo. */
+const CLIPBOARD_COMMANDS: ReadonlySet<string> = new Set(['edit.cut', 'edit.copy', 'edit.paste']);
+
+/**
+ * What a button runs with a modifier held instead of its own command.
+ *
+ * @remarks Shift ripples wherever something can, and Alt replaces. The button's tooltip follows
+ * the modifier while it is held, so what a click will do is what it says.
+ */
+const MODIFIED: Readonly<Record<string, { shift?: string; alt?: string }>> = {
+  'edit.cut': { shift: 'edit.rippleCut' },
+  'edit.paste': { shift: 'edit.pasteInsert', alt: 'edit.pasteReplace' },
+};
 
 /**
  * The two edits that open a panel and preview across the whole project.
@@ -467,8 +509,11 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Find Command': 'search',
   'Help and Diagnostics': 'help',
   Cut: 'cut',
+  'Ripple Cut': 'cut',
   Copy: 'copy',
   Paste: 'paste',
+  'Paste Insert': 'paste',
+  'Paste Replace': 'paste',
   'Trim Start': 'trimStart',
   'Trim End': 'trimEnd',
   'Reset Trim': 'reset',
@@ -648,6 +693,8 @@ export class AppShell {
   private constructor(options: ShellOptions) {
     this.#hooks = options.hooks;
     this.#commands = [...options.commands];
+    window.addEventListener('keydown', this.#onModifier);
+    window.addEventListener('keyup', this.#onModifier);
     this.#root = options.root;
     this.#root.replaceChildren();
 
@@ -701,6 +748,14 @@ export class AppShell {
         }
         header.append(section);
       }
+      const clipboard = commands.filter((command) => CLIPBOARD_COMMANDS.has(command.id));
+      if (clipboard.length > 0) {
+        const section = group('Clipboard');
+        for (const command of clipboard) {
+          section.append(this.#buildCommandButton(command));
+        }
+        header.append(section);
+      }
       const corrections = commands.filter((command) => CORRECTION_COMMANDS.has(command.id));
       if (corrections.length > 0) {
         const section = group('Correction Commands');
@@ -710,7 +765,10 @@ export class AppShell {
         header.append(section);
       }
       const rest = commands.filter(
-        (command) => !HISTORY_COMMANDS.has(command.id) && !CORRECTION_COMMANDS.has(command.id),
+        (command) =>
+          !HISTORY_COMMANDS.has(command.id) &&
+          !CORRECTION_COMMANDS.has(command.id) &&
+          !CLIPBOARD_COMMANDS.has(command.id),
       );
       if (rest.length === 0 && name !== 'Transport' && name !== 'View') {
         continue;
@@ -1155,6 +1213,8 @@ export class AppShell {
 
   /** Removes the chrome and its notification layer. */
   dispose(): void {
+    window.removeEventListener('keydown', this.#onModifier);
+    window.removeEventListener('keyup', this.#onModifier);
     this.#toolbarFit.disconnect();
     this.#panel?.dialog.close();
     this.#timeBar.dispose();
@@ -1295,9 +1355,14 @@ export class AppShell {
     // the command's, so a screen reader and the menus never disagree about what it is called.
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
     const menu = BUTTON_MENUS[command.id];
-    button.addEventListener('click', () => {
-      this.#press(command.id, button);
+    button.addEventListener('click', (event) => {
+      this.#press(this.#variantOf(command.id, event), button);
     });
+    if (MODIFIED[command.id] !== undefined) {
+      button.addEventListener('pointermove', (event) => {
+        this.#showVariant(command.id, event);
+      });
+    }
     if (menu !== undefined) {
       setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
       const open = (event: Event): void => {
@@ -1315,6 +1380,33 @@ export class AppShell {
     });
     return button;
   }
+
+  /** The command a button runs with the modifiers an event carries. */
+  #variantOf(id: string, event: { shiftKey: boolean; altKey: boolean }): string {
+    const variants = MODIFIED[id];
+    if (variants === undefined) return id;
+    if (event.shiftKey && variants.shift !== undefined) return variants.shift;
+    if (event.altKey && variants.alt !== undefined) return variants.alt;
+    return id;
+  }
+
+  /** Rewrites a modifier button's face to say what a click with these modifiers runs. */
+  #showVariant(id: string, event: { shiftKey: boolean; altKey: boolean }): void {
+    const entry = this.#commandButtons.get(id);
+    const chosen = this.#commands.find((command) => command.id === this.#variantOf(id, event));
+    if (entry === undefined || chosen === undefined) return;
+    const menu = BUTTON_MENUS[id];
+    this.#setFace(id, {
+      icon: iconFor(chosen),
+      label: SHORT_LABEL[chosen.id] ?? chosen.label,
+      tooltip: menu === undefined ? tooltipFor(chosen) : `${tooltipFor(chosen)}\n${menu.hint}`,
+    });
+  }
+
+  /** Follows a modifier pressed or let go while a modifier button may be under the pointer. */
+  #onModifier = (event: KeyboardEvent): void => {
+    for (const id of Object.keys(MODIFIED)) this.#showVariant(id, event);
+  };
 
   /** Opens a button's own menu directly under it, or closes the one it has open. */
   async #openButtonMenu(
@@ -1403,6 +1495,11 @@ export class AppShell {
     }
     held.dialog.close();
     return held.kind === kind;
+  }
+
+  /** A command by id, for a button menu. */
+  command(id: string): ShellCommand | undefined {
+    return this.#commands.find((command) => command.id === id);
   }
 
   /** Whether a command can run, for a button menu. */
