@@ -276,9 +276,17 @@ export class MixerPanel {
     for (const controls of this.#strips) {
       controls.mute.classList.toggle('is-masked', masked && controls.key.kind !== 'master');
       const strip = stripOf(this.#mixer, controls.key);
-      for (const control of [controls.gain, controls.pan, controls.mute, controls.solo]) {
+      // A mute in effect takes the strip out of play, so its level and pan are too; its switches
+      // stay live, since they are how it comes back. A solo elsewhere overrides the mute, except
+      // on the master, which no solo reaches.
+      const silenced = strip.mute && (!masked || controls.key.kind === 'master');
+      for (const control of [controls.mute, controls.solo]) {
         if (control) control.disabled = !ready;
       }
+      controls.gain.disabled = !ready || silenced;
+      controls.pan.disabled = !ready || silenced;
+      controls.gainReadout.classList.toggle('is-disabled', silenced);
+      controls.panReadout.classList.toggle('is-disabled', silenced);
       // The whole strip, readouts included, is left alone while it is being dragged: the store
       // updates on every animation frame the transport runs, and rewriting the control under
       // the hand from the committed value is what makes a fader fight the hand holding it.

@@ -276,6 +276,14 @@
 
 .axys-mixer .axys-mixer-fader:disabled {
   cursor: default;
+  opacity: 0.5;
+}
+
+/* A readout of a strip taken out of play by its mute */
+
+.axys-mixer-pan-readout.is-disabled,
+.axys-mixer-level.is-disabled {
+  opacity: 0.5;
 }
 
 .axys-mixer-fader::-webkit-slider-runnable-track {

@@ -603,7 +603,9 @@ one strip used to unmute every other, which undid a mix someone had set up strip
 A solo masks the mutes rather than replacing them: while any strip is soloed only the soloed ones
 are heard, and once none is each strip's own mute decides again, as it was. So that a mute is not
 read as doing something it is not, every mute but the master's is drawn faint while a solo is on;
-it still takes a press, for when the solo ends.
+it still takes a press, for when the solo ends. A mute in effect disables its strip's level and pan
+and dims their readouts, leaving the switches live; under a solo the mutes are masked, so their
+strips stay enabled, except the master's, which no solo reaches.
 
 ### Compare has no button at all
 
