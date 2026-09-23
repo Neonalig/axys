@@ -31,7 +31,14 @@ Hand-written TypeScript mirrors of the serde contracts in `docs/core_contracts.m
 `GuideSelection`, `NoteMapping`, `MappingReport`, `GuideOverlap`, `DriftReport`, `SampledCurve`, `TimeMap`,
 `ScaleSettings`, `ModulationSettings`, `FormantMode`, `RenderPlan`, `EditOp`, `History`,
 `BitDepth`, `ExportReport`, `ExportPreview`, `SourceInfo`, `AnalysisInfo`, `EditState`, `ViewState`, `TimeDisplay`,
-`Project`, `Quality`.
+`Project`, `Quality`, `ClipId`, `ReferenceId`, `Span`, `Clip`, `Reference`, `ClipMedia`,
+`ClipStrips`, `ReferenceStrip`.
+
+A project holds several vocal clips on one lane and any number of references. Blobs read from a
+session are in project seconds, and a blob id names its clip: `clipOf(id)` in `core/types.ts` reads
+it, and `sourceTitle(name)` is the one spelling of a source's name on the desk and over its blobs.
+New operations: `deleteBlobs`, `addClip`, `moveClip`, `removeClip`, `addReference`,
+`moveReference` and `removeReference`.
 
 `EditOp` is a discriminated union on `type`, matching serde's `#[serde(tag = "type")]` with
 `camelCase` variant names, so `{ type: 'splitBlob', blob: 3, time: 1.25 }`.
@@ -63,7 +70,7 @@ A blob carries its own level, so one word can be lifted or dropped:
 
 `FormantMode` serialises as `"follow"`, `"preserve"` or `{ shift: number }`.
 
-Also export the named constants `MIN_BLOB_SECONDS = 0.01`, `SCHEMA_VERSION = 1`,
+Also export the named constants `MIN_BLOB_SECONDS = 0.01`, `SCHEMA_VERSION = 2`,
 `MIN_GAIN_DB = -60` and `MAX_GAIN_DB = 24`.
 
 ## WASM facade: `core/wasm.ts`
@@ -78,7 +85,10 @@ export interface AxysCore {
   createSession(input: SessionInput): Session;
   /** Builds a session from an analysis produced elsewhere, without re-analysing the audio. */
   openSessionFromAnalysis(input: AnalysedSessionInput): Session;
-  openSession(projectJson: string, samples: Float32Array): Session;
+  /** Reopens a saved project; each clip plays and exports once `attachClip` gives it audio. */
+  openSession(projectJson: string): Session;
+  /** Brings a document of any supported schema version up to the current one, validated. */
+  readProject(json: string): { json: string; project: Project };
   parseMidi(bytes: Uint8Array): MidiFile;
   hzToMidi(hz: number, a4: number): number;
   midiToHz(midi: number, a4: number): number;
@@ -91,7 +101,15 @@ export interface AxysCore {
 `proposeMappingsPreview(): MappingProposal`, `history(): { undo: string | null; redo:
 string | null }`, `project(name: string, view: ViewState): string`, `exportPreview(range): ExportPreview`,
 `exportWav(range, depth, sampleRate?): { bytes: Uint8Array; report: ExportReport }`,
-`free(): void`.
+`free(): void`, and for the lane: `clipPlans(): ClipPlan[]`, `clipTrackJson(clip)`,
+`clipSamples(clip)`, `media(): MediaList`, `attachClip(clip, samples)`, `addClip(input): ClipId`
+and `addReference(source, position): ReferenceId`.
+
+`plan()` is one plan for the whole lane in project seconds, which the editor draws from; with one
+clip at zero it is that clip's own plan. Playback and export read `clipPlans()`, each clip's plan
+with its position. `track()` is the lane's detected pitch, clips joined with an unvoiced frame
+between them and deleted material unvoiced. `addClip` takes mono samples at the project rate and
+is one undo step; `attachClip` refuses audio whose fingerprint is not the clip's.
 
 `AnalysedSessionInput` carries `samples`, `sampleRate`, `name`, the analysis worker's `trackJson`
 and `blobsJson`, and the optional `f0` and `segment` parameters it ran with. It is the import path:
@@ -143,7 +161,6 @@ are missing must never block startup.
 export interface AppState {
   phase: 'empty' | 'loading' | 'ready' | 'error';
   message: string | null;
-  source: SourceInfo | null;
   track: PitchTrackArrays | null;
   blobs: Blob[];
   conflicts: TimingConflict[];
@@ -239,16 +256,19 @@ export function buildCommands(): Command[];
 export function findCommand(commands: Command[], id: string): Command | undefined;
 ```
 
-Commands must cover, at minimum: Open, Save Project, Save As, Import MIDI, Export Audio, Cancel
-Import, Undo, Redo, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
+Commands must cover, at minimum: Open, Save Project, Save As, Import Vocal, Import Reference,
+Export Audio, Cancel Import, Undo, Redo, Delete Blobs, Delete Clip, Select All, Join Blobs, Reset, Smooth Span, Exclude Blob, Correction, Voice
 Character, Play, Stop, Loop Selection, Toggle Metronome, Toggle Mixer, Zoom In, Zoom Out, Zoom Fit,
 Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics. New Project empties the
 editor and comes before Open, asking the same question about unsaved work.
 
 Not every command is drawn where its group is: the mixer is opened from the footer, beside the zoom.
 
-One Open covers a project or a vocal; a MIDI guide is imported into an open project and has its own
-command. Reset is one command whose extent comes from the selected span. A command that addresses a
+One Open covers a project or a vocal, and replaces what is open. Import Vocal puts another vocal
+on the open project's lane, after the last clip. Import Reference takes a MIDI file as the guide
+or audio as a reference, told apart by what the file is; its picker offers both types. The Import
+button's press opens a menu of the two rather than running either. Delete Blobs is `Delete` or
+`Backspace` and Delete Clip `Shift+Delete`; both are in the blob menu. Reset is one command whose extent comes from the selected span. A command that addresses a
 blob addresses every selected blob, so its key does what its menu entry does whether or not the
 menu is open. Splitting is the Slice tool's alone, and Join Blobs takes two or more selected
 neighbours and nothing else. Not every command is drawn in the toolbar: zoom lives in the footer,
@@ -300,9 +320,15 @@ works. Shortcuts must not fire while a text input has focus.
 export class AudioEngine {
   static create(store: AppStore): Promise<AudioEngine>;
   /** Hands the worklet its source audio. Transfers the buffer. */
-  loadSource(samples: Float32Array, sampleRate: number, trackJson: string): Promise<void>;
-  /** Pushes a compiled plan to the worklet. Cheap, safe to call on every edit. */
-  setPlan(plan: RenderPlan): void;
+  /** Starts a project over at the rate every source is held at. */
+  loadProject(sampleRate: number): Promise<void>;
+  /** Hands the worklet one clip's audio. Transfers the buffer. */
+  loadClip(clip: ClipId, samples: Float32Array, trackJson: string, placed: ClipPlan | null): void;
+  /** Hands the worklet one reference's channels. Transfers the buffers. */
+  loadReference(reference: ReferenceId, channels: readonly Float32Array[], position: number): void;
+  placeReferences(references: readonly { id: ReferenceId; position: number }[]): void;
+  /** Pushes every clip's plan and the lane plan. Cheap, safe to call on every edit. */
+  setPlans(plans: readonly ClipPlan[], lane: RenderPlan): void;
   /** Hands the worklet the monitor desk: level, pan, mute and solo for every strip. */
   setMixer(mixer: MixerSettings): void;
   play(from?: number): Promise<void>;
@@ -325,9 +351,15 @@ and answers `process()` from `renderRange`. It must never allocate in `process()
 underruns and a stale or failed plan back to the main thread rather than emitting garbage, and must
 output silence rather than noise on any failure.
 
-`audio/decode.ts` exports `decodeAudioFile(file: File): Promise<DecodedSource>` using
-`AudioContext.decodeAudioData`, preserving the original sample rate, channel count and a
-fingerprint, and reporting an unsupported format clearly.
+The worklet holds a renderer per clip and mixes each clip's processed and original strips at
+the clip's position; a clip left out of `setPlans` is off the lane and silent but keeps its
+renderer for a redo. References are read straight from their channels at output time, never
+through a plan, and their pan is a balance.
+
+`audio/decode.ts` exports `decodeAudioFile(file: File, sampleRate?: number): Promise<DecodedSource>`
+using `AudioContext.decodeAudioData`, preserving the original sample rate, channel count and a
+fingerprint, and reporting an unsupported format clearly. `sampleRate` decodes at the project's
+rate instead, which is how a second vocal or a reference joins a project.
 
 ## Workers
 
@@ -368,7 +400,7 @@ Layers in `editor/layers/`, each a pure draw function taking
 `(ctx, state, viewport, theme)`: `grid.ts` (pitch rows, octave labels, cents guides), `ruler.ts`
 (seconds or bars and beats), `waveform.ts` (peak envelope behind the blobs), `pitch.ts` (detected
 track with confidence, target curve, unvoiced spans), `blobs.ts` (bounds, centres, handles,
-conflicts), `midi.ts` (guide notes and mapping links), `overlay.ts` (selection, playhead, loop
+conflicts, clip title tabs), `references.ts` (reference bands), `midi.ts` (guide notes and mapping links), `overlay.ts` (selection, playhead, loop
 range, hover readout, drag preview).
 
 `editor/interaction.ts` exports `class EditorController` owning pointer handling. Requirements:
@@ -388,6 +420,15 @@ range, hover readout, drag preview).
 - Every other gesture commits exactly one `EditOp`, so undo is one step.
 - Numeric entry for the selected object's pitch and time coexists with dragging.
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
+- Every blob carries a tab naming its clip, where the clip is picked up with any tool and
+  dragged along the lane, previewing as a band with the clip's waveform and its blobs as ghosts
+  where it would land. A click on the tab selects the clip. A clip dropped over another lands on
+  the nearest free position, by `freePosition` in `editor/tools.ts`, which mirrors the core.
+- References are bands along the foot of the plot, dragged to move and right-clicked to delete.
+- `previewDrop(clientX, clientY)` marks where audio dragged in from outside would land and
+  returns that time; `endDrop()` takes the marker away.
+- The Bezier tool draws a line and then offers its two ends and two controls to shape. Enter keeps
+  it, Escape drops it, and a tool change or the next curve keeps it.
 
 ## UI: `ui/`
 
@@ -457,8 +498,9 @@ one, a sample rate, and a bit depth of 16-bit, 24-bit or 32-bit float. Measuring
 it, so the `exportPreview` figures and their warnings are shown on request rather than on every
 change. It commits an `ExportChoice` of `{ range, sampleRate, depth }` through `onExport`.
 
-`ui/mixer.ts` exports `class MixerPanel`, the desk across the bottom of the editor: one strip per
-audio source, laid out the way a desk lays one out, with the name, the pan above the fader, a
+`ui/mixer.ts` exports `class MixerPanel`, the desk across the bottom of the editor: a track per
+clip, in lane order and headed with the clip's name, carrying a Processed and an Original strip;
+a strip per reference; and one Metronome strip. Each strip is laid out the way a desk lays one out, with the name, the pan above the fader, a
 vertical fader and mute and solo under it. Pressing a mute or a solo settles the desk on that strip
 alone and Ctrl or Cmd adds to what is already on, so more than one strip can be muted or soloed at a
 time. A fader is heard as it moves, through `previewMixer`, and committed as one `setMixer` edit
@@ -527,8 +569,12 @@ export class MediaStore {
 ```
 
 `persistence/project-io.ts` exports `exportProject(json, name)` writing a `.axys.json` download and
-`importProject(file)` reading one back, plus `relink(file, expected: SourceInfo)` which verifies the
-fingerprint and refuses a different file with a clear message. `persistence/autosave.ts` debounces
+`importProject(file, read)` reading one back through the core's migration, plus
+`relink(file, expected: SourceInfo)` which verifies the fingerprint and refuses a different file
+with a clear message. A reopened project opens with whatever audio the device holds and names
+what is missing; audio opened or dropped while it waits is matched to a missing clip or
+reference by fingerprint. `MediaStore` keys a reference's channels, one after the other, by its
+fingerprint with a `-reference` suffix. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
 
 `persistence/restore.ts` exports `restoreNewest(source, open)`, which picks the newest stored copy

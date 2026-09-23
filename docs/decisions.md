@@ -573,6 +573,99 @@ Two names for one sound is a thing to work out rather than a thing to read.
 Swap Vocal is gone, command and all. Two strips with their own mutes already say which take is
 playing and set it, and a second way to say it is a second thing to keep in step. `C` is free.
 
+## Multiple sources
+
+### Clips on one lane, never overlapping
+
+A project holds several vocal clips, each one imported file with its own analysis, blobs and
+plan, placed at a position on the one editable lane. The design bible keeps one monophonic vocal
+lane, so clips do not overlap: a clip dropped or dragged over another lands against the nearer
+edge of the clip it would have covered, and the preview shows where before the pointer is let go.
+Reordering is dragging a clip past its neighbour into the gap beyond it.
+
+That rule is what keeps the editor unchanged underneath. The lane's blobs, taken together in
+project seconds, are always one valid ordered set, so selection, snapping, conflicts and MIDI
+mapping read one list rather than a list per clip.
+
+Rejected: overlapping clips summed together. Every time-domain question the editor asks, which
+blob is under the pointer, what a span covers, where the playhead sits in source time, would have
+needed a clip to answer it.
+
+### A clip keeps its own time, and the lane adds its position
+
+Everything inside a clip stays in that clip's source seconds: its track, blobs, silenced spans and
+plan. Moving a clip changes one number and nothing it holds. The session hands the editor blobs
+shifted into project seconds, and an operation arriving in project seconds is moved back into the
+owning clip's before it is applied, so every existing operation kept its shape.
+
+Blob ids are partitioned by clip, twenty low bits each, so a blob id alone names its clip and no
+operation needed a clip field. The first clip's ids are the ids a single-source project always
+had, which is what made the migration a rename.
+
+### Importing a second source is an edit
+
+The first clip is the base the history replays over, as the single source was. Every clip after
+it, and every reference, is brought in by an `addClip` or `addReference` operation carrying the
+source's facts and its analysed blobs, so undo takes an import back and redo returns it. The
+session keeps every clip it has seen, on the lane or not, because a redo needs the audio and the
+analysis again, and the document keeps their media for the same reason.
+
+### Plans per clip, and one plan for the editor
+
+Each clip compiles its own plan against its own track, with the guide's timeline moved by the
+clip's position. The worklet renders a voice per clip at its position, and the export mixes them
+the same way at offline quality.
+
+The editor draws the target line and converts the playhead from one plan. The session joins the
+clips' plans into one in project seconds, sampling each curve onto the lane grid at the nearest
+sample, which keeps the edges of an edited span from drawing a line towards MIDI zero. With one
+clip at zero the lane plan is that clip's own, exactly, so a single-source project draws and
+tests as it did.
+
+### Deleting a blob silences what it covered
+
+A blob removed from the set would leave its material playing as an untouched gap, which is the
+opposite of deleting it. `deleteBlobs` removes the blobs and records their source spans on the
+clip as silenced; the plan's gain is zero across them and the editor draws them unvoiced. Reset
+Range restores the analysed blobs and the silenced material together, because both are the
+segmentation.
+
+### References are heard, never edited
+
+A reference is audio in output time, so it has no analysis, no plan and no warp: the worklet reads
+its channels at the transport position less its own. It is decoded at the project's rate and kept
+in stereo, and its pan is a balance, so a centred reference plays both channels at the strip's
+level. It is monitoring, like the desk, and is never written to an export.
+
+A MIDI guide and an audio reference are both things placed against the vocal, so one Import
+Reference command takes either and tells them apart by the file; the picker offers MIDI and Audio
+as its two types. References sit on a lane of bands along the foot of the plot, where they are
+dragged to move and right-clicked to delete, and each has a strip on the desk.
+
+### A track per clip on the desk
+
+The processed and original strips were the vocal's; now each clip has the pair, grouped under the
+clip's name as one track, so a clip reads as one source with two faders. A reference has a single
+strip and the metronome keeps its one. A source with no entry on the desk reads as the strips it
+starts with, processed up and original muted, so importing needs no edit to put it there. Solo
+spans the whole desk.
+
+### A reopened project opens with what is there
+
+A project's audio is several files now, and refusing to open until every one was relinked would
+hold the whole project hostage to one missing reference. The project opens with whatever the
+device holds, names the first file it is missing, and matches audio opened or dropped while it
+waits by fingerprint to the clip or reference it belongs to. A clip without audio is silent and
+the export refuses until it is relinked.
+
+### Schema version 2
+
+A version 1 document held one `source`, `analysis` and `track`, and an edit state with `blobs` and
+a desk of processed, original and click. The migration makes that source clip 0 at position 0:
+its media, its lane in both edit states, and its track on the desk, including the desk inside
+recorded `setMixer` operations so an undo in a migrated project replays the desk it had. The web
+side reads project files through the core's `migrateProject`, so the migration lives in one place.
+
 ## Timeline and musical time
 
 ### Bars and beats are computed in TypeScript for drawing
@@ -1507,6 +1600,13 @@ once, and a leaving panel takes no pointer events so the page is usable immediat
   test first fires, which may not be where a musician would put the boundary.
 - Blob ids are stable within one segmentation run only, so a re-analysis renumbers them.
 - A project document written by a newer build is refused rather than parsed best-effort.
+- Clips do not overlap on the lane, so two takes cannot be layered on it; a take meant to sound under
+  the vocal is a reference.
+- The first clip of a project is its base, so undo cannot take it back; Delete Clip can.
+- A blob moved past the end of its clip still belongs to it, and one clip's blobs cannot be joined
+  with another's.
+- A reference plays at the project rate as decoded, is never analysed and has no MIDI or pitch
+  display.
 - Format 2 MIDI files are read as if their tracks were parallel, and SMPTE timecode divisions are
   rejected outright.
 - WAV import does not support RF64/BW64, ADPCM, A-law or mu-law; export writes 16-bit, 24-bit and
