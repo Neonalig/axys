@@ -37,6 +37,7 @@ import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { setTooltip } from './tooltip.js';
+import { resolveTheme, sourceTheme } from './theme.js';
 import type { AppState } from '../app/store.js';
 
 /** What the mixer needs in order to be heard and to be kept. */
@@ -47,6 +48,8 @@ export interface MixerHooks {
   previewMixer(mixer: MixerSettings): void;
   /** Each strip's recent peak, or `null` while nothing is playing. */
   meters(): MeterReport | null;
+  /** Brings a clip forward in the editor. */
+  focus(clip: ClipId): void;
 }
 
 /** Which strip on the desk a control belongs to. */
@@ -191,6 +194,8 @@ export class MixerPanel {
   readonly #hooks: MixerHooks;
   readonly #element: HTMLElement;
   #strips: StripControls[] = [];
+  /** Each clip's track, which says whether it is the source in front. */
+  #tracks = new Map<ClipId, HTMLElement>();
   #lineup: string | null = null;
 
   #mixer: MixerSettings = DEFAULT_MIXER;
@@ -253,6 +258,11 @@ export class MixerPanel {
       this.#rebuild(state.edits);
     }
     this.#mixer = state.edits?.mixer ?? DEFAULT_MIXER;
+    const theme = resolveTheme();
+    for (const [clip, track] of this.#tracks) {
+      track.classList.toggle('is-active', state.layer[0] === clip && this.#tracks.size > 1);
+      track.style.setProperty('--axys-source', sourceTheme(theme, clip).blobBounds);
+    }
     const ready = state.edits !== null;
     for (const controls of this.#strips) {
       const strip = stripOf(this.#mixer, controls.key);
@@ -291,6 +301,7 @@ export class MixerPanel {
   #rebuild(edits: EditState | null): void {
     this.#lineup = lineup(edits);
     this.#strips = [];
+    this.#tracks = new Map();
     const sources = group('is-sources');
     const references = group('is-references');
     const outputs = group('is-outputs');
@@ -308,6 +319,11 @@ export class MixerPanel {
         clip: clip.id,
         name,
       }));
+      setTooltip(head, `${clip.source.name}\nClick to edit, double-click to rename`);
+      head.addEventListener('click', () => {
+        this.#hooks.focus(clip.id);
+      });
+      this.#tracks.set(clip.id, track);
       const pair = document.createElement('div');
       pair.className = 'axys-mixer-track-strips';
       for (const which of ['processed', 'original'] as const) {

@@ -76,6 +76,7 @@ import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
+import { sourceMenu } from './ui/sources-menu.js';
 import type { MenuEntry } from './ui/menu.js';
 import type { IconName } from './ui/icons.js';
 import { AppShell } from './ui/shell.js';
@@ -2084,6 +2085,14 @@ function buildHooks(
   onThemeChoice: (choice: ThemeChoice) => void,
 ): ShellHooks {
   return {
+    focusSource(clip) {
+      workspace()?.focus(clip);
+    },
+    sourceMenu() {
+      return sourceMenu(store.state, (clip, others) => {
+        workspace()?.focus(clip, others);
+      });
+    },
     runCommand(id: string): void {
       const ctx = context();
       const command = ctx ? findCommand(commands, id) : undefined;

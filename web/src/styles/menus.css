@@ -107,6 +107,15 @@
   flex: 1 1 auto;
 }
 
+/* A vocal source's colour, as its blobs are drawn in */
+
+.axys-source-dot {
+  width: 10px;
+  height: 10px;
+  margin: auto;
+  border-radius: 50%;
+}
+
 .axys-menu-item:hover:not(:disabled) .axys-menu-icon,
 .axys-menu-item:focus-visible .axys-menu-icon {
   color: inherit;

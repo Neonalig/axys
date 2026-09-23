@@ -65,12 +65,22 @@
   gap: var(--axys-space-1);
   min-height: 0;
   padding: 6px 0 0;
+  border-radius: var(--axys-radius-sm);
+}
+
+/* The source in front, which the editor edits */
+
+.axys-mixer-track.is-active {
+  background: var(--axys-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--axys-source);
 }
 
 .axys-mixer-track-name {
   flex: 0 0 auto;
   overflow: hidden;
   padding: 0 var(--axys-space-2);
+  cursor: pointer;
+  border-bottom: 2px solid var(--axys-source, transparent);
   font-size: var(--axys-size-sm);
   font-weight: var(--axys-weight-strong);
   color: var(--axys-text);

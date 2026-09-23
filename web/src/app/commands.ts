@@ -10,6 +10,7 @@
 
 import { savePreferences } from './preferences.js';
 import { selectionSpan } from './selection.js';
+import { othersOf, stepSource } from './sources.js';
 import { projectEnd, projectRate } from './store.js';
 import type { AppState, AppStore } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
@@ -191,6 +192,13 @@ export interface Chrome {
   toggleCommandPalette(): void;
   /** Opens the keyboard cheatsheet, or closes it when it is already open. */
   toggleCheatsheet(): void;
+}
+
+/** Brings forward the source `step` places after the one in front. */
+function stepFocus(ctx: CommandContext, step: number): void {
+  const state = ctx.store.state;
+  if (state.edits === null) return;
+  ctx.workspace.focus(stepSource(state.edits, state.layer[0] ?? null, step));
 }
 
 /**
@@ -817,6 +825,40 @@ export function buildCommands(): Command[] {
       enabled: () => true,
       run: (ctx) => {
         fitToContent(ctx.store);
+      },
+    },
+    {
+      id: 'view.sources',
+      label: 'Next Source',
+      group: 'View',
+      shortcut: ']',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      run: (ctx) => {
+        stepFocus(ctx, 1);
+      },
+    },
+    {
+      id: 'view.previousSource',
+      label: 'Previous Source',
+      group: 'View',
+      shortcut: '[',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      run: (ctx) => {
+        stepFocus(ctx, -1);
+      },
+    },
+    {
+      // Show, then Dim, then Hide, then Show again.
+      id: 'view.toggleOthers',
+      label: 'Toggle Others',
+      group: 'View',
+      shortcut: '\\',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const mode = othersOf(state.view);
+        const next = mode === 'show' ? 'dim' : mode === 'dim' ? 'hide' : 'show';
+        ctx.workspace.focus(state.layer[0] ?? null, next);
       },
     },
     {

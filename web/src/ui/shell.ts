@@ -22,7 +22,7 @@ import { projectEnd } from '../app/store.js';
 import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport, MeterReport } from '../audio/engine.js';
-import type { AccidentalStyle, EditOp, MixerSettings, ViewState } from '../core/types.js';
+import type { AccidentalStyle, ClipId, EditOp, MixerSettings, ViewState } from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { button as control, swapGlyph } from './controls/index.js';
 import { ICONS, STATE_ICONS, type IconName } from './icons.js';
@@ -107,6 +107,10 @@ export interface ShellHooks {
   setInspectorCollapsed(on: boolean): void;
   /** Sets how wide the inspector column is, and remembers it. */
   setInspectorWidth(pixels: number): void;
+  /** The Sources menu for the project as it is now. */
+  sourceMenu(): MenuEntry[];
+  /** Brings a clip forward in the editor. */
+  focusSource(clip: ClipId): void;
 }
 
 /** What the chrome is built from. */
@@ -173,6 +177,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'transport.toggleMetronome': 'Metronome',
   'view.followPlayhead': 'Follow',
   'midi.alignGuide': 'Align',
+  'view.sources': 'Sources',
   'help.showDiagnostics': 'Help',
 };
 
@@ -235,6 +240,32 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
             }))),
       ];
     },
+  },
+  'view.sources': {
+    hint: 'Pick the source in front and how the others show',
+    onClick: true,
+    entries: (shell) => [
+      ...shell.sourceMenu(),
+      { separator: true },
+      {
+        label: 'Next Source',
+        icon: 'sources',
+        key: ']',
+        enabled: shell.can('view.sources'),
+        run: () => {
+          shell.run('view.sources');
+        },
+      },
+      {
+        label: 'Previous Source',
+        icon: 'sources',
+        key: '[',
+        enabled: shell.can('view.previousSource'),
+        run: () => {
+          shell.run('view.previousSource');
+        },
+      },
+    ],
   },
   'file.saveProject': {
     hint: 'Save As (Ctrl+Shift+S). Right-click for both',
@@ -340,6 +371,9 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   // Deleting is done to what is under the hand: the key, or the menu over the blob.
   'edit.deleteBlobs',
   'edit.deleteClip',
+  // Both live in the Sources button's menu and on their keys.
+  'view.previousSource',
+  'view.toggleOthers',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
@@ -404,6 +438,9 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Follow Playhead': 'follow',
   Metronome: 'metronome',
   'Align Guide': 'alignGuide',
+  'Next Source': 'sources',
+  'Previous Source': 'sources',
+  'Toggle Others': 'sources',
   'Keyboard Shortcuts': 'keyboard',
   'Find Command': 'search',
   'Help and Diagnostics': 'help',
@@ -837,6 +874,9 @@ export class AppShell {
         this.#hooks.previewMixer(mixer);
       },
       meters: () => this.#hooks.meters(),
+      focus: (clip) => {
+        this.#hooks.focusSource(clip);
+      },
     });
 
     const footer = document.createElement('footer');
@@ -1258,6 +1298,11 @@ export class AppShell {
   /** Projects the Open menu offers. */
   recentProjects(): Promise<ProjectSummary[]> {
     return this.#hooks.recentProjects();
+  }
+
+  /** The vocal sources the Sources menu offers. */
+  sourceMenu(): MenuEntry[] {
+    return this.#hooks.sourceMenu();
   }
 
   /** Reopens a project from the recent list. */
