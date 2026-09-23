@@ -277,13 +277,17 @@ export class MixerPanel {
   }
 
   /**
-   * Builds a track per clip in lane order, a strip per reference, the metronome, and the master
-   * at the far end.
+   * Builds a track per clip in lane order, a strip per reference, the metronome, and the master.
+   *
+   * @remarks Three groups: the sources the lane edits pinned left, the references centred, and
+   * the metronome and the master pinned right.
    */
   #rebuild(edits: EditState | null): void {
     this.#lineup = lineup(edits);
     this.#strips = [];
-    const parts: HTMLElement[] = [];
+    const sources = group('is-sources');
+    const references = group('is-references');
+    const outputs = group('is-outputs');
     const clips = edits === null ? [] : [...edits.clips].sort((a, b) => a.position - b.position);
     for (const clip of clips) {
       const title = sourceTitle(clip.source.name);
@@ -307,19 +311,19 @@ export class MixerPanel {
         );
       }
       track.append(head, pair);
-      parts.push(track);
+      sources.append(track);
     }
     for (const reference of edits?.references ?? []) {
       const title = sourceTitle(reference.source.name);
-      parts.push(
+      references.append(
         this.#buildStrip({ kind: 'reference', reference: reference.id }, title, title, true),
       );
     }
-    parts.push(this.#buildStrip({ kind: 'click' }, CLICK_NAME, CLICK_NAME, true));
-    const master = this.#buildStrip({ kind: 'master' }, MASTER_NAME, MASTER_NAME, true);
-    master.classList.add('is-master');
-    parts.push(master);
-    this.#element.replaceChildren(...parts);
+    outputs.append(
+      this.#buildStrip({ kind: 'click' }, CLICK_NAME, CLICK_NAME, true),
+      this.#buildStrip({ kind: 'master' }, MASTER_NAME, MASTER_NAME, true),
+    );
+    this.#element.replaceChildren(sources, references, outputs);
   }
 
   /**
@@ -340,19 +344,12 @@ export class MixerPanel {
     heading.className = 'axys-mixer-name';
     heading.textContent = name;
 
-    // The master has no pan and no solo. Its pan row is kept but hidden, so its fader lines up
-    // with every other strip's.
+    // The master has no pan and no solo, so its fader takes the height the pan would have had.
     const master = key.kind === 'master';
     const pan = rangeInput(-1, 1, 0.01);
     pan.className = 'axys-mixer-pan';
     pan.setAttribute('aria-label', `${label} Pan`);
     const panReadout = readout('axys-mixer-pan-readout');
-    if (master) {
-      pan.classList.add('is-placeholder');
-      pan.tabIndex = -1;
-      pan.setAttribute('aria-hidden', 'true');
-      panReadout.classList.add('is-placeholder');
-    }
 
     const gain = rangeInput(MIN_GAIN_DB, MAX_GAIN_DB, 0.5);
     gain.className = 'axys-mixer-fader';
@@ -374,7 +371,8 @@ export class MixerPanel {
     // Each control gets the width of the strip and its value gets its own line under it. A
     // readout beside a slider takes the room the slider needs to be worth dragging.
     heading.htmlFor = gain.id;
-    strip.append(heading, pan, panReadout, faderRow, gainReadout, switches);
+    if (master) strip.append(heading, faderRow, gainReadout, switches);
+    else strip.append(heading, pan, panReadout, faderRow, gainReadout, switches);
     this.#strips.push({ key, label, gain, gainReadout, pan, panReadout, mute, solo, meter: 0 });
 
     const current = (): MixerStrip => stripOf(this.#mixer, key);
@@ -486,6 +484,13 @@ export class MixerPanel {
  */
 function switchTip(action: string, strip: string): string {
   return `${action} ${strip}. Ctrl-click for more than one`;
+}
+
+/** One of the desk's three groups of strips. */
+function group(className: string): HTMLElement {
+  const element = document.createElement('div');
+  element.className = `axys-mixer-group ${className}`;
+  return element;
 }
 
 function readout(className: string): HTMLElement {

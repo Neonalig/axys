@@ -259,6 +259,9 @@ export class Dialog {
       this.#opener.focus();
     }
     this.#onClose?.();
+    // An entry that never finished, because the page stopped painting, would otherwise play on
+    // underneath the exit and hold the panel on screen.
+    this.#element.classList.remove('is-entering');
 
     const backdrop = this.#backdrop;
     if (backdrop !== null) {

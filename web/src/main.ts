@@ -1716,8 +1716,9 @@ function startPlayheadLoop(
       Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
       audio.playing !== state.transport.playing;
     const view = movedPlayhead ? { ...state.view, playhead } : state.view;
+    // The playing playhead is drawn at the output position, so that is what the view follows.
     const followed =
-      state.follow && audio.playing ? followView(view, playhead, state.followMode) : null;
+      state.follow && audio.playing ? followView(view, output, state.followMode) : null;
     if (movedPlayhead || movedTransport || followed !== null) {
       store.update({
         ...(movedPlayhead || followed !== null ? { view: followed ?? view } : {}),

@@ -24,6 +24,12 @@ import type {
 
 export type { MeterReport } from './worklet/renderer-worklet.js';
 
+/** A playhead this far from the reported position, in seconds, jumps to it rather than easing. */
+const POSITION_SNAP = 0.05;
+
+/** Share of the gap to the reported position closed on each read while playing. */
+const POSITION_EASE = 0.08;
+
 /** Whether the engine can play, and why not when it cannot. */
 export type EngineStatus = 'idle' | 'blocked' | 'running' | 'failed';
 
@@ -81,6 +87,9 @@ export class AudioEngine {
   #playing = false;
   #reported = 0;
   #reportedAt = 0;
+  /** The position last handed out while playing, and when, so it moves at a steady rate. */
+  #shown = 0;
+  #shownAt = 0;
 
   /**
    * Transport commands issued so far, and the stamp the renderer echoes back.
@@ -344,11 +353,27 @@ export class AudioEngine {
     this.#send({ type: 'audition', start, end, seq: this.#issued });
   }
 
-  /** Playhead position in output seconds, interpolated between the worklet's reports. */
+  /**
+   * Playhead position in output seconds, interpolated between the worklet's reports.
+   *
+   * @remarks While playing it advances with the clock and eases towards each report rather than
+   * jumping to it, because the audio clock and the page clock drift apart a little between
+   * reports and a playhead corrected in steps shakes under Keep Centred. A gap larger than
+   * {@link POSITION_SNAP} seconds, from a seek or a loop, is taken at once.
+   */
   get position(): number {
     if (!this.#playing) return this.#reported;
-    const elapsed = (now() - this.#reportedAt) / 1000;
-    return Math.min(this.#reported + elapsed, this.#duration);
+    const at = now();
+    const target = Math.min(this.#reported + (at - this.#reportedAt) / 1000, this.#duration);
+    const predicted = this.#shown + (at - this.#shownAt) / 1000;
+    const error = target - predicted;
+    const shown =
+      this.#shownAt === 0 || Math.abs(error) > POSITION_SNAP
+        ? target
+        : Math.min(predicted + error * POSITION_EASE, this.#duration);
+    this.#shown = shown;
+    this.#shownAt = at;
+    return shown;
   }
 
   /** True while the transport is running, including during a count-in. */
@@ -562,6 +587,10 @@ export class AudioEngine {
 
   #syncTransport(): void {
     const transport = this.#store.state.transport;
+    if (!this.#playing) this.#shownAt = 0;
+    // While playing, the playhead loop writes the interpolated position every frame. Writing
+    // the raw report here as well would pull the playhead back to it between two frames.
+    if (this.#playing && transport.playing) return;
     if (transport.playing === this.#playing && transport.position === this.#reported) return;
     this.#store.update({
       transport: { ...transport, playing: this.#playing, position: this.#reported },

@@ -22,8 +22,9 @@ export function prefersReducedMotion(): boolean {
  * Plays an element's exit animation, then finishes with `then`.
  *
  * @remarks `then` runs exactly once whether the animation finishes, is cancelled, or never
- * starts because the element carries no animation at this setting. Under reduced motion it runs
- * immediately.
+ * starts because the element carries no animation at this setting. Under reduced motion, or in a
+ * hidden page, it runs immediately. A page that stops painting pauses its animations, so a timer
+ * set to the animation's own length finishes it regardless.
  */
 export function animateOut(element: HTMLElement, className: string, then: () => void): void {
   let done = false;
@@ -36,7 +37,7 @@ export function animateOut(element: HTMLElement, className: string, then: () => 
     then();
   };
 
-  if (prefersReducedMotion() || !element.isConnected) {
+  if (prefersReducedMotion() || !element.isConnected || document.hidden) {
     finish();
     return;
   }
@@ -48,4 +49,11 @@ export function animateOut(element: HTMLElement, className: string, then: () => 
     return;
   }
   void Promise.all(animations.map((animation) => animation.finished)).then(finish, finish);
+  const length = Math.max(
+    ...animations.map((animation) => Number(animation.effect?.getComputedTiming().endTime ?? 0)),
+  );
+  setTimeout(finish, (Number.isFinite(length) ? length : 0) + EXIT_GRACE_MS);
 }
+
+/** Time past an exit animation's own length before the timer finishes it anyway. */
+const EXIT_GRACE_MS = 100;
