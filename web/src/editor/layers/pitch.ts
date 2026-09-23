@@ -615,10 +615,11 @@ function drawTarget(
 }
 
 /**
- * Draws each kept curve where no blob carries it: dotted and faint across gaps, so a line drawn
- * over nothing still shows where it runs. The one picked up is drawn whole and bright.
+ * Draws each kept curve whole: solid where a blob carries it, dotted and faint across gaps, so a
+ * line drawn over nothing still shows where it runs. The one picked up is drawn bright.
  *
- * @remarks Over a blob the curve is already drawn as the target line, which is what is heard.
+ * @remarks Drawn from the curve itself rather than left to the target line, which breaks wherever
+ * a frame has no pitch to move, so a single stroke reads as one line.
  */
 function drawStrokes(
   ctx: CanvasRenderingContext2D,
@@ -632,26 +633,32 @@ function drawStrokes(
     state.blobs.some((blob) => time >= blobOutputStart(blob) && time <= blobOutputEnd(blob));
   const view = viewport.view;
   ctx.save();
-  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
   for (const stroke of strokes) {
     const first = stroke.points[0];
     const last = stroke.points[stroke.points.length - 1];
     if (first === undefined || last === undefined) continue;
     if (last.time < view.visibleStart || first.time > view.visibleEnd) continue;
     const active = stroke.id === state.activeStroke;
-    const path = new Path2D();
+    const carried = new Path2D();
+    const loose = new Path2D();
     for (let i = 1; i < stroke.points.length; i += 1) {
       const a = stroke.points[i - 1];
       const b = stroke.points[i];
       if (a === undefined || b === undefined) continue;
-      if (!active && covered((a.time + b.time) / 2)) continue;
+      const path = covered((a.time + b.time) / 2) ? carried : loose;
       path.moveTo(viewport.timeToX(a.time), viewport.midiToY(a.midi));
       path.lineTo(viewport.timeToX(b.time), viewport.midiToY(b.midi));
     }
     ctx.strokeStyle = active ? theme.handleActive : theme.pitchTarget;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    ctx.stroke(carried);
+    ctx.lineWidth = 1.5;
     ctx.globalAlpha = active ? 1 : 0.55;
-    ctx.setLineDash(active ? [] : [2, 3]);
-    ctx.stroke(path);
+    ctx.setLineDash([2, 3]);
+    ctx.stroke(loose);
   }
   ctx.restore();
 }
