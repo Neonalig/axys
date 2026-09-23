@@ -24,6 +24,7 @@ import {
   placePitch,
   placeStrokes,
   samplePitch,
+  stretchOps,
 } from '../web/src/app/clipboard';
 import { initialState } from '../web/src/app/store';
 import type { AppState } from '../web/src/app/store';
@@ -232,6 +233,47 @@ describe('editing modes', () => {
       expect(after.blobs.find((blob) => blob.id === left.id)!.pitchOffset).toBe(1);
       expect(scoped.undo()).toBe(true);
       expect(stateOf(scoped).edits?.strokes).toHaveLength(2);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('stretches a selection of blobs by its edge, keeping their proportions', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped);
+      const chosen = state.blobs.slice(0, 2);
+      const from = { start: chosen[0]!.start, end: chosen[1]!.end };
+      const to = { start: from.start, end: from.start + (from.end - from.start) * 1.5 };
+      const selected = {
+        ...state,
+        selection: { blobs: chosen.map((blob) => blob.id), anchors: [], ranges: [from] },
+      };
+
+      // Blob and Pitch: the audio stretches, the second blob starting half as far in again.
+      const both = stretchOps(selected, from, to, false, 'sung');
+      apply(scoped, both.ops);
+      const [first, second] = stateOf(scoped).blobs;
+      expect(first!.timeScale).toBeCloseTo(1.5, 9);
+      const wanted = from.start + (chosen[1]!.start - from.start) * 1.5;
+      expect(second!.start + second!.timeOffset).toBeCloseTo(wanted, 9);
+      expect(both.ranges[0]!.end).toBeCloseTo(to.end, 9);
+
+      // With ripple, the blob after the selection moves by as much as the edge did.
+      expect(scoped.undo()).toBe(true);
+      const rippled = stretchOps(selected, from, to, true, 'sung');
+      apply(scoped, rippled.ops);
+      const third = stateOf(scoped).blobs[2]!;
+      expect(third.timeOffset).toBeCloseTo(to.end - from.end, 9);
+      expect(scoped.undo()).toBe(true);
+
+      // Blob: the spans stretch over audio that stays where it is, until a neighbour stops them.
+      const shrunk = { start: from.start, end: from.start + (from.end - from.start) * 0.5 };
+      apply(scoped, stretchOps({ ...selected, editMode: 'blob' }, from, shrunk, false, 'sung').ops);
+      const blobs = stateOf(scoped).blobs;
+      expect(blobs[0]!.timeOffset).toBe(0);
+      expect(blobs[0]!.end).toBeCloseTo(from.start + (chosen[0]!.end - from.start) * 0.5, 9);
+      expect(blobs[1]!.end).toBeCloseTo(shrunk.end, 9);
     } finally {
       scoped.free();
     }

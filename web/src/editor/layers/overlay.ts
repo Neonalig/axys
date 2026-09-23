@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { selectionSpan } from '../../app/selection.js';
 import type { AppState } from '../../app/store.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER, RULER_HEIGHT } from '../view.js';
 import { noteName, readoutNoteName } from '../../core/notes.js';
 import { detectedAt } from './pitch.js';
+import { stretchHandlesShown } from '../tools.js';
 import { chipWidth, drawChip, READOUT_FONT } from './readout.js';
 import { formatBarBeat, formatClock } from './ruler.js';
 
@@ -68,8 +70,27 @@ function drawSelection(
     ctx.lineTo(viewport.crisp(x1), viewport.height);
     ctx.stroke();
   }
+  // The edges that stretch the selection carry a grip, so they read as something to take hold of.
+  const hull = stretchHandlesShown(state) ? selectionSpan(ranges) : null;
+  if (hull !== null) {
+    const middle = viewport.plotTop + viewport.plotHeight / 2;
+    ctx.fillStyle = theme.handleActive;
+    for (const time of [hull.start, hull.end]) {
+      const x = viewport.timeToX(time);
+      ctx.fillRect(
+        Math.round(x - STRETCH_GRIP_WIDTH / 2),
+        Math.round(middle - STRETCH_GRIP_HEIGHT / 2),
+        STRETCH_GRIP_WIDTH,
+        STRETCH_GRIP_HEIGHT,
+      );
+    }
+  }
   ctx.restore();
 }
+
+/** Size in pixels of the grips on a stretchable selection's edges. */
+const STRETCH_GRIP_WIDTH = 5;
+const STRETCH_GRIP_HEIGHT = 24;
 
 function drawLoop(
   ctx: CanvasRenderingContext2D,

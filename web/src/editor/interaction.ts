@@ -16,6 +16,7 @@ import {
   outsideRunAt,
   samplePitch,
   shiftLines,
+  stretchOps,
   strokeSpan,
   strokeValue,
 } from '../app/clipboard.js';
@@ -67,6 +68,7 @@ import {
   moveBezierHandle,
   sampleBezier,
   simplifyGesture,
+  stretchHandlesShown,
   snapMidi,
   SNAP_PIXELS,
   snapTime,
@@ -122,6 +124,8 @@ type Gesture =
       /** Whether the drag moves the line in time rather than in pitch. */
       horizontal: boolean;
     }
+  /** A selection's edge dragged, stretching what it holds; `ripple` moves what lies beyond. */
+  | { kind: 'stretch'; edge: Edge; from: TimeRange; to: TimeRange; ripple: boolean }
   /** Pitch outside every blob picked up, to become a blob of its own when let go. */
   | {
       kind: 'lift';
@@ -305,6 +309,19 @@ export class EditorController {
         }
       }
       return { ...base, kind: 'ruler' };
+    }
+
+    // The selection's own edges stretch it under the Time tool, ahead of the blobs they lie on.
+    if (stretchHandlesShown(state)) {
+      const hull = selectionSpan(state.selection.ranges);
+      if (hull !== null) {
+        if (Math.abs(x - viewport.timeToX(hull.start)) <= EDGE_GRIP) {
+          return { ...base, kind: 'selectionEdge', edge: 'start' };
+        }
+        if (Math.abs(x - viewport.timeToX(hull.end)) <= EDGE_GRIP) {
+          return { ...base, kind: 'selectionEdge', edge: 'end' };
+        }
+      }
     }
 
     for (const blob of state.blobs) {
@@ -1002,6 +1019,13 @@ export class EditorController {
       }
     }
 
+    if (hit.kind === 'selectionEdge' && hit.edge !== null) {
+      const hull = selectionSpan(state.selection.ranges);
+      if (hull !== null) {
+        return { kind: 'stretch', edge: hit.edge, from: hull, to: hull, ripple: false };
+      }
+    }
+
     if (hit.kind === 'stroke' && hit.stroke !== undefined && hit.stroke !== null) {
       const handle = state.tool === 'bezier' ? this.#bezierHandleAt(this.#origin) : null;
       if (handle !== null) return { kind: 'bezierHandle', handle };
@@ -1105,6 +1129,45 @@ export class EditorController {
       default:
         return this.#beginScrub(hit);
     }
+  }
+
+  /** What a selection stretched to a new span would look like. */
+  #stretchPreview(gesture: Extract<Gesture, { kind: 'stretch' }>): EditorPreview {
+    const state = this.#store.state;
+    const { from, to } = gesture;
+    const scale = (to.end - to.start) / (from.end - from.start);
+    const map = (time: number): number => to.start + (time - from.start) * scale;
+    const selected = new Set(state.selection.blobs);
+    const ghosts =
+      state.editMode === 'pitch'
+        ? []
+        : state.blobs
+            .filter((blob) => selected.has(blob.id))
+            .map((blob): Blob => {
+              if (state.editMode === 'blob') {
+                return { ...blob, start: map(blob.start), end: map(blob.end) };
+              }
+              const start = blobOutputStart(blob);
+              return {
+                ...blob,
+                timeOffset: blob.timeOffset + map(start) - start,
+                timeScale: blob.timeScale * scale,
+              };
+            });
+    const lines =
+      state.editMode === 'pitch'
+        ? samplePitch(state, state.selection.ranges).map((line) =>
+            line.map((point) => ({ time: map(point.time), midi: point.midi })),
+          )
+        : [];
+    const ripple = gesture.ripple ? '  Ripple' : '';
+    return {
+      kind: 'stretch',
+      span: to,
+      ghosts,
+      lines,
+      label: `Stretch ${String(Math.round(scale * 100))}%${ripple}`,
+    };
   }
 
   /**
@@ -1358,13 +1421,22 @@ export class EditorController {
       case 'contour':
       case 'lift': {
         const scale = modifiers.fine ? FINE_FACTOR : 1;
-        if (gesture.horizontal) {
-          gesture.seconds = (this.#current.x - this.#origin.x) * viewport.secondsPerPixel * scale;
-        } else {
-          const raw =
-            (viewport.yToMidi(this.#current.y) - viewport.yToMidi(this.#origin.y)) * scale;
-          gesture.semitones = modifiers.constrain ? Math.round(raw) : raw;
-        }
+        const seconds = (this.#current.x - this.#origin.x) * viewport.secondsPerPixel * scale;
+        const raw = (viewport.yToMidi(this.#current.y) - viewport.yToMidi(this.#origin.y)) * scale;
+        const semitones = modifiers.constrain ? Math.round(raw) : raw;
+        // The Time tool moves a line along time and the Pitch tool up and down, never both.
+        if (gesture.horizontal) gesture.seconds = seconds;
+        else gesture.semitones = semitones;
+        break;
+      }
+      case 'stretch': {
+        const at = this.#snapTime(time, { ...modifiers, snap: false });
+        const least = viewport.secondsPerPixel * 4;
+        gesture.to =
+          gesture.edge === 'end'
+            ? { start: gesture.from.start, end: Math.max(gesture.from.start + least, at) }
+            : { start: Math.min(gesture.from.end - least, at), end: gesture.from.end };
+        gesture.ripple = modifiers.constrain;
         break;
       }
       case 'edge': {
@@ -1481,6 +1553,8 @@ export class EditorController {
           seconds: gesture.seconds,
           label: `Move Blob ${formatMilliseconds(gesture.seconds)}`,
         };
+      case 'stretch':
+        return this.#moved ? this.#stretchPreview(gesture) : null;
       case 'contour':
       case 'lift':
         return this.#moved
@@ -1630,6 +1704,24 @@ export class EditorController {
           );
         }
         break;
+      case 'stretch': {
+        if (!this.#moved) break;
+        const state = this.#store.state;
+        const { ops, ranges } = stretchOps(
+          state,
+          gesture.from,
+          gesture.to,
+          gesture.ripple,
+          state.pitchCutFill,
+        );
+        if (ops.length === 0) break;
+        const percent = Math.round(
+          ((gesture.to.end - gesture.to.start) / (gesture.from.end - gesture.from.start)) * 100,
+        );
+        this.#commit(grouped(ops), `Stretch ${String(percent)}%`);
+        this.#setSelection(selectionForRanges(this.#store.state.blobs, ranges));
+        break;
+      }
       case 'shift':
         if (gesture.seconds !== 0) {
           // Slid one at a time from the leading edge, so a blob never meets one of its own set.
@@ -1663,16 +1755,13 @@ export class EditorController {
           state.outsidePitch,
         );
         if (ops.length > 0) {
-          this.#commit(
-            grouped(ops),
-            `Move Pitch ${
-              gesture.horizontal
-                ? formatMilliseconds(gesture.seconds)
-                : formatSemitones(gesture.semitones)
-            }`,
-          );
+          const parts = [
+            gesture.seconds === 0 ? '' : formatMilliseconds(gesture.seconds),
+            gesture.semitones === 0 ? '' : formatSemitones(gesture.semitones),
+          ].filter((part) => part !== '');
+          this.#commit(grouped(ops), `Move Pitch ${parts.join(' ')}`);
           // The selection goes with the line, so it names what was just moved.
-          if (gesture.horizontal) {
+          if (gesture.seconds !== 0) {
             const ranges = gesture.ranges.map((range) => ({
               start: range.start + gesture.seconds,
               end: range.end + gesture.seconds,

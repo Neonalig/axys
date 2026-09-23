@@ -119,7 +119,8 @@ export type HitKind =
   | 'clipTitle'
   | 'reference'
   | 'pitchLine'
-  | 'stroke';
+  | 'stroke'
+  | 'selectionEdge';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -140,6 +141,15 @@ export interface Hit {
   /** Source seconds under the cursor; equal to `time` outside any blob. */
   sourceTime: number;
   midi: number;
+}
+
+/**
+ * Whether the selection carries edge handles that stretch it: under the Time tool, in any mode,
+ * for anything but a single blob, whose own edges already do that.
+ */
+export function stretchHandlesShown(state: AppState): boolean {
+  if (state.tool !== 'time' || state.selection.ranges.length === 0) return false;
+  return state.editMode === 'pitch' || state.selection.blobs.length !== 1;
 }
 
 /** Cursor shape for a tool over a given target, in an edit mode. */
@@ -180,6 +190,9 @@ export function cursorFor(tool: ToolId, hit: Hit, mode: EditMode = 'both'): stri
   if (hit.kind === 'stroke') {
     return 'pointer';
   }
+  if (hit.kind === 'selectionEdge') {
+    return 'ew-resize';
+  }
   // Pitch outside every blob is picked up by the tools that move pitch, and selected by the rest.
   if (hit.kind === 'pitchLine') {
     return tool === 'pitch'
@@ -216,6 +229,8 @@ export function describeHit(hit: Hit, state: AppState): string {
       return `Pitch ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'stroke':
       return `Curve ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'selectionEdge':
+      return 'Stretch Selection  Shift Ripple';
     case 'clipTitle':
       return 'Move Clip  Ctrl Start  Shift Insert  Double-Click Select';
     case 'reference':
@@ -663,6 +678,16 @@ export type EditorPreview =
   | { kind: 'timeDrag'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }
   | { kind: 'blobShift'; blobs: readonly BlobId[]; seconds: number; label: string }
+  | {
+      kind: 'stretch';
+      /** The selection's new span. */
+      span: { start: number; end: number };
+      /** The selected blobs as the stretch would leave them. */
+      ghosts: readonly Blob[];
+      /** The pitch line as the stretch would leave it, in Pitch mode. */
+      lines: readonly (readonly GesturePoint[])[];
+      label: string;
+    }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
   | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
   | { kind: 'lines'; lines: readonly (readonly GesturePoint[])[]; label: string }

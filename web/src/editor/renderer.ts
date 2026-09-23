@@ -403,6 +403,15 @@ export class EditorRenderer {
         }
         labelAt(ctx, viewport, theme, preview.label, ghostAnchor(state, viewport, preview.blobs));
         break;
+      case 'stretch':
+        drawSpanPreview(ctx, state, viewport, theme, null, preview.span.start, preview.span.end);
+        for (const ghost of preview.ghosts) drawBlobGhost(ctx, state, viewport, theme, ghost, 0, 0);
+        for (const line of preview.lines) drawCurvePreview(ctx, viewport, theme, line);
+        labelAt(ctx, viewport, theme, preview.label, {
+          x: viewport.timeToX(preview.span.end),
+          y: viewport.plotTop + 24,
+        });
+        break;
       case 'blobShift':
         for (const blob of blobsOf(state, preview.blobs)) {
           const moved = {

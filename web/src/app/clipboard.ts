@@ -643,6 +643,107 @@ export function movePitchOps(
 }
 
 /**
+ * Stretches everything a selection holds to a new span, keeping its proportions.
+ *
+ * @remarks The edge being dragged moves and the other stays. What stretches is what the edit mode
+ * edits: in Blob and Pitch the selected blobs' timing and so their audio, in Blob the spans the
+ * blobs cover over audio that stays where it is, and in Pitch the pitch line alone, whose spans
+ * are left at their sung pitch or flat, as `fill` says. With `ripple`, the blobs beyond the dragged
+ * edge move by as much as it did; the pitch line is not rippled. Returns the edits and the
+ * selection's new spans.
+ */
+export function stretchOps(
+  state: AppState,
+  from: TimeRange,
+  to: TimeRange,
+  ripple: boolean,
+  fill: PitchCutFill,
+): { ops: EditOp[]; ranges: TimeRange[] } {
+  const length = from.end - from.start;
+  if (!(length > 0) || !(to.end - to.start > 0)) return { ops: [], ranges: [] };
+  const scale = (to.end - to.start) / length;
+  const map = (time: number): number => to.start + (time - from.start) * scale;
+  const ranges = state.selection.ranges.map((range) => ({
+    start: map(range.start),
+    end: map(range.end),
+  }));
+  const selected = new Set(state.selection.blobs);
+  const chosen = state.blobs.filter((blob) => selected.has(blob.id));
+  const others = state.blobs.filter((blob) => !selected.has(blob.id));
+  // The side the dragged edge is on, and how far it went.
+  const right = to.end !== from.end;
+  const moved = right ? to.end - from.end : to.start - from.start;
+  const beyond = others.filter((blob) =>
+    right ? blobOutputStart(blob) >= from.end - EPS : blobOutputEnd(blob) <= from.start + EPS,
+  );
+  const ops: EditOp[] = [];
+  switch (state.editMode) {
+    case 'pitch': {
+      const lines = samplePitch(state, state.selection.ranges);
+      if (lines.length === 0) return { ops: [], ranges };
+      const stretched = lines.map((line) =>
+        line.map((point) => ({ time: map(point.time), midi: point.midi })),
+      );
+      const kept = strokesInside(state, state.selection.ranges).map((stroke): EditOp => ({
+        type: 'setStroke',
+        stroke: mapStroke(stroke, stroke.id, (point) => ({
+          time: map(point.time),
+          midi: point.midi,
+        })),
+      }));
+      ops.push(
+        ...cutPitchOps(state, state.selection.ranges, fill),
+        ...pastePitchOps(state, stretched, state.outsidePitch),
+        ...kept,
+      );
+      return { ops, ranges };
+    }
+    case 'blob': {
+      // Spans are moved one edge at a time, leading edge first and from the far end of the
+      // move, so no blob is held back by a neighbour of its own selection that has not moved.
+      const rightward = (blob: Blob): boolean => map(blob.start) >= blob.start;
+      const order = [...chosen].sort((a, b) => a.start - b.start);
+      const forward = order.filter((blob) => !rightward(blob));
+      const backward = order.filter(rightward).reverse();
+      for (const blob of backward) {
+        ops.push(
+          { type: 'moveBoundary', blob: blob.id, edge: 'end', time: map(blob.end) },
+          { type: 'moveBoundary', blob: blob.id, edge: 'start', time: map(blob.start) },
+        );
+      }
+      for (const blob of forward) {
+        ops.push(
+          { type: 'moveBoundary', blob: blob.id, edge: 'start', time: map(blob.start) },
+          { type: 'moveBoundary', blob: blob.id, edge: 'end', time: map(blob.end) },
+        );
+      }
+      if (ripple && moved !== 0) {
+        const far = [...beyond].sort((a, b) => (moved > 0 ? b.start - a.start : a.start - b.start));
+        for (const blob of far) ops.push({ type: 'shiftBlob', blob: blob.id, seconds: moved });
+      }
+      // A stretch outwards needs the room the ripple makes, so the ripple goes first; one
+      // inwards leaves room behind it, so it goes last.
+      const rippled = ops.filter((op) => op.type === 'shiftBlob');
+      const stretched = ops.filter((op) => op.type !== 'shiftBlob');
+      const outwards = right ? moved > 0 : moved < 0;
+      return { ops: outwards ? [...rippled, ...stretched] : [...stretched, ...rippled], ranges };
+    }
+    default: {
+      for (const blob of chosen) {
+        const start = blobOutputStart(blob);
+        const shift = map(start) - start;
+        if (shift !== 0) ops.push({ type: 'moveTime', blobs: [blob.id], seconds: shift });
+        ops.push({ type: 'setTimeScale', blob: blob.id, scale: blob.timeScale * scale });
+      }
+      if (ripple && moved !== 0 && beyond.length > 0) {
+        ops.push({ type: 'moveTime', blobs: beyond.map((blob) => blob.id), seconds: moved });
+      }
+      return { ops, ranges };
+    }
+  }
+}
+
+/**
  * Makes a blob of an outside run, moved by `semitones` in pitch and `seconds` in time.
  *
  * @remarks What moving a line outside every blob does: the run becomes a blob like any other, so
