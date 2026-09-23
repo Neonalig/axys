@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../app/store.js';
-import type { Blob, BlobId } from '../core/types.js';
+import type { Blob, BlobId, PitchTrackArrays } from '../core/types.js';
 import type { Theme, ThemeName } from '../ui/theme.js';
 import { currentTheme, resolveTheme } from '../ui/theme.js';
 import { prefersReducedMotion } from '../ui/motion.js';
@@ -18,15 +18,14 @@ import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
-import { clipPeaks, drawWaveform, fillEnvelope } from './layers/waveform.js';
+import { drawWaveform, fillEnvelope } from './layers/waveform.js';
 import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
 import { othersOf } from '../app/sources.js';
 import { clipOf } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
 import { peaksFor } from './peaks.js';
 import type { PeakEnvelope } from './peaks.js';
-import type { Viewport } from './view.js';
-import { RULER_HEIGHT } from './view.js';
+import { RULER_HEIGHT, Viewport } from './view.js';
 
 /** Where a hover readout is drawn and what it says. */
 export interface HoverReadout {
@@ -70,6 +69,8 @@ export class EditorRenderer {
   #hoverBlob: { id: BlobId; since: number } | null = null;
   /** Whether the last frame scrolled a title, which needs the frames after it too. */
   #scrolling = false;
+  /** The state split around the clip being dragged, kept while the drag lasts. */
+  #split: DragSplit | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.#canvas = canvas;
@@ -220,9 +221,12 @@ export class EditorRenderer {
     const hover = this.#hoverBlob;
     const marquee =
       hover === null ? null : { blob: hover.id, elapsed: performance.now() - hover.since };
+    const preview = this.#preview;
+    const dragged = preview?.kind === 'clipDrag' ? this.#splitFor(state, preview.clip) : null;
     const key = baseKey(state, viewport, theme, this.#ratio, [
       hover?.id ?? -1,
       this.#scrolling && marquee !== null ? marquee.elapsed : 0,
+      dragged === null ? -1 : dragged.clip,
     ]);
     if (this.#baseKey !== null && sameBaseKey(this.#baseKey, key)) {
       return base;
@@ -237,6 +241,8 @@ export class EditorRenderer {
       return base;
     }
     ctx.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
+    // A clip being dragged is drawn by the preview where it will land, so it is left out here.
+    state = dragged === null ? state : dragged.rest;
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, viewport.width, viewport.height);
     drawGrid(ctx, state, viewport, theme);
@@ -377,7 +383,7 @@ export class EditorRenderer {
         labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
         break;
       case 'clipDrag':
-        drawClipDrag(ctx, state, viewport, theme, preview.clip, preview.position);
+        this.#drawClipDrag(ctx, state, viewport, theme, preview.clip, preview.position);
         labelAt(ctx, viewport, theme, preview.label, {
           x: viewport.timeToX(preview.position),
           y: viewport.plotTop + 24,
@@ -419,6 +425,51 @@ export class EditorRenderer {
         break;
     }
     ctx.restore();
+  }
+
+  /**
+   * Draws a clip being dragged where it would land: its blobs, waveform and pitch, all of it.
+   *
+   * @remarks Drawn through a view shifted by the drag, so every layer draws the clip exactly as
+   * it will look once it is let go, gaps and leading pitch included.
+   */
+  #drawClipDrag(
+    ctx: CanvasRenderingContext2D,
+    state: AppState,
+    viewport: Viewport,
+    theme: Theme,
+    clip: number,
+    position: number,
+  ): void {
+    const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+    if (entry === undefined) {
+      return;
+    }
+    const shift = position - entry.position;
+    const middle = viewport.plotTop + viewport.plotHeight / 2;
+    drawWaveBand(ctx, viewport, theme, position, entry.source.duration, null, middle);
+    const moving = this.#splitFor(state, clip).moving;
+    const view = viewport.view;
+    const shifted = new Viewport(
+      viewport.width,
+      viewport.height,
+      { ...view, visibleStart: view.visibleStart - shift, visibleEnd: view.visibleEnd - shift },
+      this.#ratio,
+    );
+    drawWaveform(ctx, moving, shifted, theme);
+    drawBlobs(ctx, moving, shifted, theme);
+    drawPitch(ctx, moving, shifted, theme);
+  }
+
+  /** The state split around a clip: everything else, and the clip on its own. */
+  #splitFor(state: AppState, clip: number): DragSplit {
+    const known = this.#split;
+    if (known !== null && known.state === state && known.clip === clip) {
+      return known;
+    }
+    const split = splitClip(state, clip);
+    this.#split = split;
+    return split;
   }
 
   #drawHoverGuides(
@@ -805,52 +856,52 @@ function drawBezierHandles(
 /** Fraction of the plot height the dragged clip's waveform band takes. */
 const CLIP_BAND_FRACTION = 0.24;
 
-/**
- * Draws a clip being dragged where it would land: its blobs as ghosts, over a band carrying its
- * whole waveform.
- *
- * @remarks The band spans the clip's source, gaps and all, so where the take starts and ends is
- * read at a glance while the blobs show where its notes fall. The envelope is the one already
- * cached for the waveform layer, so the preview costs one pass over it per frame.
- */
-function drawClipDrag(
-  ctx: CanvasRenderingContext2D,
-  state: AppState,
-  viewport: Viewport,
-  theme: Theme,
-  clip: number,
-  position: number,
-): void {
-  const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
-  if (entry === undefined) {
-    return;
-  }
-  const shift = position - entry.position;
-  const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);
-  let low = Number.POSITIVE_INFINITY;
-  let high = Number.NEGATIVE_INFINITY;
-  for (const blob of blobs) {
-    const extent = blobPitchExtent(blob, state.track);
-    low = Math.min(low, extent.low);
-    high = Math.max(high, extent.high);
-  }
-  const middle =
-    Number.isFinite(low) && Number.isFinite(high)
-      ? viewport.midiToY((low + high) / 2)
-      : viewport.plotTop + viewport.plotHeight / 2;
-  drawWaveBand(
-    ctx,
-    viewport,
-    theme,
-    position,
-    entry.source.duration,
-    clipPeaks(state, clip)?.envelope ?? null,
-    middle,
-  );
+/** A state split around one clip, for drawing that clip apart from the rest. */
+interface DragSplit {
+  state: AppState;
+  clip: number;
+  /** Everything but the clip. */
+  rest: AppState;
+  /** The clip alone, with nothing selected. */
+  moving: AppState;
+}
 
-  for (const blob of blobs) {
-    drawBlobGhost(ctx, state, viewport, theme, blob, shift, 0);
+function splitClip(state: AppState, clip: number): DragSplit {
+  const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+  const start = entry?.position ?? 0;
+  const end = start + (entry?.source.duration ?? 0);
+  const within = (time: number): boolean => time >= start && time <= end;
+  const mine = (blob: Blob): boolean => clipOf(blob.id) === clip;
+  return {
+    state,
+    clip,
+    rest: {
+      ...state,
+      blobs: state.blobs.filter((blob) => !mine(blob)),
+      track: state.track === null ? null : framesWhere(state.track, (time) => !within(time)),
+    },
+    moving: {
+      ...state,
+      blobs: state.blobs.filter(mine),
+      track: state.track === null ? null : framesWhere(state.track, within),
+      conflicts: [],
+      selection: { blobs: [], anchors: [], ranges: [] },
+    },
+  };
+}
+
+/** The frames of a track whose time passes `keep`. */
+function framesWhere(track: PitchTrackArrays, keep: (time: number) => boolean): PitchTrackArrays {
+  const indices: number[] = [];
+  for (let i = 0; i < track.times.length; i += 1) {
+    if (keep(track.times[i] ?? 0)) indices.push(i);
   }
+  return {
+    times: Float32Array.from(indices, (i) => track.times[i] ?? 0),
+    midi: Float32Array.from(indices, (i) => track.midi[i] ?? Number.NaN),
+    confidence: Float32Array.from(indices, (i) => track.confidence[i] ?? 0),
+    rms: Float32Array.from(indices, (i) => track.rms[i] ?? 0),
+  };
 }
 
 /** Draws a clip being imported where it will land: its waveform band, titled. */
