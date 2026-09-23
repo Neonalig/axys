@@ -87,12 +87,16 @@ export function drawReferenceBand(
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 
   const envelope = peaksFor(referencePeaksKey(reference.source.fingerprint));
-  const left = Math.max(rect.x, 0);
-  const right = Math.min(rect.x + rect.width, viewport.width);
+  // Columns are cut a whole number of pixels from the band's own start, so a band sliding under a
+  // following view keeps each column over the same audio. Cut from the view's edge instead, the
+  // columns resampled on every frame once the start had scrolled away, and the waveform shimmered.
+  const skipped = Math.max(0, Math.floor(-rect.x));
+  const left = rect.x + skipped;
+  const right = Math.min(rect.x + rect.width, viewport.width + 1);
   if (envelope !== null && right > left) {
-    const columns = Math.max(1, Math.round(right - left));
+    const columns = Math.max(1, Math.ceil(right - left));
     const from = viewport.xToTime(left) - position;
-    const to = viewport.xToTime(right) - position;
+    const to = viewport.xToTime(left + columns) - position;
     const span = envelope.sample(from, to, columns);
     ctx.globalAlpha = alpha;
     ctx.fillStyle = theme.waveform;
@@ -102,11 +106,14 @@ export function drawReferenceBand(
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = theme.midiNote;
   ctx.lineWidth = viewport.crispWidth();
+  // Both edges on the device grid, so neither blurs and sharpens as the band slides.
+  const x0 = viewport.crisp(rect.x);
+  const y0 = viewport.crisp(rect.y);
   ctx.strokeRect(
-    viewport.crisp(rect.x),
-    viewport.crisp(rect.y),
-    Math.round(rect.width),
-    Math.round(rect.height),
+    x0,
+    y0,
+    viewport.crisp(rect.x + rect.width) - x0,
+    viewport.crisp(rect.y + rect.height) - y0,
   );
   ctx.font = TITLE_FONT;
   ctx.textBaseline = 'middle';
