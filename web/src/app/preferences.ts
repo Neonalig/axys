@@ -36,6 +36,8 @@ export interface Preferences {
   mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
+  /** How tall the mixer row is while open, in pixels. */
+  mixerHeight: number;
   /** What cutting pitch leaves in the span it came from. */
   pitchCutFill: PitchCutFill;
 }
@@ -53,6 +55,21 @@ export const INSPECTOR_DEFAULT_WIDTH = 344;
 export function clampInspectorWidth(value: number): number {
   if (!Number.isFinite(value)) return INSPECTOR_DEFAULT_WIDTH;
   return Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, Math.round(value)));
+}
+
+/** Shortest the mixer row may be dragged, in pixels, which keeps a fader worth dragging. */
+export const MIXER_MIN_HEIGHT = 180;
+
+/** Tallest the mixer row may be dragged, in pixels. */
+export const MIXER_MAX_HEIGHT = 640;
+
+/** The height the mixer row opens at. */
+export const MIXER_DEFAULT_HEIGHT = 248;
+
+/** A stored or dragged height, held inside the bounds the mixer row may take. */
+export function clampMixerHeight(value: number): number {
+  if (!Number.isFinite(value)) return MIXER_DEFAULT_HEIGHT;
+  return Math.min(MIXER_MAX_HEIGHT, Math.max(MIXER_MIN_HEIGHT, Math.round(value)));
 }
 
 /** Local storage key holding the settings document. */
@@ -74,6 +91,7 @@ export function defaultPreferences(): Preferences {
     inspectorCollapsed: false,
     mixerCollapsed: true,
     inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
+    mixerHeight: MIXER_DEFAULT_HEIGHT,
     pitchCutFill: 'sung',
   };
 }
@@ -121,6 +139,10 @@ export function loadPreferences(): Preferences {
       typeof record['inspectorWidth'] === 'number'
         ? clampInspectorWidth(record['inspectorWidth'])
         : defaults.inspectorWidth,
+    mixerHeight:
+      typeof record['mixerHeight'] === 'number'
+        ? clampMixerHeight(record['mixerHeight'])
+        : defaults.mixerHeight,
     pitchCutFill: oneOf(record['pitchCutFill'], PITCH_CUT_FILLS, defaults.pitchCutFill),
   };
 }

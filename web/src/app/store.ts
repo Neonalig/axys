@@ -59,6 +59,8 @@ export interface AppState {
   mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
+  /** How tall the mixer row is while open, in pixels. */
+  mixerHeight: number;
   /** What editing acts on: blobs and the pitch in them together, blobs alone, or pitch alone. */
   editMode: EditMode;
   /** What cutting pitch leaves in the span it came from. */
@@ -232,6 +234,7 @@ export function initialState(): AppState {
     inspectorCollapsed: false,
     mixerCollapsed: true,
     inspectorWidth: 328,
+    mixerHeight: 248,
     editMode: 'both',
     pitchCutFill: 'sung',
     clipboard: null,

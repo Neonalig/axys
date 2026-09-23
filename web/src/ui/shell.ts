@@ -14,6 +14,9 @@ import {
   INSPECTOR_DEFAULT_WIDTH,
   INSPECTOR_MAX_WIDTH,
   INSPECTOR_MIN_WIDTH,
+  MIXER_DEFAULT_HEIGHT,
+  MIXER_MAX_HEIGHT,
+  MIXER_MIN_HEIGHT,
 } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition, toolWorksIn } from '../editor/tools.js';
@@ -110,6 +113,8 @@ export interface ShellHooks {
   setInspectorCollapsed(on: boolean): void;
   /** Sets how wide the inspector column is, and remembers it. */
   setInspectorWidth(pixels: number): void;
+  /** Sets how tall the open mixer is, and remembers it. */
+  setMixerHeight(pixels: number): void;
   /** The Sources menu for the project as it is now. */
   sourceMenu(): MenuEntry[];
   /** Brings a clip forward in the editor. */
@@ -726,6 +731,7 @@ export class AppShell {
   /** The palette or the cheatsheet while one is open, so the same key closes it again. */
   #panel: { kind: 'palette' | 'cheatsheet'; dialog: Dialog } | null = null;
   readonly #resizer: HTMLElement;
+  readonly #mixerResizer: HTMLElement;
   /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
   #resizeGrab = 0;
 
@@ -1065,12 +1071,14 @@ export class AppShell {
     this.#footer = footer;
 
     this.#resizer = this.#buildResizer();
+    this.#mixerResizer = this.#buildMixerResizer();
     this.#root.append(
       header,
       main,
       this.#resizer,
       this.#inspector.element,
       this.#mixer.element,
+      this.#mixerResizer,
       footer,
     );
     this.#toasts = new ToastHost(document.body);
@@ -1226,6 +1234,9 @@ export class AppShell {
     // state in its pressed styling, the way the metronome does. The panel folds by its grid row,
     // which the shell owns, so the class goes here rather than on the panel.
     this.#root.classList.toggle('is-mixer-open', mixerOpen);
+    this.#root.style.setProperty('--axys-mixer-height', `${String(state.mixerHeight)}px`);
+    this.#mixerResizer.hidden = !mixerOpen;
+    this.#mixerResizer.setAttribute('aria-valuenow', String(state.mixerHeight));
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
     setTooltip(this.#mixerToggle, `${mixerOpen ? 'Hide Mixer' : 'Show Mixer'} (K)`);
 
@@ -1660,6 +1671,66 @@ export class AppShell {
     // Double-clicking a divider puts it back where it started, which is what every other one does.
     bar.addEventListener('dblclick', () => {
       this.#hooks.setInspectorWidth(INSPECTOR_DEFAULT_WIDTH);
+    });
+    return bar;
+  }
+
+  /**
+   * The bar along the top of the open mixer, dragged to set its height.
+   *
+   * @remarks Laid over the mixer's top edge in the same grid area, so the mixer keeps its own
+   * layout. Arrow keys move it too, and a double-click puts it back to its opening height.
+   */
+  #buildMixerResizer(): HTMLElement {
+    const bar = document.createElement('div');
+    bar.className = 'axys-mixer-resizer';
+    bar.tabIndex = 0;
+    bar.setAttribute('role', 'separator');
+    bar.setAttribute('aria-orientation', 'horizontal');
+    bar.setAttribute('aria-label', 'Resize Mixer');
+    bar.setAttribute('aria-valuemin', String(MIXER_MIN_HEIGHT));
+    bar.setAttribute('aria-valuemax', String(MIXER_MAX_HEIGHT));
+    setTooltip(bar, 'Resize Mixer');
+
+    let grab = 0;
+    const height = (): number => this.#mixer.element.getBoundingClientRect().height;
+    bar.addEventListener('pointerdown', (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      grab = event.clientY - this.#mixer.element.getBoundingClientRect().top;
+      bar.setPointerCapture(event.pointerId);
+      bar.classList.add('is-dragging');
+      this.#root.classList.add('is-resizing');
+      event.preventDefault();
+    });
+    bar.addEventListener('pointermove', (event: PointerEvent) => {
+      if (!bar.hasPointerCapture(event.pointerId)) return;
+      const bottom = this.#mixer.element.getBoundingClientRect().bottom;
+      this.#hooks.setMixerHeight(bottom - event.clientY + grab);
+    });
+    const end = (event: PointerEvent): void => {
+      if (!bar.hasPointerCapture(event.pointerId)) return;
+      bar.releasePointerCapture(event.pointerId);
+      bar.classList.remove('is-dragging');
+      this.#root.classList.remove('is-resizing');
+    };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+
+    bar.addEventListener('keydown', (event: KeyboardEvent) => {
+      const step = event.shiftKey ? RESIZE_STEP_COARSE : RESIZE_STEP;
+      if (event.key === 'ArrowUp') {
+        this.#hooks.setMixerHeight(height() + step);
+      } else if (event.key === 'ArrowDown') {
+        this.#hooks.setMixerHeight(height() - step);
+      } else {
+        return;
+      }
+      // Kept from the window's shortcuts, which would otherwise nudge the selection too.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    bar.addEventListener('dblclick', () => {
+      this.#hooks.setMixerHeight(MIXER_DEFAULT_HEIGHT);
     });
     return bar;
   }

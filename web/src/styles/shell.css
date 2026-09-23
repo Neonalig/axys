@@ -41,6 +41,35 @@
   display: none;
 }
 
+/* The divider along the top of the open mixer, dragged to set its height. It lies over the
+   mixer's top edge rather than taking a row, so the mixer keeps its own layout */
+
+.axys-mixer-resizer {
+  grid-area: mixer;
+  align-self: start;
+  z-index: 1;
+  height: 6px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.axys-mixer-resizer[hidden] {
+  display: none;
+}
+
+.axys-mixer-resizer:hover,
+.axys-mixer-resizer:focus-visible,
+.axys-mixer-resizer.is-dragging {
+  background: var(--axys-accent);
+  outline: none;
+}
+
+/* A panel being dragged to size follows the pointer rather than easing after it */
+
+#app.is-resizing {
+  transition: none;
+}
+
 .axys-resizer:hover,
 .axys-resizer:focus-visible,
 .axys-resizer.is-dragging {

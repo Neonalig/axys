@@ -418,12 +418,12 @@
     justify-content: flex-end;
   }
 
-  /* Clamped rather than a plain fraction, so a fader stays long enough to be worth dragging */
+  /* The height it is dragged to, kept to half the window so the editor keeps the rest */
 
   #app.is-mixer-open {
     grid-template-rows:
       auto minmax(0, 1fr) auto auto
-      clamp(180px, 26dvh, var(--axys-mixer-height)) auto;
+      min(var(--axys-mixer-height), 50dvh) auto;
   }
 }
 

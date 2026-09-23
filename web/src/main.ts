@@ -15,7 +15,12 @@ import { SHARP_NAMES } from './core/notes.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { startOffline } from './app/offline.js';
 import { bindShortcuts } from './app/shortcuts.js';
-import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
+import {
+  clampInspectorWidth,
+  clampMixerHeight,
+  loadPreferences,
+  savePreferences,
+} from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges, selectionInMode } from './app/selection.js';
 import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js';
@@ -2326,6 +2331,11 @@ function buildHooks(
       savePreferences({ inspectorWidth: width });
       store.update({ inspectorWidth: width });
     },
+    setMixerHeight(pixels: number): void {
+      const height = clampMixerHeight(pixels);
+      savePreferences({ mixerHeight: height });
+      store.update({ mixerHeight: height });
+    },
     setTheme(choice: ThemeChoice): void {
       const saved = savePreferences({ theme: choice });
       applyTheme(resolvedTheme(choice), saved.accent);
@@ -2375,6 +2385,7 @@ async function start(): Promise<void> {
     inspectorCollapsed: preferences.inspectorCollapsed,
     mixerCollapsed: preferences.mixerCollapsed,
     inspectorWidth: preferences.inspectorWidth,
+    mixerHeight: preferences.mixerHeight,
     pitchCutFill: preferences.pitchCutFill,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });
