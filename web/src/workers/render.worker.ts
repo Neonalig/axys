@@ -39,6 +39,11 @@ scope.addEventListener('message', (event) => {
     case 'cancel':
       cancelling.add(request.id);
       return;
+    case 'warm':
+      void loadCore().catch(() => {
+        // The first job reports the failure with its operation named.
+      });
+      return;
     case 'renderRange':
       void renderRange(request);
       return;

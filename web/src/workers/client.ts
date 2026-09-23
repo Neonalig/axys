@@ -28,6 +28,7 @@ import type {
   RenderedMessage,
   RenderedRange,
   RequestId,
+  WarmRequest,
 } from './protocol';
 
 /** Receives a worker's stage name and its completed fraction, 0 to 1. */
@@ -109,6 +110,20 @@ abstract class WorkerClient {
     const pending = [...this.#pending.values()];
     this.#pending.clear();
     for (const job of pending) job.fail(new WorkerCancelled(job.operation));
+  }
+
+  /**
+   * Starts the worker and has it load its core now rather than on its first job.
+   *
+   * @remarks So work keeps running if the page loses its server after it has loaded.
+   */
+  warm(): void {
+    const request: WarmRequest = { type: 'warm' };
+    try {
+      this.#ensure().postMessage(request);
+    } catch {
+      // A worker that will not start fails its first job instead, with the reason.
+    }
   }
 
   /** Builds the worker this client drives. */

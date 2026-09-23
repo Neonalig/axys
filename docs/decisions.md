@@ -1138,6 +1138,14 @@ touches neither.
 to compare against. Registration happens in the production build only, which also keeps a stale
 worker from serving yesterday's bundle over a dev server.
 
+### Everything is loaded before the editor is shown
+
+The analysis and render workers, the span workers and the audio renderer are started as the page
+loads, each loading its core then, rather than on first use. A page that loses its server after
+loading, a stopped dev server or a dropped connection without the service worker, can still import,
+analyse, play and export. The renderer starts at the device's rate; a project at another rate
+rebuilds it, and a rebuild that cannot download keeps the running one, which resamples.
+
 ### New Project is a command of its own
 
 Opening a file replaced the project and nothing emptied it. New Project sits before Open, asks the

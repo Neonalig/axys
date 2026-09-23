@@ -425,7 +425,8 @@ export function buildCommands(): Command[] {
       group: 'File',
       // Not Ctrl+N: the browser answers that one first, with a window of its own.
       shortcut: 'Ctrl+Alt+N',
-      enabled: (ctx) => !ctx.workspace.importing,
+      // With nothing open there is nothing for it to replace.
+      enabled: (ctx) => ctx.workspace.ready && !ctx.workspace.importing,
       run: async (ctx) => {
         await ctx.workspace.newProject();
       },

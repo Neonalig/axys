@@ -15,6 +15,8 @@
   justify-content: center;
   text-align: center;
   pointer-events: none;
+  /* The same curtain an import draws, so the empty grid reads as waiting rather than as a project */
+  background: color-mix(in srgb, var(--axys-bg) 82%, transparent);
 }
 
 .axys-empty[hidden] {

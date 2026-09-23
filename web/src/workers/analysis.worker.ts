@@ -60,6 +60,13 @@ scope.addEventListener('message', (event) => {
     pool?.drop(request.id);
     return;
   }
+  if (request.type === 'warm') {
+    void loadCore().catch(() => {
+      // The first job reports the failure with its operation named.
+    });
+    spanPool()?.warm();
+    return;
+  }
   void run(request);
 });
 

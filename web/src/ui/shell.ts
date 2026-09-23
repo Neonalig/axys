@@ -389,10 +389,10 @@ interface ButtonFace {
 /**
  * The commands the empty canvas offers, in the order it offers them.
  *
- * @remarks Open first, because one picker takes a vocal, a project or a guide and that is what
- * an empty editor is waiting for.
+ * @remarks Open alone: one picker takes a vocal or a project, which is what an empty editor is
+ * waiting for, and New Project has nothing to replace.
  */
-const EMPTY_COMMANDS: readonly string[] = ['file.open', 'file.newProject'];
+const EMPTY_COMMANDS: readonly string[] = ['file.open'];
 
 /**
  * Lines the toolbar may wrap onto before it starts folding groups into the overflow menu.

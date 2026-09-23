@@ -41,8 +41,18 @@ export interface CancelRequest {
   id: RequestId;
 }
 
+/**
+ * Asks a worker to load everything it will need now, while the server can still be reached.
+ *
+ * @remarks A worker otherwise fetches its core on its first job, which fails once the page has
+ * gone offline. Answered with nothing.
+ */
+export interface WarmRequest {
+  type: 'warm';
+}
+
 /** Everything the analysis worker accepts. */
-export type AnalysisRequest = AnalyseRequest | CancelRequest;
+export type AnalysisRequest = AnalyseRequest | CancelRequest | WarmRequest;
 
 /**
  * Everything one analysis produced.
@@ -151,7 +161,7 @@ export interface ReferenceAudio {
 }
 
 /** Everything the render worker accepts. */
-export type RenderRequest = RenderRangeRequest | ExportWavRequest | CancelRequest;
+export type RenderRequest = RenderRangeRequest | ExportWavRequest | CancelRequest | WarmRequest;
 
 /** Rendered output and where it sits in the plan's output timeline. */
 export interface RenderedRange {

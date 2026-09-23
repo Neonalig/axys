@@ -956,6 +956,17 @@ class AxysWorkspace implements Workspace {
     return mapTime(this.#plan, outputSeconds, 0, 1);
   }
 
+  /**
+   * Starts the analysis and render workers and has them load their core now.
+   *
+   * @remarks A page that loses its server after loading, a stopped dev server or a dropped
+   * connection, can then still import, analyse and export.
+   */
+  warmWorkers(): void {
+    this.#analysis.warm();
+    this.#render.warm();
+  }
+
   /** Releases the session, the workers and the autosave timer. */
   dispose(): void {
     this.#autosave?.dispose();
@@ -2025,6 +2036,7 @@ async function start(): Promise<void> {
   }
 
   workspace = new AxysWorkspace({ core, store, audio, toast, projects, media });
+  workspace.warmWorkers();
   renderer = new EditorRenderer(shell.canvas);
   const editor = new EditorController({
     canvas: shell.canvas,

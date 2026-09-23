@@ -105,10 +105,17 @@ export class AudioEngine {
     this.#store = store;
   }
 
-  /** Compiles the core module and returns an engine ready to take a source. */
+  /**
+   * Compiles the core module and starts the renderer, and returns an engine ready to take a
+   * source.
+   *
+   * @remarks The renderer starts here, at the device's rate, rather than with the first project,
+   * so a page that loses its server after loading still has one to play through.
+   */
   static async create(store: AppStore): Promise<AudioEngine> {
     const engine = new AudioEngine(store);
     await engine.#compile();
+    if (engine.#loadError === null) await engine.#ensureNode(null);
     return engine;
   }
 
@@ -439,27 +446,28 @@ export class AudioEngine {
    * @remarks The bytes, not a compiled `WebAssembly.Module`, are what cross to the
    * worklet. A worklet is a separate agent cluster, and a module posted across one is
    * dropped with no error on either side, which silences playback without a diagnostic.
-   * The renderer module is fetched here as well, though it is only added once a project opens,
-   * so a connection lost during the first load is found at startup and the later add reads the
-   * cached copy.
    */
   async #compile(): Promise<void> {
     const url = wasmModuleUrl();
     try {
-      const [core, renderer] = await Promise.all([fetch(url), fetch(workletUrl)]);
-      for (const response of [core, renderer]) {
-        if (!response.ok) throw new Error(`${String(response.status)} ${response.statusText}`);
-      }
-      this.#coreBytes = await core.arrayBuffer();
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${String(response.status)} ${response.statusText}`);
+      this.#coreBytes = await response.arrayBuffer();
     } catch (thrown) {
       this.#loadError = thrown;
       this.#publish('failed', `Playback is unavailable: ${messageOf(thrown)}`);
     }
   }
 
-  async #ensureNode(rate: number): Promise<AudioWorkletNode | null> {
-    if (this.#node && this.#desiredRate === rate) return this.#node;
-    this.#teardown();
+  /**
+   * The renderer, rebuilt at `rate` when it runs at another, or at the device's rate for `null`.
+   *
+   * @remarks The new renderer is built before the old one is let go. One that cannot be built
+   * because its module did not download leaves the running one in place, which resamples; only
+   * with nothing running is that a load failure.
+   */
+  async #ensureNode(rate: number | null): Promise<AudioWorkletNode | null> {
+    if (this.#node && (rate === null || this.#desiredRate === rate)) return this.#node;
 
     const bytes = this.#coreBytes;
     if (!bytes) {
@@ -469,6 +477,7 @@ export class AudioEngine {
 
     const context = openContext(rate);
     if (!context) {
+      if (this.#node) return this.#node;
       this.#publish('failed', 'This browser has no Web Audio support');
       return null;
     }
@@ -477,10 +486,12 @@ export class AudioEngine {
       await context.audioWorklet.addModule(workletUrl);
     } catch (thrown) {
       void context.close();
+      if (this.#node) return this.#node;
       this.#loadError = thrown;
       this.#publish('failed', `The audio renderer did not load: ${messageOf(thrown)}`);
       return null;
     }
+    this.#teardown();
 
     const node = new AudioWorkletNode(context, PROCESSOR_NAME, {
       numberOfInputs: 0,
@@ -725,12 +736,14 @@ function toOutputSeconds(plan: RenderPlan | null, source: number): number {
   return first[0] + ((source - first[1]) / span) * (second[0] - first[0]);
 }
 
-function openContext(rate: number): AudioContext | null {
+function openContext(rate: number | null): AudioContext | null {
   if (typeof AudioContext !== 'function') return null;
-  try {
-    return new AudioContext({ sampleRate: rate, latencyHint: 'interactive' });
-  } catch {
-    // A host that refuses the source rate runs at its own; the worklet resamples.
+  if (rate !== null) {
+    try {
+      return new AudioContext({ sampleRate: rate, latencyHint: 'interactive' });
+    } catch {
+      // A host that refuses the source rate runs at its own; the worklet resamples.
+    }
   }
   try {
     return new AudioContext({ latencyHint: 'interactive' });
