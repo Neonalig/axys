@@ -28,6 +28,7 @@ import {
   DEFAULT_MIXER,
   MASTER_NAME,
   referenceStrip,
+  soloed,
   VOCAL_NAMES,
   withClipStrip,
   withReferenceStrip,
@@ -37,7 +38,7 @@ import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { setTooltip } from './tooltip.js';
-import { resolveTheme, sourceTheme } from './theme.js';
+import { referenceColour, resolveTheme, sourceTheme } from './theme.js';
 import type { AppState } from '../app/store.js';
 
 /** What the mixer needs in order to be heard and to be kept. */
@@ -196,6 +197,8 @@ export class MixerPanel {
   #strips: StripControls[] = [];
   /** Each clip's track, which says whether it is the source in front. */
   #tracks = new Map<ClipId, HTMLElement>();
+  /** Each reference's strip, by the fingerprint its colour comes from. */
+  #references = new Map<HTMLElement, string>();
   #lineup: string | null = null;
 
   #mixer: MixerSettings = DEFAULT_MIXER;
@@ -263,12 +266,27 @@ export class MixerPanel {
       track.classList.toggle('is-active', state.layer[0] === clip && this.#tracks.size > 1);
       track.style.setProperty('--axys-source', sourceTheme(theme, clip).blobBounds);
     }
+    for (const [strip, fingerprint] of this.#references) {
+      strip.style.setProperty('--axys-source', referenceColour(fingerprint));
+    }
     const ready = state.edits !== null;
+    // While anything is soloed, the solos decide what is heard and the mutes wait, so the mutes
+    // are drawn as out of play. They still take a press, which is what they come back to.
+    const masked = soloed(this.#mixer);
     for (const controls of this.#strips) {
+      controls.mute.classList.toggle('is-masked', masked && controls.key.kind !== 'master');
       const strip = stripOf(this.#mixer, controls.key);
-      for (const control of [controls.gain, controls.pan, controls.mute, controls.solo]) {
+      // A mute in effect takes the strip out of play, so its level and pan are too; its switches
+      // stay live, since they are how it comes back. A solo elsewhere overrides the mute, except
+      // on the master, which no solo reaches.
+      const silenced = strip.mute && (!masked || controls.key.kind === 'master');
+      for (const control of [controls.mute, controls.solo]) {
         if (control) control.disabled = !ready;
       }
+      controls.gain.disabled = !ready || silenced;
+      controls.pan.disabled = !ready || silenced;
+      controls.gainReadout.classList.toggle('is-disabled', silenced);
+      controls.panReadout.classList.toggle('is-disabled', silenced);
       // The whole strip, readouts included, is left alone while it is being dragged: the store
       // updates on every animation frame the transport runs, and rewriting the control under
       // the hand from the committed value is what makes a fader fight the hand holding it.
@@ -284,10 +302,13 @@ export class MixerPanel {
       // A toggle's tooltip names what pressing it will do, and follows the state icon.
       swapGlyph(controls.mute, stateIcon('mute', !strip.mute));
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
-      setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', controls.label));
+      setTooltip(controls.mute, switchTip('mute', strip.mute ? 'Unmute' : 'Mute', controls.label));
       if (controls.solo) {
         controls.solo.setAttribute('aria-pressed', String(strip.solo));
-        setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', controls.label));
+        setTooltip(
+          controls.solo,
+          switchTip('solo', strip.solo ? 'Unsolo' : 'Solo', controls.label),
+        );
       }
     }
   }
@@ -302,6 +323,7 @@ export class MixerPanel {
     this.#lineup = lineup(edits);
     this.#strips = [];
     this.#tracks = new Map();
+    this.#references = new Map();
     const sources = group('is-sources');
     const references = group('is-references');
     const outputs = group('is-outputs');
@@ -346,6 +368,8 @@ export class MixerPanel {
         title,
         true,
       );
+      strip.classList.add('is-reference');
+      this.#references.set(strip, reference.source.fingerprint);
       const head = strip.querySelector<HTMLElement>('.axys-mixer-name');
       if (head !== null) {
         this.#bindSourceName(strip, head, title, reference.source.name, (name) => ({
@@ -526,8 +550,9 @@ export class MixerPanel {
   /**
    * One mute or solo button.
    *
-   * @remarks Pressing one settles the desk on that strip alone; Ctrl or Cmd adds it to whatever
-   * is already switched on, which is how more than one strip is muted or soloed at a time.
+   * @remarks A mute is its own strip's and touches no other. A solo settles the desk on that strip
+   * alone; Ctrl or Cmd adds it to whatever is already soloed, which is how more than one strip is
+   * soloed at a time.
    */
   #buildSwitch(key: StripKey, field: 'mute' | 'solo', strip: string): HTMLButtonElement {
     const button = document.createElement('button');
@@ -539,7 +564,7 @@ export class MixerPanel {
     const action = field === 'mute' ? 'Mute' : 'Solo';
     button.setAttribute('aria-label', `${action} ${strip}`);
     button.setAttribute('aria-pressed', 'false');
-    setTooltip(button, switchTip(action, strip));
+    setTooltip(button, switchTip(field, action, strip));
     button.addEventListener('click', (event: MouseEvent) => {
       this.#toggle(key, field, event.ctrlKey || event.metaKey);
     });
@@ -548,9 +573,9 @@ export class MixerPanel {
 
   #toggle(key: StripKey, field: 'mute' | 'solo', additive: boolean): void {
     const wanted = !stripOf(this.#mixer, key)[field];
-    // The master is not one of the sources a switch settles the desk on, so it is toggled alone
-    // and left alone by every other strip's switch.
-    if (key.kind === 'master') {
+    // A mute is the strip's own, and the master is not one of the sources a solo settles the desk
+    // on, so both are toggled alone and leave every other strip as it is.
+    if (field === 'mute' || key.kind === 'master') {
       this.#commit(key, { [field]: wanted });
       return;
     }
@@ -576,12 +601,13 @@ export class MixerPanel {
 }
 
 /**
- * A mute or solo tooltip: what pressing it will do, and how to do it to more than one strip.
+ * A mute or solo tooltip: what pressing it will do, and for a solo how to solo more than one.
  *
- * @remarks Said the same way for both switches and in both states, because a gesture written
- * differently in each place is a gesture nobody learns.
+ * @remarks Said the same way in both states, because a gesture written differently in each place
+ * is a gesture nobody learns.
  */
-function switchTip(action: string, strip: string): string {
+function switchTip(field: 'mute' | 'solo', action: string, strip: string): string {
+  if (field === 'mute') return `${action} ${strip}`;
   return `${action} ${strip}\nCtrl-click for multiple strips`;
 }
 

@@ -3,6 +3,9 @@
 /** Base bucket width in samples of the finest stored peak level. */
 const BASE_BUCKET = 256;
 
+/** Fraction of a bucket a column edge may be off by and still count as on the bucket edge. */
+const BUCKET_TOLERANCE = 1e-6;
+
 /** Ratio between successive peak levels. */
 const LEVEL_RATIO = 4;
 
@@ -139,8 +142,14 @@ export class PeakEnvelope {
     for (let column = 0; column < count; column += 1) {
       const columnStart = start + ((end - start) * column) / count;
       const columnEnd = start + ((end - start) * (column + 1)) / count;
-      const firstBucket = Math.floor((columnStart * this.sampleRate) / level.samplesPerBucket);
-      const lastBucket = Math.ceil((columnEnd * this.sampleRate) / level.samplesPerBucket);
+      // A column edge on a bucket edge is common once zoomed in. The tolerance keeps rounding
+      // noise in the edge from taking the neighbouring bucket in on one frame and not the next.
+      const firstBucket = Math.floor(
+        (columnStart * this.sampleRate) / level.samplesPerBucket + BUCKET_TOLERANCE,
+      );
+      const lastBucket = Math.ceil(
+        (columnEnd * this.sampleRate) / level.samplesPerBucket - BUCKET_TOLERANCE,
+      );
       let low = 0;
       let high = 0;
       for (
@@ -166,7 +175,7 @@ export class PeakEnvelope {
   #levelFor(samplesPerColumn: number): PeakLevel | undefined {
     let chosen = this.#levels[0];
     for (const level of this.#levels) {
-      if (level.samplesPerBucket <= samplesPerColumn) {
+      if (level.samplesPerBucket <= samplesPerColumn * (1 + BUCKET_TOLERANCE)) {
         chosen = level;
       }
     }

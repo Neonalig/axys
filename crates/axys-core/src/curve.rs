@@ -18,6 +18,11 @@ pub enum Interp {
     Hold,
     /// Smoothstep ease between the two anchor values.
     Smooth,
+    /// Leaves the drawn curve until the next anchor, so the blob follows its own pitch there.
+    ///
+    /// As the first anchor it also releases everything before it, and as the last everything
+    /// after it. Read as a straight line wherever a value is needed to cut the curve.
+    Release,
 }
 
 /// One editable point on a pitch curve.
@@ -49,6 +54,57 @@ impl Anchor {
     }
 }
 
+/// A point on a kept stroke: project output seconds and fractional MIDI.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrokePoint {
+    /// Project output seconds.
+    pub time: f64,
+    /// Fractional MIDI note number, as heard.
+    pub midi: f64,
+}
+
+/// A curve kept whole as it was drawn, across blobs and the gaps between them.
+///
+/// A stroke is heard only through the anchors it wrote into the blobs it crossed, so it changes
+/// nothing in the render on its own. It is what the curve is selected, reshaped and copied as.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stroke {
+    /// Identity within the project.
+    pub id: u32,
+    /// The curve as a line through time, in time order.
+    pub points: Vec<StrokePoint>,
+    /// The start, two control points and end of the Bezier it was drawn as, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bezier: Option<[StrokePoint; 4]>,
+    /// The clip it was drawn for, whose pitch track it is part of; `None` belongs to every clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<u32>,
+}
+
+impl Stroke {
+    /// Rejects a stroke with too many points, a non-finite value or points out of time order.
+    pub fn validate(&self) -> Result<()> {
+        if self.points.len() < 2 || self.points.len() > limits::MAX_STROKE_POINTS {
+            return Err(AxysError::Invalid(format!(
+                "a stroke has 2 to {} points",
+                limits::MAX_STROKE_POINTS
+            )));
+        }
+        let finite = |p: &StrokePoint| p.time.is_finite() && p.midi.is_finite();
+        if !self.points.iter().all(finite) || !self.bezier.iter().flatten().all(finite) {
+            return Err(AxysError::Invalid("stroke point is not finite".into()));
+        }
+        if self.points.windows(2).any(|w| w[1].time < w[0].time) {
+            return Err(AxysError::Invalid(
+                "stroke points are out of time order".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// An ordered set of anchors evaluated as a continuous pitch function.
 ///
 /// Anchors stay sorted by time. Evaluating outside the anchor range clamps to
@@ -73,20 +129,6 @@ impl PitchCurve {
                 .iter()
                 .map(|anchor| Anchor {
                     time: anchor.time + seconds,
-                    ..*anchor
-                })
-                .collect(),
-        }
-    }
-
-    /// The same curve with every anchor moved by `semitones`.
-    pub fn transposed(&self, semitones: f64) -> PitchCurve {
-        PitchCurve {
-            anchors: self
-                .anchors
-                .iter()
-                .map(|anchor| Anchor {
-                    midi: anchor.midi + semitones,
                     ..*anchor
                 })
                 .collect(),
@@ -182,6 +224,32 @@ impl PitchCurve {
         }
     }
 
+    /// The drawn target at `time`, or `None` where the blob follows its own pitch instead.
+    ///
+    /// `None` with no anchors, across a segment leaving an [`Interp::Release`] anchor, before a
+    /// first anchor that releases and after a last one that does. Everywhere else it is
+    /// [`PitchCurve::eval`].
+    pub fn drawn_at(&self, time: f64) -> Option<f64> {
+        let first = self.anchors.first()?;
+        let last = self.anchors[self.anchors.len() - 1];
+        if time < first.time {
+            return (first.interp != Interp::Release).then_some(first.midi);
+        }
+        if time >= last.time {
+            return (last.interp != Interp::Release).then_some(last.midi);
+        }
+        let hi = self.anchors.partition_point(|a| a.time <= time);
+        if self.anchors[hi - 1].interp == Interp::Release {
+            return None;
+        }
+        Some(self.eval_multi(time))
+    }
+
+    /// True when some part of the curve is drawn rather than released.
+    pub fn draws(&self) -> bool {
+        self.anchors.iter().any(|a| a.interp != Interp::Release)
+    }
+
     fn eval_multi(&self, time: f64) -> f64 {
         let n = self.anchors.len();
         if time <= self.anchors[0].time {
@@ -201,7 +269,7 @@ impl PitchCurve {
         let t = ((time - a.time) / span).clamp(0.0, 1.0);
         match a.interp {
             Interp::Hold => a.midi,
-            Interp::Linear => a.midi + (b.midi - a.midi) * t,
+            Interp::Linear | Interp::Release => a.midi + (b.midi - a.midi) * t,
             Interp::Smooth => {
                 let s = t * t * (3.0 - 2.0 * t);
                 a.midi + (b.midi - a.midi) * s
@@ -389,6 +457,31 @@ mod tests {
         let c = curve(&[(2.0, 64.0), (0.0, 60.0), (1.0, 62.0)], Interp::Linear);
         let times: Vec<f64> = c.anchors().iter().map(|a| a.time).collect();
         assert_eq!(times, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_release_anchor_leaves_its_segment_undrawn() {
+        let curve = PitchCurve::from_anchors(vec![
+            Anchor::with_interp(0.0, 60.0, Interp::Release),
+            Anchor::with_interp(1.0, 64.0, Interp::Linear),
+            Anchor::with_interp(2.0, 64.0, Interp::Release),
+        ])
+        .expect("curve");
+        assert_eq!(curve.drawn_at(-1.0), None);
+        assert_eq!(curve.drawn_at(0.5), None);
+        assert_eq!(curve.drawn_at(1.5), Some(64.0));
+        assert_eq!(curve.drawn_at(3.0), None);
+        assert_eq!(curve.eval(0.5), Some(62.0));
+        assert!(curve.draws());
+    }
+
+    #[test]
+    fn a_curve_without_release_is_drawn_everywhere_eval_is() {
+        let curve = curve(&[(0.0, 60.0), (1.0, 62.0)], Interp::Linear);
+        for time in [-1.0, 0.0, 0.25, 1.0, 2.0] {
+            assert_eq!(curve.drawn_at(time), curve.eval(time));
+        }
+        assert_eq!(PitchCurve::new().drawn_at(0.0), None);
     }
 
     #[test]

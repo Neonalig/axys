@@ -8,7 +8,7 @@
  * blobs cannot leave the selection naming objects that no longer exist.
  */
 
-import type { Selection } from './store.js';
+import type { EditMode, Selection } from './store.js';
 import type { Blob } from '../core/types.js';
 import { blobOutputEnd, blobOutputStart, sourceToOutput } from '../editor/layers/blobs.js';
 
@@ -86,6 +86,17 @@ export function selectionSpan(ranges: readonly TimeRange[]): TimeRange | null {
     end = Math.max(end, range.end);
   }
   return Number.isFinite(start) && Number.isFinite(end) ? { start, end } : null;
+}
+
+/**
+ * A selection as an edit mode reads it.
+ *
+ * @remarks Pitch mode edits the pitch line alone, so its selection is the spans and the anchors
+ * in them, and no blobs. The spans are kept whatever the mode, so changing mode selects the blobs
+ * under them again, or lets them go.
+ */
+export function selectionInMode(selection: Selection, mode: EditMode): Selection {
+  return mode === 'pitch' && selection.blobs.length > 0 ? { ...selection, blobs: [] } : selection;
 }
 
 /** Everything a set of output spans selects. */

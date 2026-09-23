@@ -4,9 +4,12 @@ import type { AppState } from '../../app/store.js';
 import type { Reference } from '../../core/types.js';
 import { displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
+import { referenceColour } from '../../ui/theme.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
+import { CORNER_RADIUS } from './blobs.js';
+import { LABEL_ALPHA, labelBaseline } from './label.js';
 import { fillEnvelope } from './waveform.js';
 
 /** Height in pixels of one reference's band along the foot of the plot. */
@@ -15,7 +18,7 @@ export const REFERENCE_BAND = 22;
 /** Opacity of a reference band, which is context rather than something being edited. */
 const BAND_ALPHA = 0.35;
 
-const TITLE_FONT = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
+const TITLE_FONT = '600 12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
 
 /** Key a reference's waveform envelope is cached under, apart from any clip of the same file. */
 export function referencePeaksKey(fingerprint: string): string {
@@ -52,6 +55,7 @@ export function drawReferences(
   state: AppState,
   viewport: Viewport,
   theme: Theme,
+  hovered = -1,
 ): void {
   const references = state.edits?.references ?? [];
   if (references.length === 0) {
@@ -62,8 +66,104 @@ export function drawReferences(
   ctx.rect(PITCH_LABEL_GUTTER, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
   references.forEach((reference, index) => {
-    drawReferenceBand(ctx, viewport, theme, reference, index, reference.position, 1);
+    const title = index === hovered ? HOVERED_TITLE_ALPHA : 1;
+    drawReferenceBand(ctx, viewport, theme, reference, index, reference.position, 1, title);
   });
+  ctx.restore();
+}
+
+/** Opacity of a reference's name tab under the pointer, so the waveform shows through it. */
+const HOVERED_TITLE_ALPHA = 0.25;
+
+/** Where a reference's name tab is drawn, in canvas pixels, or `null` where there is none. */
+function titleRect(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  reference: Reference,
+  index: number,
+  position: number,
+): { left: number; right: number; top: number; bottom: number; rounded: boolean } | null {
+  const rect = referenceRect(reference, index, viewport, position);
+  const line = viewport.crispWidth();
+  const x0 = viewport.crisp(rect.x);
+  const x1 = viewport.crisp(rect.x + rect.width);
+  const left = Math.max(x0 - line / 2, PITCH_LABEL_GUTTER);
+  const bandRight = x1 + line / 2;
+  if (bandRight - left < TITLE_PADDING * 2) return null;
+  ctx.save();
+  ctx.font = TITLE_FONT;
+  const width = ctx.measureText(displayTitle(reference)).width + TITLE_PADDING * 2;
+  ctx.restore();
+  return {
+    left,
+    right: Math.min(bandRight, left + width),
+    top: viewport.crisp(rect.y) - line / 2,
+    bottom: viewport.crisp(rect.y + rect.height) + line / 2,
+    rounded: x0 - line / 2 >= PITCH_LABEL_GUTTER,
+  };
+}
+
+/** The index of the reference whose name tab holds a canvas point, or -1 over none. */
+export function referenceTitleAt(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  point: { x: number; y: number },
+): number {
+  const references = state.edits?.references ?? [];
+  return references.findIndex((reference, index) => {
+    const rect = titleRect(ctx, viewport, reference, index, reference.position);
+    return (
+      rect !== null &&
+      point.x >= rect.left &&
+      point.x <= rect.right &&
+      point.y >= rect.top &&
+      point.y <= rect.bottom
+    );
+  });
+}
+
+/** Padding either side of a reference's name inside its tab, in pixels. */
+const TITLE_PADDING = 6;
+
+/**
+ * Draws a reference's name on a tab filled in its colour, at the visible start of its band.
+ *
+ * @remarks The tab is cut to the band, so a narrow band shows as much of it as fits. `alpha` is
+ * the tab's opacity, lowered while the pointer is over it.
+ */
+function drawBandTitle(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  title: string,
+  colour: string,
+  band: { left: number; right: number; top: number; bottom: number; rounded: boolean },
+  alpha: number,
+): void {
+  ctx.font = TITLE_FONT;
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left';
+  const right = band.right;
+  ctx.save();
+  // The band's own rounded start where it is in view; square where the view cuts it.
+  const corner = band.rounded ? CORNER_RADIUS : 0;
+  ctx.beginPath();
+  ctx.roundRect(band.left, band.top, right - band.left, band.bottom - band.top, [
+    corner,
+    0,
+    0,
+    corner,
+  ]);
+  ctx.clip();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = colour;
+  ctx.fillRect(band.left, band.top, right - band.left, band.bottom - band.top);
+  ctx.globalAlpha = LABEL_ALPHA * alpha;
+  ctx.fillStyle = theme.bg;
+  // On the device grid, so the name does not blur and sharpen as the band slides.
+  const x = Math.round((band.left + TITLE_PADDING) * viewport.ratio) / viewport.ratio;
+  ctx.fillText(title, x, labelBaseline(ctx, band.top, band.bottom, viewport.ratio));
   ctx.restore();
 }
 
@@ -76,15 +176,27 @@ export function drawReferenceBand(
   index: number,
   position: number,
   alpha: number,
+  titleAlpha = 1,
 ): void {
   const rect = referenceRect(reference, index, viewport, position);
   if (rect.x + rect.width < 0 || rect.x > viewport.width) {
     return;
   }
+  const colour = referenceColour(reference.source.fingerprint);
+  // Fill and outline share edges on the device grid. A fill at the band's fractional edges
+  // covers the pixel beside the outline by a different amount each frame, which reads as the
+  // outline shimmering while the band slides.
+  const line = viewport.crispWidth();
+  const x0 = viewport.crisp(rect.x);
+  const y0 = viewport.crisp(rect.y);
+  const x1 = viewport.crisp(rect.x + rect.width);
+  const y1 = viewport.crisp(rect.y + rect.height);
   ctx.save();
   ctx.globalAlpha = BAND_ALPHA * alpha;
-  ctx.fillStyle = theme.midiNote;
-  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.roundRect(x0 - line / 2, y0 - line / 2, x1 - x0 + line, y1 - y0 + line, CORNER_RADIUS);
+  ctx.fill();
 
   const envelope = peaksFor(referencePeaksKey(reference.source.fingerprint));
   // Columns are cut a whole number of pixels from the band's own start, so a band sliding under a
@@ -98,31 +210,27 @@ export function drawReferenceBand(
     const from = viewport.xToTime(left) - position;
     const to = viewport.xToTime(left + columns) - position;
     const span = envelope.sample(from, to, columns);
+    // The reference's own colour at full strength over its faint band, whatever that colour is.
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = theme.waveform;
-    fillEnvelope(ctx, span, left, rect.y + rect.height / 2, rect.height / 2 - 1);
+    ctx.fillStyle = colour;
+    // Drawn from a device pixel, so the columns do not smear across a moving sub-pixel offset.
+    const x = Math.round(left * viewport.ratio) / viewport.ratio;
+    // Centred between the drawn edges of the band's outline.
+    const inner = y0 + line / 2;
+    const outer = y1 - line / 2;
+    const middle = (inner + outer) / 2;
+    fillEnvelope(ctx, span, x, middle, (outer - inner) / 2 - 1);
   }
 
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = theme.midiNote;
-  ctx.lineWidth = viewport.crispWidth();
-  // Both edges on the device grid, so neither blurs and sharpens as the band slides.
-  const x0 = viewport.crisp(rect.x);
-  const y0 = viewport.crisp(rect.y);
-  ctx.strokeRect(
-    x0,
-    y0,
-    viewport.crisp(rect.x + rect.width) - x0,
-    viewport.crisp(rect.y + rect.height) - y0,
-  );
-  ctx.font = TITLE_FONT;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = theme.text;
-  ctx.fillText(
-    displayTitle(reference),
-    Math.max(rect.x, PITCH_LABEL_GUTTER) + 4,
-    rect.y + rect.height / 2,
-  );
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = line;
+  ctx.beginPath();
+  ctx.roundRect(x0, y0, x1 - x0, y1 - y0, CORNER_RADIUS);
+  ctx.stroke();
+  const title = titleRect(ctx, viewport, reference, index, position);
+  if (title !== null) {
+    drawBandTitle(ctx, viewport, theme, displayTitle(reference), colour, title, alpha * titleAlpha);
+  }
   ctx.restore();
 }

@@ -131,17 +131,17 @@
 }
 
 .axys-menu-key {
-  padding: 0 4px;
-  border: 1px solid var(--axys-border);
-  border-radius: var(--axys-radius-sm);
   color: var(--axys-text-muted);
-  font-family: var(--axys-font-mono);
-  font-size: var(--axys-size-sm);
 }
 
 .axys-menu-item:hover:not(:disabled) .axys-menu-key,
 .axys-menu-item:focus-visible .axys-menu-key {
   color: inherit;
+}
+
+.axys-menu-item:hover:not(:disabled) .axys-key,
+.axys-menu-item:focus-visible .axys-key,
+.axys-palette-item.is-active:not(:disabled) .axys-key {
   border-color: currentcolor;
 }
 

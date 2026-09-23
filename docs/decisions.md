@@ -290,6 +290,21 @@ name.
   inside the blob and makes "strength 0.5 moves halfway" exactly observable.
 - **A drawn curve replaces the corrected target rather than adding to it**, but the blob's own pitch
   offset still translates it, so moving a blob moves its drawn contour with it.
+
+### A drawn curve is stored without its blob's offset
+
+A blob with a curve is heard at the curve plus its pitch offset, so the offset is what carries a
+drawing when the blob moves in pitch. Moving the blob also transposed its anchors, to keep the
+handles under the line they had been drawn on, and the move was heard twice: a semitone up sounded
+two. The anchors now stay where they are and the editor adds the offset wherever it reads one: the
+handles are drawn and hit at the curve plus the offset, and a stroke, an anchor drag or a typed
+anchor pitch has the offset taken off before it is stored. `ReplacePitch` already worked this way.
+
+`MovePitch` and `SetPitchOffset` still read the `anchors` field a history may carry and ignore it,
+so a history recorded with it replays with each move heard once, as it was asked for. A `DrawSpan`
+recorded over a moved blob stored the drawn pitch as it was drawn, so it replays sounding as it
+did then, the offset above the line that was drawn.
+
 - **The time map stretches the gaps between blobs** to absorb blob moves and forces each point
   strictly past the previous one, so the map stays monotone and invertible.
 - **Undo is re-derivation, not an inverse patch.** `History` stores operations; the session replays
@@ -578,11 +593,19 @@ is released, so the sound follows the hand and the history gets one entry per dr
 per frame. It is the same shape as the guide strength slider, without the operation machinery,
 because a fader has nothing to discard.
 
-### Mute and solo are exclusive until Ctrl says otherwise
+### Solo is exclusive until Ctrl says otherwise, and mute is a strip's own
 
-Pressing a mute or a solo settles the desk on that strip alone, which is what someone wants nine
-times in ten. Ctrl or Cmd adds instead, which is how more than one strip is muted or soloed at a
-time. The same modifier that adds a span to a selection.
+Pressing a solo settles the desk on that strip alone, which is what someone wants nine times in
+ten. Ctrl or Cmd adds instead, which is how more than one strip is soloed at a time, the same
+modifier that adds a span to a selection. A mute touches its own strip and nothing else: muting
+one strip used to unmute every other, which undid a mix someone had set up strip by strip.
+
+A solo masks the mutes rather than replacing them: while any strip is soloed only the soloed ones
+are heard, and once none is each strip's own mute decides again, as it was. So that a mute is not
+read as doing something it is not, every mute but the master's is drawn faint while a solo is on;
+it still takes a press, for when the solo ends. A mute in effect disables its strip's level and pan
+and dims their readouts, leaving the switches live; under a solo the mutes are masked, so their
+strips stay enabled, except the master's, which no solo reaches.
 
 ### Compare has no button at all
 
@@ -616,10 +639,15 @@ beside it without overlapping, chosen in the order the project holds them
 all read the layer. A project whose clips never overlap has every clip in its layer, so it edits
 exactly as it did.
 
-Every clip outside the layer is drawn behind it, faded, in its own colour. A click on one brings
+Every clip outside the layer is drawn behind it, faded, in its own colour, as its waveform and
+blobs with no pitch track: two pitch tracks over one span read as one tangled line. Each reference
+takes a colour of its own too, its hue hashed from its fingerprint, on its band and its mixer strip.
+A waveform is drawn in the colour of what holds it, its clip's outline colour or its reference's,
+so it stays readable on its own fill.
+A click on one brings
 its clip forward, which rebuilds the layer around it; a click that lands on the layer acts on the
 layer, so dragging one source never disturbs the one it overlaps. Focus is also reached by the
-Sources menu, by `[` and `]`, and by clicking a clip's track on the desk. Dim Others and Hide
+Sources menu, by `W` and `Shift+W`, and by clicking a clip's track on the desk. Dim Others and Hide
 Others, cycled with `\`, edit the active clip alone with the rest faint or gone.
 
 Which clip is in front and how the others show are view state, saved with the project and never
@@ -727,6 +755,24 @@ the settings on the device for the next import, closing the panel keeps the impo
 takes it back. A clip is analysed again only while no edit touches it, since later edits name
 blobs the new analysis does not have.
 
+### Import Audio is one panel in two steps
+
+The question and the analysis were two panels under one title, the second opened once the audio
+had loaded. They shared a remembered position, so the second appeared where the first had been
+and read as the question skipped, and a panel that arrives after a wait is one the hand is already
+reaching past. One panel now holds both steps and changes its content in place: Vocal turns it
+into the analysis step at once, with its settings held until the audio is in, and Back takes the
+import back and asks again. Back waits for the audio, since a second answer while the first import
+runs would race it. Dropping audio with nothing open still goes straight to the analysis step,
+because a first source can only be a vocal.
+
+### A click on a clip's tab selects the blob under it
+
+The tab is drawn as the top of each blob, so a click there that selected every blob of the clip
+read as the blob refusing to be selected on its own. A click on the tab now selects the blob it sits
+on, with Ctrl and Shift as on the blob. The tab still picks the clip up when dragged, and a
+double-click on it selects the whole clip.
+
 ### A dropped file shows where it lands once it is read
 
 A browser does not let a page read a dragged file until it is dropped: during the drag only its
@@ -769,6 +815,205 @@ a desk of processed, original and click. The migration makes that source clip 0 
 its media, its lane in both edit states, and its track on the desk, including the desk inside
 recorded `setMixer` operations so an undo in a migrated project replays the desk it had. The web
 side reads project files through the core's `migrateProject`, so the migration lives in one place.
+
+### Three edit modes
+
+Blob and Pitch is the editor as it was: a blob is its audio, its pitch and its edits, and moving it
+moves all three. Blob edits the segmentation alone: the Time tool slides a blob along the audio
+(`ShiftBlob`) and both of its edges move over the audio, so a blob can be made to cover what it
+should have covered without anything heard moving. Pitch edits the pitch line alone: the Pitch and
+Time tools move the heard line across the selection, and the audio stays. Tools a mode leaves
+alone place the playhead. The mode is a session setting on `Q` and on the toolbar, and every
+project opens in Blob and Pitch, so a project behaves as it did until a mode is chosen.
+
+Decided where the backlog left it open:
+
+- **Blob mode leaves drawn pitch with the audio.** A slid blob's curve is cut to its new span the
+  way a moved boundary cuts it, its offset stays with the blob, and its detected centre is read
+  again from the audio it now covers. The same rule as resizing, so the two cannot disagree.
+- **Pasted pitch replaces what it lands on.** No blend at the edges: the span sounds the copied
+  line and the rest of the blob sounds as it did. Each blob is given the part of the line over it.
+- **Cut pitch leaves the sung pitch by default.** Cut Fill in the inspector chooses Detected Pitch
+  or Flat Pitch, a device preference.
+- **Editing pitch outside blobs makes a blob.** A drag, a stroke or a paste over pitch outside every
+  blob adds a blob over that stretch carrying the edit, in the same undo step. The alternative, a
+  curve belonging to the clip rather than to a blob, would have been a second way for pitch to be
+  edited with its own rendering, selection and reset rules.
+- **A trimmed clip keeps its hidden audio.** `Clip::window` narrows what is heard and nothing else,
+  so the blobs over the hidden audio and their edits come back with Reset Trim.
+- **A pasted clip carries its edits and analysis.** It is the same audio, so analysing it again
+  would only cost time and throw away the edits that were copied.
+
+### Copied pitch is one line per span
+
+Copying took the pitch only where it was sung inside a blob, so a Bezier drawn across three blobs
+came back as three pieces and pasted with holes wherever the copy had crossed a gap or a consonant.
+A copy now takes one line per selected span: what each blob is heard singing, the detected pitch
+outside every blob, any kept curve's own points across its span, joined straight across whatever is
+left unpitched, and held level to the span's edges. Pasting lays each line whole, so every blob it
+lands on takes its part. The Pitch-mode moves and the arrow keys read the same line.
+
+### A drawn curve is kept whole
+
+A stroke of the Draw or Bezier tool used to exist only as the anchors it wrote into each blob it
+crossed, so a Bezier across three blobs became three pieces with nothing between them, and copying
+it copied the pieces with the gaps filled from whatever was sung there. Every stroke is now also
+kept whole in the edit state as a `Stroke`: its line through time, and a Bezier's four points. It
+is not heard itself; the blobs it crosses are given their parts of it, each keeping the rest of what
+it sang, and pitch outside every blob makes a blob of its own.
+
+A kept curve is drawn dotted and faint wherever no blob carries it, so a line drawn over a gap still
+shows where it runs. The Select or Bezier tool picks one up: a Bezier opens with its handles for
+shaping again, and Enter keeps the new shape in place of the old one; a freehand curve is selected.
+Delete deletes the curve picked up, and each blob under it goes back to its own pitch with its
+offset kept, which is `PitchFill::Release`. Copying pitch takes the kept curves inside the span and
+reads their own points in place of what the blobs under them sing; pasting brings them along as
+new curves, and moving the line in Pitch mode moves them with it.
+
+A freehand stroke is kept as the points left once it has been reduced to within two pixels of what
+was drawn, and a Bezier as its samples reduced to within one, so both come back as drawn at the
+zoom they were drawn at.
+
+### A laid line is kept as curves
+
+Pasting or moving pitch laid the line into the blobs, but only the curves wholly inside the copy
+came back as curves; the rest was left to the target line, which breaks at every unpitched frame, so
+a paste showed gaps the copy never had. Whatever a paste, a Pitch-mode move or a stretch lays down
+is now kept whole as curves: the curves it carried where they run, a curve the copy only reached
+into cut to the part it reached, and the line's own points as freehand curves across the rest.
+
+### A copy takes only the curves that run into it
+
+A curve beside the copied span that ended exactly where the span began was copied too, its last
+point at the same instant as the first point of the curve that was wanted, so a paste put two
+pitches at one moment at each end and the line drawn through them doubled back on itself. A copy
+now reads only the curves that run into the span. Where a paste meets a curve of another pitch the
+line steps straight to it, and curves of one track that meet end to end are drawn joined across
+the step, so a paste reads as a change of pitch rather than as two loose ends.
+
+### One pitch track per clip
+
+Kept curves were independent of each other, so a Bezier pasted over a freehand line drew two lines
+where one was heard, the new one over the old. A clip now has one pitch track: a curve belongs to the
+clip in front when it is drawn or pasted, the one `W` steps to, and curves of one clip never overlap.
+Laying a line over part of a curve, by drawing, pasting or moving pitch, replaces that part: the
+curve keeps what lies either side as curves of their own, and a Bezier split this way stays a Bezier,
+cut exactly by de Casteljau's construction so its handles still shape what is left. Only the curves
+of the clips being edited are drawn, picked up, copied or cut; a clip behind the layer keeps its own.
+
+New curves take random ids rather than the next number, so the several one edit makes, a paste
+splitting two curves say, can never be given the same one.
+
+### Outside pitch has no switch
+
+Outside Pitch was a toolbar toggle that drew and opened for editing the detected pitch outside every
+blob. Analysis puts nearly every voiced frame in a blob, so with the toggle on there was nearly
+always nothing new to see, and the button read as doing nothing. What is left outside is mostly
+what a Blob-mode cut left behind, which is exactly what should stay in sight. It is now always drawn,
+faint and dotted, and always edited like pitch inside a blob; the toggle, its key and its setting
+are gone.
+
+### Each mode selects what it edits
+
+A selection is spans, and each mode reads them its own way. Blob and Pitch and Blob select the
+blobs the spans reach, and the inspector shows them. Pitch selects the spans and the anchors in them
+and no blobs, since there it edits the pitch line alone. Changing mode keeps the spans and reads them
+again, so the blobs under a span come back into the selection on leaving Pitch and drop out on
+entering it. A clip's tab picks the clip up only in Blob and Pitch with the Select or Time tool,
+since moving a clip moves audio; everywhere else the tab is part of the blob under it.
+
+`W` steps to the next source and `Shift+W` to the one before, beside `Q` and `Shift+Q` for the
+edit modes, so both cycles sit under one hand. The brackets they took are free.
+
+### A selection stretches by its edges
+
+Under the Time tool a selection carries a grip on each edge, in every mode, and dragging one
+stretches what the selection holds to the new span, keeping its proportions: the dragged edge moves
+and the other stays. What stretches is what the mode edits. Blob and Pitch stretches the selected
+blobs' timing, and so their audio; Blob stretches the spans the blobs cover over audio that does not
+move; Pitch stretches the pitch line. Shift ripples, moving the blobs beyond the dragged edge by as
+far as it went, which is what Shift means wherever something can ripple; without it the stretch
+lays over what is there. A single selected blob keeps its own edges, which already stretch it.
+
+The Pitch tool moves a line up and down and the Time tool along time, never both at once, so each
+tool keeps one meaning in every mode.
+
+### Cut and paste say what happens to what is there
+
+Paste lays clips over what is there, Paste Insert on `Ctrl+Shift+V` moves every clip starting at or
+after the playhead later by the length pasted, and Paste Replace on `Ctrl+Alt+V` cuts the pasted
+span out of every clip it reaches first. Ripple Cut on `Ctrl+Shift+X` closes the gap a cut leaves by
+moving every later clip earlier by its length. Pitch always replaces the line it lands on. Each is
+one undo step.
+
+### A blob is a part of the audio
+
+In Blob mode Copy and Cut take the audio under the selected blobs, touching blobs as one stretch,
+as clip parts with their edits and analysis, and Paste lays them down as clips the same three ways
+Blob and Pitch does. Only moving and resizing a blob in Blob mode leaves the audio where it is.
+Rejected: pasting only a blob's outline over the audio already at the playhead. It heard nothing
+new, which is not what copying a blob means once blobs are the parts sources are cut from.
+
+In Pitch mode Delete resets the selected span to the detected pitch and removes the curves drawn
+over it. It is Cut with nothing copied and the Cut Fill setting ignored.
+
+### Thin lines stay on the device grid and under what they cross
+
+Every outline, fill edge and waveform column is drawn from whole device pixels, and the ruler's
+gridlines are drawn under everything in the plot rather than over it. A line over an outline
+notched it, and the notches slid along the outline as a following view moved, which read as the
+outline shimmering. Text in a small box is centred on its capital height: canvas labels through
+`labelBaseline`, and tooltips and keys through `text-box: trim-both cap alphabetic`.
+
+### Every toolbar button has a menu
+
+A right-click on any toolbar button opens a menu under it. A button whose click already opens a
+menu opens the same one. Follow lists Off, Page Ahead and Keep Centred, Metronome carries Count In,
+a tool or mode button lists every tool or mode, and a button with nothing more to offer lists its
+own command, so right-clicking never falls through to the browser's menu.
+
+Tools that have nothing to edit in the edit mode are disabled: Pitch, Draw and Bezier in Blob mode,
+Slice in Pitch mode. Switching to a mode that disables the active tool picks the Select tool.
+
+### Shortcuts are drawn as keys
+
+Every chord a tooltip, menu, palette or cheatsheet names is drawn one box per key, `Ctrl` `Shift`
+`V`, rather than as the text `Ctrl+Shift+V`. A tooltip's trailing `(chord)` becomes its keys, and the
+canvas hints box the named keys they mention in place, so a chip keeps the width its text gives it.
+Single letters are boxed only where they are a chord, since the canvas also writes note names.
+
+### What a mode does not edit is drawn faint
+
+In Pitch mode the blobs and their waveforms are drawn at a third of their strength, and in Blob mode
+the pitch lines and anchors are, so what a drag will not touch reads as out of reach before it is
+tried. Each is faded as a finished picture on a canvas of its own, as the clips behind the layer
+are, because the layers set their own opacities stroke by stroke.
+
+### Pitch is replaced a span at a time
+
+`ReplacePitch` sets what a blob sounds across a span and leaves the rest of the blob as it sounded.
+A drawn curve held its first and last values across the whole blob, so a curve over part of a blob
+used to flatten the rest of it. `Interp::Release` marks a stretch between anchors, or before the
+first or after the last, where the blob follows its own pitch instead, and the plan reads it with
+`PitchCurve::drawn_at`. A curve without a release anchor evaluates exactly as it did, so nothing
+drawn before changes. The Draw tool still writes ordinary anchors.
+
+### Clips are copied whole and trimmed
+
+A copied part of a clip is the clip as it was copied and the span taken from it. Pasting makes a new
+clip over the same audio with its own id, a copy of the runtime's samples and track, and the
+window set to the span; it lands at the playhead over whatever is there and is edited like any
+other clip. Cutting inside a clip trims it and adds the tail as a new clip, so one clip becomes two
+in one undo step. A clip's lane span is its window placed at its position, so a trimmed clip moves,
+layers and overlaps by what is heard, and its position may be negative when its window starts late.
+The original strip in the worklet and the export both stop at the window.
+
+Limitation: a selection is output time and a clip part is source time, so copying a part of a clip
+whose blobs have been moved in time takes the source span under the selection rather than the
+material drawn there.
+
+Limitation: clips are trimmed from the playhead with Trim Start and Trim End; there is no edge on
+screen to drag, because a clip is drawn as its blobs rather than as a box of its own.
 
 ## Timeline and musical time
 

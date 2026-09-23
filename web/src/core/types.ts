@@ -17,7 +17,7 @@ export interface Tuning {
 export type AccidentalStyle = 'sharps' | 'flats';
 
 /** Interpolation character leaving an anchor toward the next one. */
-export type Interp = 'linear' | 'cubic' | 'hold' | 'smooth';
+export type Interp = 'linear' | 'cubic' | 'hold' | 'smooth' | 'release';
 
 /** One editable point on a pitch curve. */
 export interface Anchor {
@@ -401,6 +401,7 @@ export type EditOp =
   | { type: 'joinBlobs'; first: BlobId; second: BlobId }
   | { type: 'moveBoundary'; blob: BlobId; edge: Edge; time: number }
   | { type: 'setVoicing'; blob: BlobId; start: number; end: number; voicing: Voicing }
+  /** `anchors` is only ever read from a recorded history, and the core ignores it. */
   | { type: 'movePitch'; blobs: BlobId[]; semitones: number; anchors?: boolean }
   | { type: 'setPitchOffset'; blob: BlobId; semitones: number; anchors?: boolean }
   | { type: 'moveTime'; blobs: BlobId[]; seconds: number }
@@ -415,7 +416,11 @@ export type EditOp =
   | { type: 'resetRange'; start: number; end: number }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setGain'; blob: BlobId; gainDb: number }
-  | { type: 'deleteBlobs'; blobs: BlobId[] }
+  | { type: 'deleteBlobs'; blobs: BlobId[]; keepAudio?: boolean }
+  | { type: 'addBlobs'; blobs: Blob[] }
+  | { type: 'shiftBlob'; blob: BlobId; seconds: number }
+  | { type: 'replacePitch'; blob: BlobId; start: number; end: number; fill: PitchFill }
+  | { type: 'trimClip'; clip: ClipId; start: number; end: number }
   | { type: 'addClip'; clip: Clip; ripple?: boolean; exact?: boolean }
   | { type: 'moveClip'; clip: ClipId; position: number; exact?: boolean; ripple?: boolean }
   | { type: 'removeClip'; clip: ClipId }
@@ -437,7 +442,41 @@ export type EditOp =
   | { type: 'setTimelineOrigin'; seconds: number }
   | { type: 'setTempoMap'; events: TempoEvent[] }
   | { type: 'setMeterMap'; events: MeterEvent[] }
+  | { type: 'setStroke'; stroke: Stroke }
+  | { type: 'removeStroke'; stroke: number }
   | { type: 'group'; ops: EditOp[] };
+
+/**
+ * What a span of a blob sounds after a `replacePitch`.
+ *
+ * @remarks `contour` is a heard contour in project seconds; `sung` is the blob's own pitch; `flat`
+ * is a level line at the span's median detected pitch.
+ */
+export type PitchFill =
+  | { kind: 'contour'; anchors: Anchor[] }
+  | { kind: 'sung' }
+  | { kind: 'release' }
+  | { kind: 'flat' };
+
+/** A point on a kept stroke: project output seconds and fractional MIDI, as heard. */
+export interface StrokePoint {
+  time: number;
+  midi: number;
+}
+
+/**
+ * A curve kept whole as it was drawn, across blobs and the gaps between them.
+ *
+ * @remarks Heard only through what it wrote into the blobs it crossed. `bezier` is the start, two
+ * control points and end of the Bezier it was drawn as, when it was.
+ */
+export interface Stroke {
+  id: number;
+  points: StrokePoint[];
+  bezier?: [StrokePoint, StrokePoint, StrokePoint, StrokePoint];
+  /** The clip whose pitch track it is part of; absent belongs to every clip. */
+  clip?: number;
+}
 
 /** Undo and redo stacks over a project's edit history. */
 export interface History {
@@ -515,6 +554,8 @@ export interface Clip {
   silenced: Span[];
   /** What the clip is called in place of its file's name. */
   name?: string;
+  /** The part of the source that is heard, in clip source seconds; absent is all of it. */
+  window?: Span;
 }
 
 /** Audio heard beside the vocal and never edited or warped. */
@@ -544,6 +585,25 @@ export const CLIP_ID_BITS = 20;
 /** The clip a blob belongs to. */
 export function clipOf(blob: BlobId): ClipId {
   return Math.floor(blob / 2 ** CLIP_ID_BITS);
+}
+
+/** The part of a clip's source that is heard, in its source seconds, held inside the source. */
+export function clipWindow(clip: Clip): Span {
+  const duration = Math.max(0, clip.source.duration);
+  const window = clip.window;
+  if (window === undefined) return { start: 0, end: duration };
+  const start = Math.min(duration, Math.max(0, window.start));
+  return { start, end: Math.min(duration, Math.max(start, window.end)) };
+}
+
+/** Project seconds at which a clip starts being heard. */
+export function clipStart(clip: Clip): number {
+  return clip.position + clipWindow(clip).start;
+}
+
+/** Project seconds at which a clip stops being heard. */
+export function clipEnd(clip: Clip): number {
+  return clip.position + clipWindow(clip).end;
 }
 
 /** What a source is called on the desk and over its blobs: its file name without the extension. */
@@ -581,6 +641,8 @@ export interface EditState {
   references: Reference[];
   /** Monitor levels for everything the transport plays. */
   mixer: MixerSettings;
+  /** Curves kept whole as they were drawn; absent when there are none. */
+  strokes?: Stroke[];
   scale: ScaleSettings;
   modulation: ModulationSettings;
   formant: FormantMode;

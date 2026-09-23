@@ -2,8 +2,10 @@
 
 import type { AppState } from '../../app/store.js';
 import type { Blob, PitchTrackArrays, RenderPlan } from '../../core/types.js';
+import { clipEnd, clipStart } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
+import { REFERENCE_BAND } from './references.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -175,12 +177,17 @@ export function drawPitch(
   // spanning both.
   for (const track of warpedTracks(state.track, state.blobs)) {
     const columns = collect(track, viewport);
-    drawUnvoiced(ctx, columns, viewport, theme);
+    drawUnvoiced(ctx, columns, viewport, theme, state.edits?.references.length ?? 0);
     drawUncertainty(ctx, columns, viewport, theme);
     drawDetected(ctx, columns, viewport, theme);
   }
+  const outside = outsideTrack(state);
+  if (outside !== null) {
+    drawDetected(ctx, collect(outside, viewport), viewport, theme, OUTSIDE_STYLE);
+  }
   drawBridges(ctx, state.track, state.blobs, viewport, theme);
   drawTarget(ctx, state, viewport, theme);
+  drawStrokes(ctx, state, viewport, theme);
   drawAnchors(ctx, state, viewport, theme);
 
   ctx.restore();
@@ -328,13 +335,20 @@ const WARPED = new WeakMap<
   { blobs: readonly Blob[]; warped: PitchTrackArrays[] }
 >();
 
+/**
+ * Draws how loud the unpitched frames are, consonants and breaths, as a strip along the foot of
+ * the plot.
+ *
+ * @remarks Stands on the reference bands where there are any, which take the foot of the plot.
+ */
 function drawUnvoiced(
   ctx: CanvasRenderingContext2D,
   columns: Columns,
   viewport: Viewport,
   theme: Theme,
+  references: number,
 ): void {
-  const base = viewport.plotTop + viewport.plotHeight - 1;
+  const base = viewport.plotTop + viewport.plotHeight - 1 - references * REFERENCE_BAND;
   ctx.save();
   ctx.fillStyle = theme.unvoiced;
   for (let column = 0; column < columns.count; column += 1) {
@@ -380,11 +394,74 @@ function bandFor(confidence: number): number {
   return Math.min(ALPHA_BANDS.length - 1, Math.max(0, index));
 }
 
+/** How a detected line is stroked. */
+interface LineStyle {
+  colour: (theme: Theme) => string;
+  width: number;
+  dash: readonly number[];
+  /** Multiplier on every confidence band's opacity. */
+  alpha: number;
+}
+
+/** The detected line inside blobs, which is the one edited by default. */
+const DETECTED_STYLE: LineStyle = {
+  colour: (theme) => theme.pitchDetected,
+  width: 2,
+  dash: [3, 2],
+  alpha: 1,
+};
+
+/** Detected pitch outside every blob: finer, sparser and muted, so it is never read as a blob's. */
+const OUTSIDE_STYLE: LineStyle = {
+  colour: (theme) => theme.textMuted,
+  width: 1.5,
+  dash: [1, 3],
+  alpha: 0.8,
+};
+
+/**
+ * The frames of the layer's track outside every blob and inside the clip heard there.
+ *
+ * @remarks Where it was sung, since only a blob moves pitch in time. Kept per track, blob list
+ * and clip list, which every edit replaces.
+ */
+function outsideTrack(state: AppState): PitchTrackArrays | null {
+  const track = state.track;
+  if (track === null) return null;
+  const clips = state.edits?.clips ?? null;
+  const known = OUTSIDE.get(track);
+  if (known !== undefined && known.blobs === state.blobs && known.clips === clips) {
+    return known.outside;
+  }
+  const layer = new Set(state.layer);
+  const heard = (clips ?? []).filter((clip) => layer.has(clip.id));
+  const midi = new Float32Array(track.midi.length).fill(Number.NaN);
+  let next = 0;
+  for (let i = 0; i < track.times.length; i += 1) {
+    const time = track.times[i] ?? 0;
+    while (next < state.blobs.length && (state.blobs[next]?.end ?? 0) <= time) next += 1;
+    const blob = state.blobs[next];
+    if (blob !== undefined && time >= blob.start) continue;
+    if (!heard.some((clip) => time >= clipStart(clip) && time < clipEnd(clip))) continue;
+    midi[i] = track.midi[i] ?? Number.NaN;
+  }
+  const outside = { ...track, midi };
+  OUTSIDE.set(track, { blobs: state.blobs, clips, outside });
+  return outside;
+}
+
+/** Each track's outside frames, and the blob and clip lists they were read against. */
+const OUTSIDE = new WeakMap<
+  PitchTrackArrays,
+  { blobs: readonly Blob[]; clips: unknown; outside: PitchTrackArrays }
+>();
+
 function drawDetected(
   ctx: CanvasRenderingContext2D,
   columns: Columns,
   viewport: Viewport,
   theme: Theme,
+  style: LineStyle = DETECTED_STYLE,
 ): void {
   const paths = ALPHA_BANDS.map(() => new Path2D());
   const origin = columns.originX;
@@ -419,16 +496,16 @@ function drawDetected(
   ctx.save();
   // Thicker than the gold target line and dotted against it, so the two are told apart by shape
   // as well as by colour at any zoom.
-  ctx.lineWidth = 2;
+  ctx.lineWidth = style.width;
   ctx.lineCap = 'butt';
-  ctx.setLineDash([3, 2]);
-  ctx.strokeStyle = theme.pitchDetected;
+  ctx.setLineDash([...style.dash]);
+  ctx.strokeStyle = style.colour(theme);
   for (let band = 0; band < paths.length; band += 1) {
     const path = paths[band];
     if (path === undefined) {
       continue;
     }
-    ctx.globalAlpha = ALPHA_BANDS[band] ?? 1;
+    ctx.globalAlpha = (ALPHA_BANDS[band] ?? 1) * style.alpha;
     ctx.stroke(path);
   }
   ctx.setLineDash([]);
@@ -543,6 +620,80 @@ function drawTarget(
   ctx.restore();
 }
 
+/** Seconds apart two curves may end and begin and still be drawn as one line. */
+const JOIN_SECONDS = 0.005;
+
+/**
+ * Draws each kept curve whole: solid where a blob carries it, dotted and faint across gaps, so a
+ * line drawn over nothing still shows where it runs. The one picked up is drawn bright.
+ *
+ * @remarks Drawn from the curve itself rather than left to the target line, which breaks wherever
+ * a frame has no pitch to move, so a single stroke reads as one line.
+ */
+function drawStrokes(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+): void {
+  // Only the curves of the clips being edited: a clip behind the layer keeps its own track.
+  const layer = new Set(state.layer);
+  const strokes = (state.edits?.strokes ?? []).filter(
+    (stroke) => stroke.clip === undefined || layer.has(stroke.clip),
+  );
+  if (strokes.length === 0) return;
+  const covered = (time: number): boolean =>
+    state.blobs.some((blob) => time >= blobOutputStart(blob) && time <= blobOutputEnd(blob));
+  const view = viewport.view;
+  ctx.save();
+  ctx.lineJoin = 'round';
+  for (const stroke of strokes) {
+    const first = stroke.points[0];
+    const last = stroke.points[stroke.points.length - 1];
+    if (first === undefined || last === undefined) continue;
+    if (last.time < view.visibleStart || first.time > view.visibleEnd) continue;
+    const active = stroke.id === state.activeStroke;
+    const carried = new Path2D();
+    const loose = new Path2D();
+    for (let i = 1; i < stroke.points.length; i += 1) {
+      const a = stroke.points[i - 1];
+      const b = stroke.points[i];
+      if (a === undefined || b === undefined) continue;
+      const path = covered((a.time + b.time) / 2) ? carried : loose;
+      path.moveTo(viewport.timeToX(a.time), viewport.midiToY(a.midi));
+      path.lineTo(viewport.timeToX(b.time), viewport.midiToY(b.midi));
+    }
+    ctx.strokeStyle = active ? theme.handleActive : theme.pitchTarget;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    ctx.stroke(carried);
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = active ? 1 : 0.55;
+    ctx.setLineDash([2, 3]);
+    ctx.stroke(loose);
+  }
+  // Curves of one track that meet end to end are one line with a step in it, so the step is
+  // drawn: a paste over part of a curve reads as a change of pitch, not as two loose ends.
+  const joins = new Path2D();
+  const ordered = [...strokes].sort((a, b) => (a.points[0]?.time ?? 0) - (b.points[0]?.time ?? 0));
+  for (let i = 1; i < ordered.length; i += 1) {
+    const before = ordered[i - 1]?.points.at(-1);
+    const after = ordered[i]?.points[0];
+    if (before === undefined || after === undefined) continue;
+    if (Math.abs(after.time - before.time) > JOIN_SECONDS) continue;
+    if (ordered[i - 1]?.clip !== ordered[i]?.clip) continue;
+    joins.moveTo(viewport.timeToX(before.time), viewport.midiToY(before.midi));
+    joins.lineTo(viewport.timeToX(after.time), viewport.midiToY(after.midi));
+  }
+  ctx.strokeStyle = theme.pitchTarget;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.stroke(joins);
+  ctx.restore();
+}
+
 function drawAnchors(
   ctx: CanvasRenderingContext2D,
   state: AppState,
@@ -563,7 +714,7 @@ function drawAnchors(
       if (x < -6 || x > viewport.width + 6) {
         continue;
       }
-      const y = viewport.midiToY(anchor.midi);
+      const y = viewport.midiToY(anchor.midi + blob.pitchOffset);
       const active = selected.has(`${blob.id}:${index}`);
       ctx.fillStyle = active ? theme.handleActive : theme.pitchTarget;
       ctx.strokeStyle = theme.bg;

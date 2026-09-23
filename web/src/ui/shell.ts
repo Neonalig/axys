@@ -14,12 +14,16 @@ import {
   INSPECTOR_DEFAULT_WIDTH,
   INSPECTOR_MAX_WIDTH,
   INSPECTOR_MIN_WIDTH,
+  MIXER_DEFAULT_HEIGHT,
+  MIXER_MAX_HEIGHT,
+  MIXER_MIN_HEIGHT,
 } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
-import { toolDefinition } from '../editor/tools.js';
+import { toolDefinition, toolWorksIn } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
-import { projectEnd } from '../app/store.js';
-import type { AppState, FollowMode, ToolId } from '../app/store.js';
+import { editModeLabel, projectEnd } from '../app/store.js';
+import type { AppState, EditMode, FollowMode, ToolId } from '../app/store.js';
+import type { PitchCutFill } from '../app/clipboard.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport, MeterReport } from '../audio/engine.js';
 import type { AccidentalStyle, ClipId, EditOp, MixerSettings, ViewState } from '../core/types.js';
@@ -77,6 +81,8 @@ export interface ShellHooks {
   setTool(tool: ToolId): void;
   /** Chooses how the view keeps up with a playing playhead. */
   setFollowMode(mode: FollowMode): void;
+  /** Chooses what cutting pitch leaves in the span it came from. */
+  setPitchCutFill(fill: PitchCutFill): void;
   /** Zooms the time axis to a visible span in seconds, about the centre of the view. */
   setSpan(seconds: number): void;
   /** Hands the engine a desk that has not been committed yet, so a dragged fader is audible. */
@@ -107,6 +113,8 @@ export interface ShellHooks {
   setInspectorCollapsed(on: boolean): void;
   /** Sets how wide the inspector column is, and remembers it. */
   setInspectorWidth(pixels: number): void;
+  /** Sets how tall the open mixer is, and remembers it. */
+  setMixerHeight(pixels: number): void;
   /** The Sources menu for the project as it is now. */
   sourceMenu(): MenuEntry[];
   /** Brings a clip forward in the editor. */
@@ -146,6 +154,18 @@ const TOOLS: readonly ToolEntry[] = [
     tooltip: 'Draws a curved pitch transition',
   },
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time' },
+];
+
+interface ModeEntry {
+  id: EditMode;
+  icon: IconName;
+  tooltip: string;
+}
+
+const MODES: readonly ModeEntry[] = [
+  { id: 'both', icon: 'modeBoth', tooltip: 'Edits audio, blobs and pitch together' },
+  { id: 'blob', icon: 'modeBlob', tooltip: 'Edits blobs without moving audio or pitch' },
+  { id: 'pitch', icon: 'modePitch', tooltip: 'Edits pitch without moving audio' },
 ];
 
 /** How long the metronome flash takes to fade, in seconds. */
@@ -188,6 +208,25 @@ interface ButtonMenu {
   /** Whether a click opens the menu rather than running the command. */
   onClick?: boolean;
   entries(shell: AppShell): MenuEntry[] | Promise<MenuEntry[]>;
+}
+
+/** A button menu of commands, each with its icon and key. */
+function menuOf(shell: AppShell, ids: readonly string[]): MenuEntry[] {
+  return ids.flatMap((id) => {
+    const command = shell.command(id);
+    if (command === undefined) return [];
+    return [
+      {
+        label: command.label,
+        icon: iconFor(command),
+        key: command.shortcut,
+        enabled: shell.can(id),
+        run: () => {
+          shell.run(id);
+        },
+      },
+    ];
+  });
 }
 
 /** How long ago an epoch-millisecond time was, as a recent-list detail such as `3h ago`. */
@@ -241,6 +280,14 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       ];
     },
   },
+  'edit.cut': {
+    hint: 'Shift for Ripple Cut',
+    entries: (shell) => menuOf(shell, ['edit.cut', 'edit.rippleCut']),
+  },
+  'edit.paste': {
+    hint: 'Shift for Paste Insert, Alt for Paste Replace',
+    entries: (shell) => menuOf(shell, ['edit.paste', 'edit.pasteInsert', 'edit.pasteReplace']),
+  },
   'view.sources': {
     hint: 'Set the front source and how other sources show',
     onClick: true,
@@ -250,7 +297,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       {
         label: 'Next Source',
         icon: 'sources',
-        key: ']',
+        key: 'W',
         enabled: shell.can('view.sources'),
         run: () => {
           shell.run('view.sources');
@@ -259,10 +306,68 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       {
         label: 'Previous Source',
         icon: 'sources',
-        key: '[',
+        key: 'Shift+W',
         enabled: shell.can('view.previousSource'),
         run: () => {
           shell.run('view.previousSource');
+        },
+      },
+    ],
+  },
+  'view.followPlayhead': {
+    hint: 'Right-click for follow modes',
+    entries: (shell) => {
+      const state = shell.state;
+      const follow = state?.follow === true;
+      const mode = state?.followMode;
+      const choose = (chosen: FollowMode): void => {
+        shell.setFollowMode(chosen);
+        if (!follow) shell.run('view.followPlayhead');
+      };
+      return [
+        {
+          label: 'Off',
+          checked: !follow,
+          run: () => {
+            if (follow) shell.run('view.followPlayhead');
+          },
+        },
+        {
+          label: 'Page Ahead',
+          checked: follow && mode === 'page',
+          run: () => {
+            choose('page');
+          },
+        },
+        {
+          label: 'Keep Centred',
+          checked: follow && mode === 'centre',
+          run: () => {
+            choose('centre');
+          },
+        },
+      ];
+    },
+  },
+  'transport.toggleMetronome': {
+    hint: 'Right-click for Count In',
+    entries: (shell) => [
+      {
+        label: 'Metronome',
+        icon: 'metronome',
+        key: 'M',
+        checked: shell.state?.transport.metronome === true,
+        enabled: shell.can('transport.toggleMetronome'),
+        run: () => {
+          shell.run('transport.toggleMetronome');
+        },
+      },
+      {
+        label: 'Count In',
+        checked: shell.state?.transport.countIn === true,
+        enabled: shell.can('transport.toggleCountIn'),
+        run: () => {
+          shell.run('transport.toggleCountIn');
         },
       },
     ],
@@ -370,14 +475,39 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'file.saveProjectAs',
   // Deleting is done to what is under the hand: the key, or the menu over the blob.
   'edit.deleteBlobs',
+  'edit.deletePitch',
+  // In the Metronome button's menu.
+  'transport.toggleCountIn',
   'edit.deleteClip',
   // Both live in the Sources button's menu and on their keys.
   'view.previousSource',
   'view.toggleOthers',
+  // The variants of cutting and pasting are the Cut and Paste buttons with a modifier held, and
+  // are in their menus; trimming acts on what is under the hand, from the keys or the canvas menu.
+  'edit.rippleCut',
+  'edit.pasteInsert',
+  'edit.pasteReplace',
+  'edit.trimStart',
+  'edit.trimEnd',
+  'edit.resetTrim',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
 const HISTORY_COMMANDS: ReadonlySet<string> = new Set(['edit.undo', 'edit.redo']);
+
+/** Cut, Copy and Paste, drawn as their own group straight after undo and redo. */
+const CLIPBOARD_COMMANDS: ReadonlySet<string> = new Set(['edit.cut', 'edit.copy', 'edit.paste']);
+
+/**
+ * What a button runs with a modifier held instead of its own command.
+ *
+ * @remarks Shift ripples wherever something can, and Alt replaces. The button's tooltip follows
+ * the modifier while it is held, so what a click will do is what it says.
+ */
+const MODIFIED: Readonly<Record<string, { shift?: string; alt?: string }>> = {
+  'edit.cut': { shift: 'edit.rippleCut' },
+  'edit.paste': { shift: 'edit.pasteInsert', alt: 'edit.pasteReplace' },
+};
 
 /**
  * The two edits that open a panel and preview across the whole project.
@@ -444,6 +574,19 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Keyboard Shortcuts': 'keyboard',
   'Find Command': 'search',
   'Help and Diagnostics': 'help',
+  Cut: 'cut',
+  'Ripple Cut': 'cut',
+  Copy: 'copy',
+  Paste: 'paste',
+  'Paste Insert': 'paste',
+  'Paste Replace': 'paste',
+  'Trim Start': 'trimStart',
+  'Trim End': 'trimEnd',
+  'Reset Trim': 'reset',
+  'Next Edit Mode': 'modeBoth',
+  'Blob and Pitch Mode': 'modeBoth',
+  'Blob Mode': 'modeBlob',
+  'Pitch Mode': 'modePitch',
 };
 
 function iconFor(command: ShellCommand): IconName {
@@ -573,8 +716,10 @@ export class AppShell {
 
   readonly #commandButtons = new Map<string, ToolbarButton>();
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
+  readonly #modeButtons = new Map<EditMode, HTMLButtonElement>();
   readonly #header: HTMLElement;
   readonly #footer: HTMLElement;
+  #state: AppState | null = null;
   readonly #mixerToggle: HTMLButtonElement;
   readonly #themeButton: HTMLButtonElement;
   readonly #title: HTMLButtonElement;
@@ -586,6 +731,7 @@ export class AppShell {
   /** The palette or the cheatsheet while one is open, so the same key closes it again. */
   #panel: { kind: 'palette' | 'cheatsheet'; dialog: Dialog } | null = null;
   readonly #resizer: HTMLElement;
+  readonly #mixerResizer: HTMLElement;
   /** Distance from the pointer to the column's edge when the drag started, so the bar stays put. */
   #resizeGrab = 0;
 
@@ -615,6 +761,8 @@ export class AppShell {
   private constructor(options: ShellOptions) {
     this.#hooks = options.hooks;
     this.#commands = [...options.commands];
+    window.addEventListener('keydown', this.#onModifier);
+    window.addEventListener('keyup', this.#onModifier);
     this.#root = options.root;
     this.#root.replaceChildren();
 
@@ -649,6 +797,7 @@ export class AppShell {
         // The tool palette already presents these, so the commands stay in the
         // registry for shortcuts without being drawn a second time.
         header.append(this.#buildToolGroup());
+        header.append(this.#buildModeGroup());
         continue;
       }
       const commands = (byGroup.get(name) ?? []).filter(
@@ -667,6 +816,14 @@ export class AppShell {
         }
         header.append(section);
       }
+      const clipboard = commands.filter((command) => CLIPBOARD_COMMANDS.has(command.id));
+      if (clipboard.length > 0) {
+        const section = group('Clipboard');
+        for (const command of clipboard) {
+          section.append(this.#buildCommandButton(command));
+        }
+        header.append(section);
+      }
       const corrections = commands.filter((command) => CORRECTION_COMMANDS.has(command.id));
       if (corrections.length > 0) {
         const section = group('Correction Commands');
@@ -676,7 +833,10 @@ export class AppShell {
         header.append(section);
       }
       const rest = commands.filter(
-        (command) => !HISTORY_COMMANDS.has(command.id) && !CORRECTION_COMMANDS.has(command.id),
+        (command) =>
+          !HISTORY_COMMANDS.has(command.id) &&
+          !CORRECTION_COMMANDS.has(command.id) &&
+          !CLIPBOARD_COMMANDS.has(command.id),
       );
       if (rest.length === 0 && name !== 'Transport' && name !== 'View') {
         continue;
@@ -849,6 +1009,9 @@ export class AppShell {
       setFollowMode: (mode) => {
         this.#hooks.setFollowMode(mode);
       },
+      setPitchCutFill: (fill) => {
+        this.#hooks.setPitchCutFill(fill);
+      },
       setToolbarLabels: (on) => {
         this.#hooks.setToolbarLabels(on);
       },
@@ -908,12 +1071,14 @@ export class AppShell {
     this.#footer = footer;
 
     this.#resizer = this.#buildResizer();
+    this.#mixerResizer = this.#buildMixerResizer();
     this.#root.append(
       header,
       main,
       this.#resizer,
       this.#inspector.element,
       this.#mixer.element,
+      this.#mixerResizer,
       footer,
     );
     this.#toasts = new ToastHost(document.body);
@@ -983,6 +1148,7 @@ export class AppShell {
 
   /** Reflects application state in every control. */
   update(state: AppState): void {
+    this.#state = state;
     for (const [id, entry] of this.#commandButtons) {
       entry.button.disabled = !this.#hooks.isCommandEnabled(id);
     }
@@ -995,9 +1161,13 @@ export class AppShell {
       pressed: playing,
     });
 
+    for (const [mode, button] of this.#modeButtons) {
+      button.setAttribute('aria-pressed', String(state.editMode === mode));
+      button.disabled = state.phase !== 'ready';
+    }
     for (const [tool, button] of this.#toolButtons) {
       button.setAttribute('aria-pressed', String(state.tool === tool));
-      button.disabled = state.phase !== 'ready';
+      button.disabled = state.phase !== 'ready' || !toolWorksIn(tool, state.editMode);
     }
 
     // Following, looping and the metronome are switches, so each says whether it is on rather
@@ -1064,6 +1234,9 @@ export class AppShell {
     // state in its pressed styling, the way the metronome does. The panel folds by its grid row,
     // which the shell owns, so the class goes here rather than on the panel.
     this.#root.classList.toggle('is-mixer-open', mixerOpen);
+    this.#root.style.setProperty('--axys-mixer-height', `${String(state.mixerHeight)}px`);
+    this.#mixerResizer.hidden = !mixerOpen;
+    this.#mixerResizer.setAttribute('aria-valuenow', String(state.mixerHeight));
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
     setTooltip(this.#mixerToggle, `${mixerOpen ? 'Hide Mixer' : 'Show Mixer'} (K)`);
 
@@ -1114,6 +1287,8 @@ export class AppShell {
 
   /** Removes the chrome and its notification layer. */
   dispose(): void {
+    window.removeEventListener('keydown', this.#onModifier);
+    window.removeEventListener('keyup', this.#onModifier);
     this.#toolbarFit.disconnect();
     this.#panel?.dialog.close();
     this.#timeBar.dispose();
@@ -1254,16 +1429,21 @@ export class AppShell {
     // the command's, so a screen reader and the menus never disagree about what it is called.
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
     const menu = BUTTON_MENUS[command.id];
-    button.addEventListener('click', () => {
-      this.#press(command.id, button);
+    button.addEventListener('click', (event) => {
+      this.#press(this.#variantOf(command.id, event), button);
     });
+    // Every button answers a right-click; one with nothing more to offer lists its own command.
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      void this.#openButtonMenu(button, menu?.entries ?? ((shell) => menuOf(shell, [command.id])));
+    });
+    if (MODIFIED[command.id] !== undefined) {
+      button.addEventListener('pointermove', (event) => {
+        this.#showVariant(command.id, event);
+      });
+    }
     if (menu !== undefined) {
       setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
-      const open = (event: Event): void => {
-        event.preventDefault();
-        this.#openButtonMenu(button, menu.entries);
-      };
-      button.addEventListener('contextmenu', open);
     }
     this.#commandButtons.set(command.id, {
       button,
@@ -1274,6 +1454,33 @@ export class AppShell {
     });
     return button;
   }
+
+  /** The command a button runs with the modifiers an event carries. */
+  #variantOf(id: string, event: { shiftKey: boolean; altKey: boolean }): string {
+    const variants = MODIFIED[id];
+    if (variants === undefined) return id;
+    if (event.shiftKey && variants.shift !== undefined) return variants.shift;
+    if (event.altKey && variants.alt !== undefined) return variants.alt;
+    return id;
+  }
+
+  /** Rewrites a modifier button's face to say what a click with these modifiers runs. */
+  #showVariant(id: string, event: { shiftKey: boolean; altKey: boolean }): void {
+    const entry = this.#commandButtons.get(id);
+    const chosen = this.#commands.find((command) => command.id === this.#variantOf(id, event));
+    if (entry === undefined || chosen === undefined) return;
+    const menu = BUTTON_MENUS[id];
+    this.#setFace(id, {
+      icon: iconFor(chosen),
+      label: SHORT_LABEL[chosen.id] ?? chosen.label,
+      tooltip: menu === undefined ? tooltipFor(chosen) : `${tooltipFor(chosen)}\n${menu.hint}`,
+    });
+  }
+
+  /** Follows a modifier pressed or let go while a modifier button may be under the pointer. */
+  #onModifier = (event: KeyboardEvent): void => {
+    for (const id of Object.keys(MODIFIED)) this.#showVariant(id, event);
+  };
 
   /** Opens a button's own menu directly under it, or closes the one it has open. */
   async #openButtonMenu(
@@ -1313,6 +1520,16 @@ export class AppShell {
   /** Takes a project off the recent list. */
   forgetRecent(id: string): void {
     this.#hooks.forgetRecent(id);
+  }
+
+  /** The state the chrome last reflected, or `null` before the first update. */
+  get state(): AppState | null {
+    return this.#state;
+  }
+
+  /** Chooses how the view keeps up with a playing playhead. */
+  setFollowMode(mode: FollowMode): void {
+    this.#hooks.setFollowMode(mode);
   }
 
   /** Runs a command from a button menu. */
@@ -1362,6 +1579,11 @@ export class AppShell {
     }
     held.dialog.close();
     return held.kind === kind;
+  }
+
+  /** A command by id, for a button menu. */
+  command(id: string): ShellCommand | undefined {
+    return this.#commands.find((command) => command.id === id);
   }
 
   /** Whether a command can run, for a button menu. */
@@ -1449,6 +1671,66 @@ export class AppShell {
     // Double-clicking a divider puts it back where it started, which is what every other one does.
     bar.addEventListener('dblclick', () => {
       this.#hooks.setInspectorWidth(INSPECTOR_DEFAULT_WIDTH);
+    });
+    return bar;
+  }
+
+  /**
+   * The bar along the top of the open mixer, dragged to set its height.
+   *
+   * @remarks Laid over the mixer's top edge in the same grid area, so the mixer keeps its own
+   * layout. Arrow keys move it too, and a double-click puts it back to its opening height.
+   */
+  #buildMixerResizer(): HTMLElement {
+    const bar = document.createElement('div');
+    bar.className = 'axys-mixer-resizer';
+    bar.tabIndex = 0;
+    bar.setAttribute('role', 'separator');
+    bar.setAttribute('aria-orientation', 'horizontal');
+    bar.setAttribute('aria-label', 'Resize Mixer');
+    bar.setAttribute('aria-valuemin', String(MIXER_MIN_HEIGHT));
+    bar.setAttribute('aria-valuemax', String(MIXER_MAX_HEIGHT));
+    setTooltip(bar, 'Resize Mixer');
+
+    let grab = 0;
+    const height = (): number => this.#mixer.element.getBoundingClientRect().height;
+    bar.addEventListener('pointerdown', (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      grab = event.clientY - this.#mixer.element.getBoundingClientRect().top;
+      bar.setPointerCapture(event.pointerId);
+      bar.classList.add('is-dragging');
+      this.#root.classList.add('is-resizing');
+      event.preventDefault();
+    });
+    bar.addEventListener('pointermove', (event: PointerEvent) => {
+      if (!bar.hasPointerCapture(event.pointerId)) return;
+      const bottom = this.#mixer.element.getBoundingClientRect().bottom;
+      this.#hooks.setMixerHeight(bottom - event.clientY + grab);
+    });
+    const end = (event: PointerEvent): void => {
+      if (!bar.hasPointerCapture(event.pointerId)) return;
+      bar.releasePointerCapture(event.pointerId);
+      bar.classList.remove('is-dragging');
+      this.#root.classList.remove('is-resizing');
+    };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+
+    bar.addEventListener('keydown', (event: KeyboardEvent) => {
+      const step = event.shiftKey ? RESIZE_STEP_COARSE : RESIZE_STEP;
+      if (event.key === 'ArrowUp') {
+        this.#hooks.setMixerHeight(height() + step);
+      } else if (event.key === 'ArrowDown') {
+        this.#hooks.setMixerHeight(height() - step);
+      } else {
+        return;
+      }
+      // Kept from the window's shortcuts, which would otherwise nudge the selection too.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    bar.addEventListener('dblclick', () => {
+      this.#hooks.setMixerHeight(MIXER_DEFAULT_HEIGHT);
     });
     return bar;
   }
@@ -1545,7 +1827,61 @@ ${tool.tooltip}`,
         this.#hooks.setTool(tool.id);
         this.announce(`${tool.label} selected`);
       });
+      button.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        void this.#openButtonMenu(button, (shell) =>
+          TOOLS.map((entry) => ({
+            label: entry.label,
+            icon: entry.icon,
+            key: toolDefinition(entry.id).key,
+            checked: shell.state?.tool === entry.id,
+            enabled: shell.can(`tools.${entry.id}`),
+            run: () => {
+              shell.run(`tools.${entry.id}`);
+            },
+          })),
+        );
+      });
       this.#toolButtons.set(tool.id, button);
+      section.append(button);
+    }
+    return section;
+  }
+
+  #buildModeGroup(): HTMLElement {
+    const section = group('Edit Mode');
+    section.classList.add('axys-segmented');
+    for (const mode of MODES) {
+      const label = `${editModeLabel(mode.id)} Mode`;
+      const button = control({
+        icon: mode.icon,
+        label,
+        tooltip: `${label}
+${mode.tooltip}
+Next Edit Mode (Q)`,
+      });
+      button.setAttribute('aria-pressed', 'false');
+      button.addEventListener('click', () => {
+        this.#hooks.runCommand(`tools.editMode.${mode.id}`);
+        this.announce(`${label} selected`);
+      });
+      button.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        void this.#openButtonMenu(button, (shell) => [
+          ...MODES.map((entry) => ({
+            label: `${editModeLabel(entry.id)} Mode`,
+            icon: entry.icon,
+            checked: shell.state?.editMode === entry.id,
+            enabled: shell.can(`tools.editMode.${entry.id}`),
+            run: () => {
+              shell.run(`tools.editMode.${entry.id}`);
+            },
+          })),
+          { separator: true as const },
+          ...menuOf(shell, ['tools.nextEditMode', 'tools.previousEditMode']),
+        ]);
+      });
+      this.#modeButtons.set(mode.id, button);
       section.append(button);
     }
     return section;
@@ -1566,8 +1902,9 @@ ${tool.tooltip}`,
     });
     button.setAttribute('aria-label', 'Choose a Theme');
     button.setAttribute('aria-haspopup', 'menu');
-    button.addEventListener('click', () => {
-      this.#openButtonMenu(button, (shell) =>
+    const open = (event: Event): void => {
+      event.preventDefault();
+      void this.#openButtonMenu(button, (shell) =>
         // No icon per entry: four copies of the same palette would say nothing, and the mark
         // against the current choice is what the menu is here to show.
         [
@@ -1582,7 +1919,9 @@ ${tool.tooltip}`,
           { render: () => buildAccentRow(shell) },
         ],
       );
-    });
+    };
+    button.addEventListener('click', open);
+    button.addEventListener('contextmenu', open);
     return button;
   }
 }

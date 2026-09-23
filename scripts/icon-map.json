@@ -61,7 +61,15 @@
     "search": "search",
     "caret": "chevron-down",
     "close": "x",
-    "sources": "layers"
+    "sources": "layers",
+    "modeBoth": "blend",
+    "modeBlob": "rectangle-horizontal",
+    "modePitch": "activity",
+    "cut": "scissors",
+    "copy": "copy",
+    "paste": "clipboard-paste",
+    "trimStart": "arrow-right-to-line",
+    "trimEnd": "arrow-left-to-line"
   },
   "states": {
     "inspectorFold": { "on": "sidebarClosed", "off": "sidebar" },

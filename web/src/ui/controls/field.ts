@@ -291,7 +291,12 @@ export function numberInput(options: {
   return input;
 }
 
-/** Slider over a continuous range. */
+/**
+ * Slider over a continuous range.
+ *
+ * @remarks The slider draws its own track, filled from zero, or from the start where zero is out
+ * of range, to the value. The fill follows every change to the value, typed, dragged or set.
+ */
 export function rangeInput(min: number, max: number, step: number): HTMLInputElement {
   const input = document.createElement('input');
   input.type = 'range';
@@ -299,7 +304,37 @@ export function rangeInput(min: number, max: number, step: number): HTMLInputEle
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
+  const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  if (native?.get !== undefined && native.set !== undefined) {
+    const { get, set } = native;
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get(this: HTMLInputElement) {
+        return get.call(this) as string;
+      },
+      set(this: HTMLInputElement, value: string) {
+        set.call(this, value);
+        fillRange(this);
+      },
+    });
+  }
+  input.addEventListener('input', () => {
+    fillRange(input);
+  });
+  fillRange(input);
   return input;
+}
+
+/** Sets the span of a slider's track its fill covers, as fractions of the track. */
+function fillRange(input: HTMLInputElement): void {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  if (!(max > min)) return;
+  const at = (value: number): number => Math.min(1, Math.max(0, (value - min) / (max - min)));
+  const origin = at(min < 0 && max > 0 ? 0 : min);
+  const value = at(Number(input.value));
+  input.style.setProperty('--axys-range-from', Math.min(origin, value).toFixed(4));
+  input.style.setProperty('--axys-range-to', Math.max(origin, value).toFixed(4));
 }
 
 /** Single-line text entry. */

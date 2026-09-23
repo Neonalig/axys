@@ -12,6 +12,7 @@ use crate::analysis::f0::{F0Params, PitchTrack};
 use crate::analysis::segment::SegmentParams;
 use crate::blob::{Blob, BlobId, BlobSet, ConflictKind, TimingConflict};
 use crate::clip::{clip_of, Clip, ClipId, Reference, ReferenceId};
+use crate::curve::Stroke;
 use crate::dsp::formant::FormantMode;
 use crate::edit::History;
 use crate::midi::{GuideSelection, NoteMapping};
@@ -125,6 +126,9 @@ pub struct EditState {
     /// Monitor levels for everything the transport plays.
     #[serde(default)]
     pub mixer: MixerSettings,
+    /// Curves kept whole as they were drawn, so they can be reshaped and copied as drawn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strokes: Vec<Stroke>,
 }
 
 impl EditState {

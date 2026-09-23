@@ -188,8 +188,17 @@ export interface AppState {
   toolbarLabels: boolean;
   /** Whether the mixer is folded away to its bar. */
   mixerCollapsed: boolean;
+  /** What editing acts on. */
+  editMode: EditMode;
+  /** What cutting pitch leaves in the span it came from. */
+  pitchCutFill: PitchCutFill;
+  /** What Copy or Cut last took. */
+  clipboard: ClipboardContent | null;
   dirty: boolean;
 }
+
+/** Blobs, pitch and audio together; blobs alone; or pitch alone. */
+export type EditMode = 'both' | 'blob' | 'pitch';
 
 /**
  * What the user currently has selected.
@@ -304,6 +313,31 @@ discardPreview(): void;
 readonly previewing: boolean;
 ```
 
+Cut, Copy and Paste are `Ctrl+X`, `Ctrl+C` and `Ctrl+V` and act on what the edit mode edits:
+clips in Blob and Pitch, blobs in Blob, the heard pitch line in Pitch. Paste lands at the playhead,
+and pasted pitch at the start of the selection when there is one, at the length it was copied. A clipboard only pastes in the
+mode it was taken in. Trim Start and Trim End, `Alt+[` and `Alt+]`, trim the clip under the playhead
+to it, and Reset Trim widens it again. `Q` and `Shift+Q` step through the edit modes, one command
+per mode sets it, and `W` and `Shift+W` step through the sources. The workspace takes clips in and
+out:
+
+```ts
+/** Pastes copied parts of clips as new clips at a project time, as one undo step. */
+pasteClips(parts: readonly ClipPart[], at: number): void;
+/** Takes project spans out of clips on the lane, as one undo step. */
+cutClips(parts: readonly { clip: ClipId; start: number; end: number }[]): void;
+```
+
+## Clipboard: `app/clipboard.ts`
+
+Pure functions from the state to what is copied and to the edits Cut and Paste commit, shared by
+the commands, the gestures and the arrow keys. `copyClips`, `copyBlobs` and `copyPitch` take the
+selection in each mode, `copyBlobs` as the clip parts under the selected blobs; `cutClipSpans`,
+`blobClipSpans` and `cutPitchOps` take it out; `pastePitchOps` lays pitch down, `placePitch` placing a copied line at the playhead or over a span.
+`movePitchOps` moves the pitch line across spans without moving audio, and `outsideRuns` and
+`liftRunOps` find pitch outside every blob and make blobs of it. Every edit a function returns is
+meant to be committed as one group.
+
 ## Shortcuts: `app/shortcuts.ts`
 
 ```ts
@@ -315,7 +349,7 @@ export function bindShortcuts(
 ): () => void;
 ```
 
-Space toggles play, Escape clears selection, arrow keys nudge, Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z
+Space toggles play, Escape clears selection, arrow keys nudge what the edit mode edits, Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z
 or Ctrl+Y redoes. Home and End take the playhead to the start and the end, and the page keys page
 the view along the timeline, with Shift keeping them on the pitch axis. The ten digits jump the
 playhead across the take, `1` at the start through `0` at the end, evenly spaced; either row
@@ -431,7 +465,8 @@ range, hover readout, drag preview).
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 - Every blob carries a tab naming its clip, where the clip is picked up with any tool and
   dragged along the lane, previewing as a band with the clip's waveform and its blobs as ghosts
-  where it would land. A click on the tab selects the clip. A clip lands exactly where it is let
+  where it would land. A click on the tab selects the blob under it, as a click on the blob does,
+  and a double-click selects the whole clip. A clip lands exactly where it is let
   go, over any clip there, snapping to the grid but not to blob edges. Ctrl puts a dragged clip
   or reference at the start. Shift inserts a dragged or dropped vocal instead, moving every clip
   after it later, and the two stack.

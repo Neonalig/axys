@@ -9,12 +9,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::PitchTrack;
-use crate::blob::{BlobId, BlobSet, Edge, Voicing};
+use crate::blob::{Blob, BlobId, BlobSet, Edge, Subregion, Voicing};
 use crate::clip::{
     clip_of, fit_to_source, free_position, numbered_for, ripple_insert, Clip, ClipId, Reference,
     ReferenceId, Span, MAX_CLIPS, MAX_REFERENCES,
 };
-use crate::curve::{Anchor, PitchCurve};
+use crate::curve::{Anchor, Interp, PitchCurve, Stroke};
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideSelection, NoteMapping};
 use crate::mixer::MixerSettings;
@@ -92,7 +92,11 @@ pub enum EditOp {
         blobs: Vec<BlobId>,
         /// Relative transposition in semitones.
         semitones: f64,
-        /// Moves the blobs' drawn anchors by the same amount.
+        /// Read from recorded histories and otherwise ignored.
+        ///
+        /// A drawn curve is heard with the blob's offset added, so the offset alone already moves
+        /// it. Histories recorded while this also transposed the anchors replay with the move
+        /// heard once rather than twice.
         #[serde(default, skip_serializing_if = "is_false")]
         anchors: bool,
     },
@@ -102,7 +106,7 @@ pub enum EditOp {
         blob: BlobId,
         /// Absolute transposition in semitones.
         semitones: f64,
-        /// Moves the blob's drawn anchors by as much as the transposition changes.
+        /// Read from recorded histories and otherwise ignored, as for [`EditOp::MovePitch`].
         #[serde(default, skip_serializing_if = "is_false")]
         anchors: bool,
     },
@@ -203,6 +207,42 @@ pub enum EditOp {
     DeleteBlobs {
         /// Blobs to delete.
         blobs: Vec<BlobId>,
+        /// Leaves the material playing as it was sung instead of silencing it.
+        #[serde(default, skip_serializing_if = "is_false")]
+        keep_audio: bool,
+    },
+    /// Puts new blobs over audio no blob covers.
+    AddBlobs {
+        /// The blobs, in project seconds. Each id names the clip it goes to; the blob is given a
+        /// fresh id in that clip, and its detected centre is read from the clip's audio.
+        blobs: Vec<Blob>,
+    },
+    /// Slides a blob along the audio, so it covers different material without moving any.
+    ShiftBlob {
+        /// Blob to slide.
+        blob: BlobId,
+        /// Distance in seconds, held so the blob stays between its neighbours and in its clip.
+        seconds: f64,
+    },
+    /// Replaces what a blob sounds across a span, leaving the rest of the blob as it was.
+    ReplacePitch {
+        /// Blob holding the span.
+        blob: BlobId,
+        /// Span start in project seconds.
+        start: f64,
+        /// Span end in project seconds.
+        end: f64,
+        /// What the span sounds afterwards.
+        fill: PitchFill,
+    },
+    /// Sets the part of a clip's audio that is heard.
+    TrimClip {
+        /// Clip to trim.
+        clip: ClipId,
+        /// First project second heard.
+        start: f64,
+        /// Last project second heard.
+        end: f64,
     },
     /// Puts an imported vocal on the timeline.
     AddClip {
@@ -333,6 +373,16 @@ pub enum EditOp {
         /// New meter events.
         events: Vec<MeterEvent>,
     },
+    /// Keeps a drawn curve whole, replacing the one with its id.
+    SetStroke {
+        /// The stroke, whose id is new or names the one it replaces.
+        stroke: Stroke,
+    },
+    /// Forgets a kept curve. What it wrote into blobs is left as it is.
+    RemoveStroke {
+        /// Id of the stroke to forget.
+        stroke: u32,
+    },
     /// Applies several operations as one undo step.
     Group {
         /// Operations in the order they are applied.
@@ -363,6 +413,10 @@ impl EditOp {
             EditOp::SetExcluded { .. } => "Exclude Blob",
             EditOp::SetGain { .. } => "Set Gain",
             EditOp::DeleteBlobs { .. } => "Delete Blobs",
+            EditOp::AddBlobs { .. } => "Add Blobs",
+            EditOp::ShiftBlob { .. } => "Move Blob",
+            EditOp::ReplacePitch { .. } => "Replace Pitch",
+            EditOp::TrimClip { .. } => "Trim Clip",
             EditOp::AddClip { .. } => "Import Clip",
             EditOp::MoveClip { .. } => "Move Clip",
             EditOp::RemoveClip { .. } => "Delete Clip",
@@ -384,9 +438,33 @@ impl EditOp {
             EditOp::SetTimelineOrigin { .. } => "Align Timeline",
             EditOp::SetTempoMap { .. } => "Set Tempo Map",
             EditOp::SetMeterMap { .. } => "Set Meter Map",
+            EditOp::SetStroke { .. } => "Draw Curve",
+            EditOp::RemoveStroke { .. } => "Delete Curve",
             EditOp::Group { .. } => "Grouped Edit",
         }
     }
+}
+
+/// What a span of a blob sounds after [`EditOp::ReplacePitch`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PitchFill {
+    /// A heard contour, in project seconds and fractional MIDI.
+    Contour {
+        /// Points of the contour in time order.
+        anchors: Vec<Anchor>,
+    },
+    /// The blob's own pitch, as it sounds with no curve drawn. Across the whole blob it also
+    /// clears the blob's offset, so the blob sounds as it was sung.
+    Sung,
+    /// Whatever was drawn across the span let go, leaving the blob's own pitch with its offset.
+    Release,
+    /// A level line at the span's median detected pitch, moved by the blob's offset.
+    Flat,
 }
 
 /// Undo and redo stacks over a project's edit history.
@@ -421,18 +499,22 @@ impl EditOp {
             | EditOp::ResetSpan { blob, .. }
             | EditOp::ResetBlob { blob }
             | EditOp::SetExcluded { blob, .. }
-            | EditOp::SetGain { blob, .. } => one(blob),
+            | EditOp::SetGain { blob, .. }
+            | EditOp::ShiftBlob { blob, .. }
+            | EditOp::ReplacePitch { blob, .. } => one(blob),
+            EditOp::AddBlobs { blobs } => blobs.iter().any(|blob| one(&blob.id)),
             EditOp::JoinBlobs { first, second } => one(first) || one(second),
             EditOp::MovePitch { blobs, .. }
             | EditOp::MoveTime { blobs, .. }
-            | EditOp::DeleteBlobs { blobs } => blobs.iter().any(one),
+            | EditOp::DeleteBlobs { blobs, .. } => blobs.iter().any(one),
             EditOp::SetMapping { mapping } => one(&mapping.blob),
             EditOp::SetMappings { mappings } => mappings.iter().any(|m| one(&m.blob)),
             EditOp::ResetRange { .. } => true,
             EditOp::AddClip { clip: added, .. } => added.id == clip,
             EditOp::MoveClip { clip: moved, .. }
             | EditOp::RemoveClip { clip: moved }
-            | EditOp::RenameClip { clip: moved, .. } => *moved == clip,
+            | EditOp::RenameClip { clip: moved, .. }
+            | EditOp::TrimClip { clip: moved, .. } => *moved == clip,
             EditOp::Group { ops } => ops.iter().any(|op| op.touches_clip(clip)),
             _ => false,
         }
@@ -579,8 +661,9 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             let clip = owner(state, *blob)?;
             // Held inside the clip's own audio, so an edge dragged past it cannot reach a blob of
             // the clip beside it.
-            let at = (finite(*time, "boundary time")? - clip.position)
-                .clamp(0.0, clip.source.duration.max(0.0));
+            let window = clip.window();
+            let at =
+                (finite(*time, "boundary time")? - clip.position).clamp(window.start, window.end);
             clip.blobs.move_boundary(*blob, *edge, at)?;
         }
         EditOp::SetVoicing {
@@ -596,31 +679,20 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
                 .set_voicing(*blob, start - offset, end - offset, *voicing)?;
         }
         EditOp::MovePitch {
-            blobs,
-            semitones,
-            anchors,
+            blobs, semitones, ..
         } => {
             let semitones = finite(*semitones, "pitch move")?;
             for id in require_all(state, blobs)? {
                 if let Some(b) = state.blob_mut(id) {
                     b.pitch_offset += semitones;
-                    if *anchors {
-                        b.curve = b.curve.transposed(semitones);
-                    }
                 }
             }
         }
         EditOp::SetPitchOffset {
-            blob,
-            semitones,
-            anchors,
+            blob, semitones, ..
         } => {
             let semitones = finite(*semitones, "pitch offset")?;
-            let b = blob_mut(state, *blob)?;
-            if *anchors {
-                b.curve = b.curve.transposed(semitones - b.pitch_offset);
-            }
-            b.pitch_offset = semitones;
+            blob_mut(state, *blob)?.pitch_offset = semitones;
         }
         EditOp::MoveTime { blobs, seconds } => {
             let seconds = finite(*seconds, "time move")?;
@@ -736,16 +808,85 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             blob_mut(state, *blob)?.gain_db =
                 gain_db.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
         }
-        EditOp::DeleteBlobs { blobs } => {
+        EditOp::DeleteBlobs { blobs, keep_audio } => {
             for id in require_all(state, blobs)? {
                 let clip = owner(state, id)?;
                 let removed = clip.blobs.remove(id)?;
-                clip.silence(Span {
-                    start: removed.start,
-                    end: removed.end,
-                });
+                if !*keep_audio {
+                    clip.silence(Span {
+                        start: removed.start,
+                        end: removed.end,
+                    });
+                }
             }
             forget_missing_mappings(state);
+        }
+        EditOp::AddBlobs { blobs } => {
+            for blob in blobs {
+                let id = clip_of(blob.id);
+                let track = sources.track(id);
+                let clip = state
+                    .clip_mut(id)
+                    .ok_or_else(|| AxysError::NotFound(format!("clip {}", id.0)))?;
+                let window = clip.window();
+                let mut local = blob.shifted(-clip.position);
+                if local.start < window.start - 1e-6 || local.end > window.end + 1e-6 {
+                    return Err(AxysError::Invalid(
+                        "a new blob lies outside its clip's audio".into(),
+                    ));
+                }
+                local.start = local.start.max(window.start);
+                local.end = local.end.min(window.end);
+                if local.subregions.is_empty() {
+                    local.subregions =
+                        vec![Subregion::new(local.start, local.end, Voicing::Voiced)];
+                }
+                local.id = fresh_blob_id(&clip.blobs, id);
+                local.rederive_center(track);
+                clip.blobs.insert(local)?;
+            }
+        }
+        EditOp::ShiftBlob { blob, seconds } => {
+            let seconds = finite(*seconds, "blob shift")?;
+            let track = sources.track(clip_of(*blob));
+            let clip = owner(state, *blob)?;
+            let window = clip.window();
+            clip.blobs
+                .shift_span(*blob, seconds, window.start, window.end, track)?;
+        }
+        EditOp::ReplacePitch {
+            blob,
+            start,
+            end,
+            fill,
+        } => {
+            let (start, end) = finite_span(*start, *end)?;
+            let track = sources.track(clip_of(*blob));
+            let offset = position_of(state, *blob)?;
+            let target = blob_mut(state, *blob)?;
+            replace_pitch(target, start - offset, end - offset, fill, offset, track)?;
+        }
+        EditOp::TrimClip { clip, start, end } => {
+            let (start, end) = finite_span(*start, *end)?;
+            let target = state
+                .clip_mut(*clip)
+                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?;
+            let duration = target.source.duration.max(0.0);
+            let from = (start - target.position).clamp(0.0, duration);
+            let to = (end - target.position).clamp(0.0, duration);
+            if to - from < MIN_CLIP_SECONDS {
+                return Err(AxysError::Invalid(format!(
+                    "a clip is at least {MIN_CLIP_SECONDS} s long"
+                )));
+            }
+            target.window = if from <= 1e-9 && to >= duration - 1e-9 {
+                None
+            } else {
+                Some(Span {
+                    start: from,
+                    end: to,
+                })
+            };
         }
         EditOp::AddClip {
             clip,
@@ -775,21 +916,33 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             let mut clip = clip.clone();
             fit_to_source(&mut clip.blobs, duration);
-            let wanted = finite(clip.position, "clip position")?;
+            if let Some(window) = clip.window {
+                let (from, to) = finite_span(window.start, window.end)?;
+                if to - from < MIN_CLIP_SECONDS {
+                    return Err(AxysError::Invalid(format!(
+                        "a clip is at least {MIN_CLIP_SECONDS} s long"
+                    )));
+                }
+            }
+            let window = clip.window();
+            let length = window.end - window.start;
+            // Placed by where it starts being heard, so a trimmed clip lands where it is put.
+            let wanted = finite(clip.position, "clip position")? + window.start;
             let spans = lane_spans(state, None);
-            if *exact {
-                clip.position = wanted.max(0.0);
+            let at = if *exact {
+                wanted.max(0.0)
             } else if *ripple {
-                let (at, shift) = ripple_insert(&spans, duration, wanted);
+                let (at, shift) = ripple_insert(&spans, length, wanted);
                 for other in &mut state.clips {
-                    if other.position >= at - 1e-9 {
+                    if other.start() >= at - 1e-9 {
                         other.position += shift;
                     }
                 }
-                clip.position = at;
+                at
             } else {
-                clip.position = free_position(&spans, duration, wanted);
-            }
+                free_position(&spans, length, wanted)
+            };
+            clip.position = at - window.start;
             state.clips.push(clip);
         }
         EditOp::MoveClip {
@@ -798,17 +951,19 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             exact,
             ripple,
         } => {
-            let wanted = finite(*position, "clip position")?;
             let others = lane_spans(state, Some(*clip));
-            let duration = state
+            let window = state
                 .clip(*clip)
                 .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?
-                .source
-                .duration;
+                .window();
+            let length = window.end - window.start;
+            // `position` is still where source second 0 goes; the lane is read by where the clip
+            // starts being heard.
+            let wanted = finite(*position, "clip position")? + window.start;
             let at = if *ripple {
-                let (at, shift) = ripple_insert(&others, duration, wanted);
+                let (at, shift) = ripple_insert(&others, length, wanted);
                 for other in state.clips.iter_mut().filter(|other| other.id != *clip) {
-                    if other.position >= at - 1e-9 {
+                    if other.start() >= at - 1e-9 {
                         other.position += shift;
                     }
                 }
@@ -816,10 +971,10 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             } else if *exact {
                 wanted.max(0.0)
             } else {
-                free_position(&others, duration, wanted)
+                free_position(&others, length, wanted)
             };
             if let Some(target) = state.clip_mut(*clip) {
-                target.position = at;
+                target.position = at - window.start;
             }
         }
         EditOp::RemoveClip { clip } => {
@@ -959,6 +1114,28 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
         EditOp::SetMeterMap { events } => {
             state.timeline.set_meter(events.clone())?;
         }
+        EditOp::SetStroke { stroke } => {
+            stroke.validate()?;
+            match state.strokes.iter_mut().find(|kept| kept.id == stroke.id) {
+                Some(kept) => *kept = stroke.clone(),
+                None => {
+                    if state.strokes.len() >= limits::MAX_STROKES {
+                        return Err(AxysError::Invalid(format!(
+                            "a project keeps at most {} curves",
+                            limits::MAX_STROKES
+                        )));
+                    }
+                    state.strokes.push(stroke.clone());
+                }
+            }
+        }
+        EditOp::RemoveStroke { stroke } => {
+            let before = state.strokes.len();
+            state.strokes.retain(|kept| kept.id != *stroke);
+            if state.strokes.len() == before {
+                return Err(AxysError::NotFound(format!("curve {stroke}")));
+            }
+        }
         EditOp::Group { ops } => {
             for op in ops {
                 apply_in(state, sources, op)?;
@@ -1018,8 +1195,161 @@ fn lane_spans(state: &EditState, except: Option<ClipId>) -> Vec<(f64, f64)> {
         .clips
         .iter()
         .filter(|clip| Some(clip.id) != except)
-        .map(|clip| (clip.position, clip.end()))
+        .map(|clip| (clip.start(), clip.end()))
         .collect()
+}
+
+/// The next unused blob id in a clip's range.
+fn fresh_blob_id(blobs: &BlobSet, clip: ClipId) -> BlobId {
+    let next = blobs
+        .blobs()
+        .iter()
+        .filter(|blob| clip_of(blob.id) == clip)
+        .map(|blob| blob.id.0 + 1)
+        .max()
+        .unwrap_or(clip.first_blob().0);
+    BlobId(next)
+}
+
+/// How far either side of a replaced span its boundary anchors sit, in seconds.
+const EDGE_SECONDS: f64 = 1e-3;
+
+/// Replaces what a blob sounds across `[start, end]`, in its clip's source seconds.
+///
+/// The curve outside the span is kept, with a boundary anchor at each edge holding the value the
+/// curve had there, and the span is given the fill: the contour, a level line, or a released
+/// stretch that follows the blob's own pitch. The blob's own pitch across the whole blob clears
+/// the curve and the offset.
+fn replace_pitch(
+    blob: &mut Blob,
+    start: f64,
+    end: f64,
+    fill: &PitchFill,
+    offset: f64,
+    track: Option<&PitchTrack>,
+) -> Result<()> {
+    let start = start.max(blob.start);
+    let end = end.min(blob.end);
+    if end - start <= 1e-9 {
+        return Ok(());
+    }
+    let whole = start <= blob.start + EDGE_SECONDS && end >= blob.end - EDGE_SECONDS;
+    if whole && matches!(fill, PitchFill::Sung | PitchFill::Release) {
+        blob.curve = PitchCurve::new();
+        if matches!(fill, PitchFill::Sung) {
+            blob.pitch_offset = 0.0;
+        }
+        return Ok(());
+    }
+
+    // A drawn value is heard with the blob's offset added, so the fill is written without it.
+    let mut inside: Vec<Anchor> = match fill {
+        PitchFill::Contour { anchors } => anchors
+            .iter()
+            .filter(|a| a.time.is_finite() && a.midi.is_finite())
+            .map(|a| Anchor {
+                time: a.time - offset,
+                midi: a.midi - blob.pitch_offset,
+                interp: match a.interp {
+                    Interp::Release => Interp::Linear,
+                    other => other,
+                },
+            })
+            .filter(|a| a.time >= start - 1e-9 && a.time <= end + 1e-9)
+            .collect(),
+        PitchFill::Flat => {
+            let level = track
+                .and_then(|track| track.median_midi(start, end))
+                .unwrap_or(blob.detected_center);
+            vec![
+                Anchor::with_interp(start, level, Interp::Linear),
+                Anchor::with_interp(end, level, Interp::Linear),
+            ]
+        }
+        PitchFill::Sung | PitchFill::Release => Vec::new(),
+    };
+    inside.sort_by(|a, b| a.time.total_cmp(&b.time));
+    let released = inside.is_empty();
+
+    let curve = &blob.curve;
+    let has_left = start - EDGE_SECONDS > blob.start;
+    let has_right = end + EDGE_SECONDS < blob.end;
+    let before = curve.drawn_at(start - EDGE_SECONDS);
+    let after = curve.drawn_at(end + EDGE_SECONDS);
+    let mut anchors: Vec<Anchor> = curve
+        .anchors()
+        .iter()
+        .copied()
+        .filter(|a| a.time < start - EDGE_SECONDS)
+        .collect();
+
+    if has_left {
+        match before {
+            Some(value) => {
+                let interp = if released {
+                    Interp::Release
+                } else {
+                    Interp::Linear
+                };
+                anchors.push(Anchor::with_interp(start - EDGE_SECONDS, value, interp));
+            }
+            // Already following the blob's own pitch up to the span; with nothing drawn yet, a
+            // release from the blob's start says so.
+            None if anchors.is_empty() => {
+                anchors.push(Anchor::with_interp(
+                    blob.start,
+                    blob.detected_center,
+                    Interp::Release,
+                ));
+            }
+            None => {}
+        }
+    } else if released {
+        anchors.push(Anchor::with_interp(
+            start,
+            blob.detected_center,
+            Interp::Release,
+        ));
+    }
+
+    let filled = !inside.is_empty();
+    anchors.extend(inside);
+    if filled && has_right && after.is_none() {
+        if let Some(last) = anchors.last_mut() {
+            last.interp = Interp::Release;
+        }
+    }
+    if has_right {
+        if let Some(value) = after {
+            let interp = curve
+                .anchors()
+                .iter()
+                .rev()
+                .find(|a| a.time <= end + EDGE_SECONDS)
+                .map_or(Interp::Linear, |a| a.interp);
+            anchors.push(Anchor::with_interp(end + EDGE_SECONDS, value, interp));
+        }
+    }
+    anchors.extend(
+        curve
+            .anchors()
+            .iter()
+            .copied()
+            .filter(|a| a.time > end + EDGE_SECONDS),
+    );
+    if anchors.len() > limits::MAX_CURVE_ANCHORS {
+        return Err(AxysError::Invalid(format!(
+            "curve anchor limit is {}",
+            limits::MAX_CURVE_ANCHORS
+        )));
+    }
+    let rebuilt = PitchCurve::from_anchors(anchors)?;
+    blob.curve = if rebuilt.draws() {
+        rebuilt
+    } else {
+        PitchCurve::new()
+    };
+    Ok(())
 }
 
 /// A clip or reference name trimmed and checked, or `None` to go back to the file's name.
@@ -1197,6 +1527,9 @@ fn validate_scale(scale: &ScaleSettings) -> Result<()> {
 }
 
 /// Rejects a reference tuning outside [`MIN_A4_HZ`]..=[`MAX_A4_HZ`].
+/// Shortest part of its audio a clip may be trimmed to, in seconds.
+const MIN_CLIP_SECONDS: f64 = 0.01;
+
 /// Longest a project name may be, in characters.
 ///
 /// A name reaches a file system, a tab title and a titlebar, none of which handle an arbitrarily
@@ -1264,6 +1597,7 @@ mod tests {
             tuning: Tuning::default(),
             accidentals: AccidentalStyle::default(),
             mixer: MixerSettings::default(),
+            strokes: Vec::new(),
         }
     }
 
@@ -1397,7 +1731,49 @@ mod tests {
     }
 
     #[test]
-    fn moving_pitch_carries_drawn_anchors_when_asked() {
+    fn a_kept_stroke_is_set_replaced_and_removed_without_touching_the_blobs() {
+        use crate::curve::StrokePoint;
+        let mut s = state();
+        let before = s.clips.clone();
+        let point = |time: f64, midi: f64| StrokePoint { time, midi };
+        let stroke = |midi: f64| Stroke {
+            id: 4,
+            points: vec![point(0.2, 60.0), point(1.8, midi)],
+            bezier: None,
+            clip: None,
+        };
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetStroke {
+                stroke: stroke(62.0),
+            },
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetStroke {
+                stroke: stroke(65.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.strokes, vec![stroke(65.0)]);
+        assert_eq!(s.clips, before);
+        let backwards = Stroke {
+            id: 5,
+            points: vec![point(1.0, 60.0), point(0.5, 60.0)],
+            bezier: None,
+            clip: None,
+        };
+        assert!(apply(&mut s, None, &EditOp::SetStroke { stroke: backwards }).is_err());
+        apply(&mut s, None, &EditOp::RemoveStroke { stroke: 4 }).unwrap();
+        assert!(s.strokes.is_empty());
+        assert!(apply(&mut s, None, &EditOp::RemoveStroke { stroke: 4 }).is_err());
+    }
+
+    #[test]
+    fn a_recorded_anchor_flag_leaves_the_drawing_to_the_offset() {
         let mut s = state();
         apply(
             &mut s,
@@ -1408,28 +1784,67 @@ mod tests {
             },
         )
         .unwrap();
-        let moved = |anchors: bool| EditOp::MovePitch {
-            blobs: vec![BlobId(1)],
-            semitones: 2.0,
-            anchors,
-        };
-        apply(&mut s, None, &moved(false)).unwrap();
-        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 60.0);
-        apply(&mut s, None, &moved(true)).unwrap();
-        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 62.0);
-        apply(
-            &mut s,
-            None,
-            &EditOp::SetPitchOffset {
-                blob: BlobId(1),
-                semitones: 1.0,
-                anchors: true,
-            },
+        let recorded: EditOp = serde_json::from_str(
+            r#"{ "type": "movePitch", "blobs": [1], "semitones": 2, "anchors": true }"#,
         )
         .unwrap();
+        apply(&mut s, None, &recorded).unwrap();
         let blob = s.blob(BlobId(1)).unwrap();
-        assert_eq!(blob.pitch_offset, 1.0);
-        assert_eq!(blob.curve.anchors()[0].midi, 59.0);
+        assert_eq!(blob.pitch_offset, 2.0);
+        assert_eq!(blob.curve.anchors()[0].midi, 60.0);
+    }
+
+    /// The target the plan compiles for blob 1 at `time`, over a flat track at 60.
+    fn heard_at(state: &EditState, time: f64) -> f64 {
+        let track = steady_track(60.0);
+        let clip = &state.clips[0];
+        let plan = crate::target::compile_plan(&crate::target::PlanInputs {
+            track: &track,
+            blobs: &clip.blobs,
+            silenced: &[],
+            sample_rate: 48_000.0,
+            duration: 2.0,
+            scale: &state.scale,
+            modulation: &state.modulation,
+            formant: state.formant,
+            guide: None,
+            hop: 0.005,
+        })
+        .unwrap();
+        f64::from(plan.target_midi.at(time))
+    }
+
+    #[test]
+    fn moving_a_drawn_blob_moves_what_it_sounds_by_exactly_the_amount_asked() {
+        for anchors in [false, true] {
+            let mut s = state();
+            let draw = EditOp::DrawSpan {
+                blob: BlobId(1),
+                anchors: vec![Anchor::new(0.0, 62.0), Anchor::new(1.0, 62.0)],
+            };
+            apply(&mut s, None, &draw).unwrap();
+            assert!((heard_at(&s, 0.5) - 62.0).abs() < 1e-4);
+            let moved = EditOp::MovePitch {
+                blobs: vec![BlobId(1)],
+                semitones: 1.0,
+                anchors,
+            };
+            apply(&mut s, None, &moved).unwrap();
+            assert!(
+                (heard_at(&s, 0.5) - 63.0).abs() < 1e-4,
+                "anchors: {anchors}"
+            );
+            let set = EditOp::SetPitchOffset {
+                blob: BlobId(1),
+                semitones: 3.0,
+                anchors,
+            };
+            apply(&mut s, None, &set).unwrap();
+            assert!(
+                (heard_at(&s, 0.5) - 65.0).abs() < 1e-4,
+                "anchors: {anchors}"
+            );
+        }
     }
 
     #[test]
@@ -2866,6 +3281,210 @@ mod tests {
     }
 
     /// Clip 0 from [`state`], made two seconds long so a second clip can sit beside it.
+    /// A steady track at `midi` over the first ten seconds.
+    fn steady_track(midi: f64) -> PitchTrack {
+        let hop = 0.005;
+        PitchTrack {
+            sample_rate: 48_000.0,
+            hop_seconds: hop,
+            frames: (0..2000)
+                .map(|i| PitchFrame {
+                    time: i as f64 * hop,
+                    f0: 261.6,
+                    midi,
+                    confidence: 0.9,
+                    rms: 0.2,
+                    voiced: true,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn trimming_hides_audio_and_blobs_outside_the_window_and_untrimming_restores_them() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        let trim = |start: f64, end: f64| EditOp::TrimClip {
+            clip: ClipId(0),
+            start,
+            end,
+        };
+        apply(&mut s, None, &trim(0.5, 1.5)).unwrap();
+        let clip = &s.clips[0];
+        assert_eq!(clip.start(), 0.5);
+        assert_eq!(clip.end(), 1.5);
+        let visible = clip.project_blobs();
+        assert_eq!(visible.len(), 2);
+        assert_eq!((visible[0].start, visible[0].end), (0.5, 1.0));
+        assert_eq!((visible[1].start, visible[1].end), (1.0, 1.5));
+        assert_eq!(clip.blobs.len(), 2, "hidden blobs stay with the clip");
+        assert_eq!(clip.hidden().len(), 2);
+
+        apply(&mut s, None, &trim(0.0, 2.0)).unwrap();
+        assert_eq!(s.clips[0].window, None);
+        assert!(apply(&mut s, None, &trim(1.0, 1.001)).is_err());
+    }
+
+    #[test]
+    fn a_trimmed_clip_is_moved_by_where_it_starts_being_heard() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        s.clips[0].window = Some(Span {
+            start: 1.0,
+            end: 2.0,
+        });
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveClip {
+                clip: ClipId(0),
+                position: -1.0,
+                exact: true,
+                ripple: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.clips[0].position, -1.0);
+        assert_eq!(s.clips[0].start(), 0.0);
+    }
+
+    #[test]
+    fn a_shifted_blob_covers_other_audio_without_a_timing_edit() {
+        let mut s = state_with(vec![blob(1, 0.0, 1.0), blob(2, 2.0, 3.0)]);
+        let track = steady_track(64.0);
+        apply(
+            &mut s,
+            Some(&track),
+            &EditOp::ShiftBlob {
+                blob: BlobId(1),
+                seconds: 0.5,
+            },
+        )
+        .unwrap();
+        let moved = s.blob(BlobId(1)).unwrap();
+        assert_eq!((moved.start, moved.end), (0.5, 1.5));
+        assert_eq!(moved.time_offset, 0.0);
+        assert_eq!(moved.detected_center, 64.0);
+        // Held against the next blob rather than passing over it.
+        apply(
+            &mut s,
+            None,
+            &EditOp::ShiftBlob {
+                blob: BlobId(1),
+                seconds: 5.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blob(BlobId(1)).unwrap().end, 2.0);
+    }
+
+    #[test]
+    fn added_blobs_take_fresh_ids_in_their_clip_and_refuse_to_overlap() {
+        let mut s = state_with(vec![blob(1, 0.0, 1.0)]);
+        let track = steady_track(62.0);
+        let mut new = Blob::new(BlobId(0), 1.5, 2.5, 0.0);
+        new.pitch_offset = 1.0;
+        apply(
+            &mut s,
+            Some(&track),
+            &EditOp::AddBlobs {
+                blobs: vec![new.clone()],
+            },
+        )
+        .unwrap();
+        let added = s.clips[0].blobs.blobs()[1].clone();
+        assert_eq!(added.id, BlobId(2));
+        assert_eq!(added.detected_center, 62.0);
+        assert_eq!(added.pitch_offset, 1.0);
+        assert!(apply(&mut s, None, &EditOp::AddBlobs { blobs: vec![new] }).is_err());
+    }
+
+    #[test]
+    fn deleting_a_blob_with_its_audio_kept_silences_nothing() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::DeleteBlobs {
+                blobs: vec![BlobId(1)],
+                keep_audio: true,
+            },
+        )
+        .unwrap();
+        assert!(s.blob(BlobId(1)).is_none());
+        assert!(s.clips[0].silenced.is_empty());
+    }
+
+    fn replace(start: f64, end: f64, fill: PitchFill) -> EditOp {
+        EditOp::ReplacePitch {
+            blob: BlobId(1),
+            start,
+            end,
+            fill,
+        }
+    }
+
+    #[test]
+    fn a_contour_replaces_only_its_span_of_an_undrawn_blob() {
+        let mut s = state();
+        s.blob_mut(BlobId(1)).unwrap().pitch_offset = 2.0;
+        let fill = PitchFill::Contour {
+            anchors: vec![
+                Anchor::with_interp(0.4, 70.0, Interp::Linear),
+                Anchor::with_interp(0.6, 70.0, Interp::Linear),
+            ],
+        };
+        apply(&mut s, None, &replace(0.4, 0.6, fill)).unwrap();
+        let curve = &s.blob(BlobId(1)).unwrap().curve;
+        assert_eq!(curve.drawn_at(0.2), None);
+        assert_eq!(
+            curve.drawn_at(0.5),
+            Some(68.0),
+            "heard is the curve plus the offset"
+        );
+        assert_eq!(curve.drawn_at(0.8), None);
+    }
+
+    #[test]
+    fn the_sung_fill_releases_a_span_and_keeps_the_drawing_around_it() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::DrawSpan {
+                blob: BlobId(1),
+                anchors: vec![
+                    Anchor::with_interp(0.0, 65.0, Interp::Linear),
+                    Anchor::with_interp(1.0, 65.0, Interp::Linear),
+                ],
+            },
+        )
+        .unwrap();
+        apply(&mut s, None, &replace(0.4, 0.6, PitchFill::Sung)).unwrap();
+        let curve = &s.blob(BlobId(1)).unwrap().curve;
+        assert_eq!(curve.drawn_at(0.2), Some(65.0));
+        assert_eq!(curve.drawn_at(0.5), None);
+        assert_eq!(curve.drawn_at(0.8), Some(65.0));
+
+        s.blob_mut(BlobId(1)).unwrap().pitch_offset = 3.0;
+        apply(&mut s, None, &replace(0.0, 1.0, PitchFill::Sung)).unwrap();
+        let blob = s.blob(BlobId(1)).unwrap();
+        assert!(blob.curve.is_empty());
+        assert_eq!(blob.pitch_offset, 0.0);
+    }
+
+    #[test]
+    fn the_flat_fill_levels_a_span_at_its_median_pitch() {
+        let mut s = state();
+        let track = jittery_track();
+        apply(&mut s, Some(&track), &replace(0.2, 0.8, PitchFill::Flat)).unwrap();
+        let curve = &s.blob(BlobId(1)).unwrap().curve;
+        let level = curve.drawn_at(0.5).unwrap();
+        assert_eq!(curve.drawn_at(0.3), Some(level));
+        assert!((level - 60.0).abs() <= 0.5);
+        assert_eq!(curve.drawn_at(0.1), None);
+    }
+
     fn two_clips() -> EditState {
         let mut s = state();
         s.clips[0].source.duration = 2.0;
@@ -3085,6 +3704,7 @@ mod tests {
             None,
             &EditOp::DeleteBlobs {
                 blobs: vec![BlobId(2)],
+                keep_audio: false,
             },
         )
         .unwrap();

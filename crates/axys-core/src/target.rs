@@ -680,7 +680,7 @@ fn apply_blob_pitch(
         if !base.is_finite() {
             continue;
         }
-        let target = match blob.curve.eval(time) {
+        let target = match blob.curve.drawn_at(time) {
             Some(drawn) if drawn.is_finite() => drawn + blob.pitch_offset,
             _ => base + constant_offset,
         } + modulation[k];

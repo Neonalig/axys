@@ -45,6 +45,7 @@ import { wasmModuleUrl } from './wasm-url';
 import type {
   BitDepth,
   Blob,
+  Clip,
   ClipId,
   DriftReport,
   EditOp,
@@ -129,6 +130,19 @@ export interface ClipInput extends Omit<AnalysedSessionInput, 'sampleRate'> {
   ripple?: boolean;
   /** Places the clip at `position` over whatever is already there. */
   exact?: boolean;
+}
+
+/**
+ * What a paste does to what is already there: lands over it, moves what starts after it later by
+ * the length pasted, or takes out what is under it first.
+ */
+export type PasteMode = 'overlap' | 'ripple' | 'replace';
+
+/** A copied part of a clip: the clip as it was copied, and the project span taken from it. */
+export interface ClipPart {
+  clip: Clip;
+  start: number;
+  end: number;
 }
 
 /** Typed facade over the wasm-bindgen exports. */
@@ -367,6 +381,35 @@ export class Session {
   attachClip(clip: ClipId, samples: Float32Array): void {
     call('Relink Audio', () => {
       this.#alive().attachClip(clip, samples);
+    });
+  }
+
+  /**
+   * Pastes copied parts of clips as new clips, as one undoable edit, returning their ids.
+   *
+   * @remarks Each part is the clip as it was copied and the project span taken from it. The
+   * earliest lands at `at`, project seconds, and the rest keep their distance from it.
+   */
+  pasteClips(parts: readonly ClipPart[], at: number, mode: PasteMode = 'overlap'): ClipId[] {
+    const json = JSON.stringify(parts);
+    return this.#read(
+      'Paste Clips',
+      () => this.#alive().pasteClips(json, at, mode),
+      arrayOf(isNumber),
+      'clip ids',
+    );
+  }
+
+  /**
+   * Takes project spans out of clips on the lane, as one undoable edit.
+   *
+   * @remarks A span covering a clip removes it, one reaching an end trims it, and one inside it
+   * leaves the clip in two.
+   */
+  cutClips(parts: readonly { clip: ClipId; start: number; end: number }[], ripple = false): void {
+    const json = JSON.stringify(parts);
+    call('Cut Clips', () => {
+      this.#alive().cutClips(json, ripple);
     });
   }
 

@@ -28,6 +28,7 @@ import { musicMarkup } from './music.js';
 import type { MusicGlyph } from './music.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
+import type { PitchCutFill } from '../app/clipboard.js';
 import type { AppState, FollowMode } from '../app/store.js';
 import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
 import { scopeText } from './source-picker.js';
@@ -52,6 +53,8 @@ export interface InspectorHooks {
   setView(patch: Partial<ViewState>): void;
   /** Chooses how the view keeps up with a playing playhead. */
   setFollowMode(mode: FollowMode): void;
+  /** Chooses what cutting pitch leaves in the span it came from. */
+  setPitchCutFill(fill: PitchCutFill): void;
   /** Shows or hides the names beside the toolbar icons. */
   setToolbarLabels(on: boolean): void;
   /** Sets the concert reference in Hz. */
@@ -317,6 +320,7 @@ export class Inspector {
   readonly #snap: SelectElement;
   readonly #timeDisplay: SelectElement;
   readonly #followMode: SelectElement;
+  readonly #pitchCutFill: SelectElement;
   readonly #toolbarLabels: HTMLInputElement;
 
   readonly #guidePanel: HTMLElement;
@@ -437,8 +441,8 @@ export class Inspector {
     this.#projectName = textInput(MAX_PROJECT_NAME);
     this.#key = selectInput(KEY_OPTIONS);
     projectPanel.append(
-      field('Name', this.#projectName, 'Project name'),
-      field('Key', this.#key, 'Project key, used as the correction scale'),
+      field('Name', this.#projectName, 'Sets the window title and file names'),
+      field('Key', this.#key, 'Sets the scale pitch correction snaps notes to'),
     );
     project.append(projectPanel);
 
@@ -459,13 +463,17 @@ export class Inspector {
     });
     this.#estimate.classList.add('is-labelled', 'axys-estimate');
     timingPanel.append(
-      field('Tempo', this.#bpm, 'Beats per minute at the project start', 'BPM'),
-      field('Time Signature', this.#meter, 'Beats per bar and the beat unit'),
-      field('Start Beat', this.#startBeat, 'Beat of the bar the first beat falls on'),
+      field('Tempo', this.#bpm, 'Sets the speed of the ruler, snap grid and metronome', 'BPM'),
+      field(
+        'Time Signature',
+        this.#meter,
+        'Sets how the ruler and snap grid group beats into bars',
+      ),
+      field('Start Beat', this.#startBeat, 'Starts the first bar part way through, for a pickup'),
       field(
         'Start Offset',
         this.#startOffset,
-        'Seconds from the project start to the first beat',
+        'Lines the beat grid up with the first beat of the vocal',
         's',
       ),
       this.#estimate,
@@ -494,14 +502,32 @@ export class Inspector {
       { value: 'page', label: 'Page Ahead' },
       { value: 'centre', label: 'Keep Centred' },
     ]);
+    this.#pitchCutFill = selectInput([
+      { value: 'sung', label: 'Detected Pitch' },
+      { value: 'flat', label: 'Flat Pitch' },
+    ]);
     this.#toolbarLabels = checkboxInput();
 
     displayPanel.append(
-      field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz', 'Hz'),
-      field('Accidental Style', this.#accidentals, 'Sharps or flats in note names'),
-      field('Snap Division', this.#snap, 'Snap grid resolution'),
-      field('Time Display', this.#timeDisplay, 'Ruler in clock time or bars and beats'),
-      field('Follow Mode', this.#followMode, 'Page ahead or keep the playhead centred'),
+      field(
+        'Tuning Reference',
+        this.#tuning,
+        'Sets the pitch standard for note names and correction',
+        'Hz',
+      ),
+      field('Accidental Style', this.#accidentals, 'Controls how note names spell black keys'),
+      field('Snap Division', this.#snap, 'Sets the grid spacing edits snap to'),
+      field('Time Display', this.#timeDisplay, 'Controls the display format of the time ruler'),
+      field(
+        'Follow Mode',
+        this.#followMode,
+        'Controls how the view scrolls to follow the playhead',
+      ),
+      field(
+        'Cut Fill',
+        this.#pitchCutFill,
+        'Sets the pitch left behind when pitch is cut or moved',
+      ),
       field('Button Names', this.#toolbarLabels, 'Show names beside toolbar icons'),
     );
     project.append(displayPanel);
@@ -526,7 +552,7 @@ export class Inspector {
     );
     this.#guideMutedRow = field('Mute Guide', this.#guideMuted, 'Mute and hide the guide notes');
     guidePanel.append(
-      field('Guide Mode', this.#guideMode, 'What the guide moves: pitch, timing, both or nothing'),
+      field('Guide Mode', this.#guideMode, 'Sets what the MIDI guide corrects on mapped blobs'),
       this.#guideStrengthRow,
       this.#guideMutedRow,
       this.#guideHint,
@@ -792,6 +818,7 @@ export class Inspector {
     setValue(this.#snap, String(state.view.snapDivision));
     setValue(this.#timeDisplay, state.view.timeDisplay);
     setValue(this.#followMode, state.followMode);
+    setValue(this.#pitchCutFill, state.pitchCutFill);
     setChecked(this.#toolbarLabels, state.toolbarLabels);
   }
 
@@ -900,7 +927,6 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted - blob.detectedCenter,
-        anchors: true,
       }));
     });
 
@@ -911,7 +937,6 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted,
-        anchors: true,
       }));
     });
 
@@ -922,7 +947,6 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted / 100,
-        anchors: true,
       }));
     });
 
@@ -1032,6 +1056,9 @@ export class Inspector {
     });
     this.#followMode.addEventListener('change', () => {
       this.#hooks.setFollowMode(this.#followMode.value === 'centre' ? 'centre' : 'page');
+    });
+    this.#pitchCutFill.addEventListener('change', () => {
+      this.#hooks.setPitchCutFill(this.#pitchCutFill.value === 'flat' ? 'flat' : 'sung');
     });
     this.#toolbarLabels.addEventListener('change', () => {
       this.#hooks.setToolbarLabels(this.#toolbarLabels.checked);

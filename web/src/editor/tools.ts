@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { AppState, ToolId } from '../app/store.js';
+import type { AppState, EditMode, ToolId } from '../app/store.js';
 import { PEN_CURSOR } from './cursors.js';
 import type {
   Anchor,
@@ -88,7 +88,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     id: 'bezier',
     label: 'Draw Bezier',
-    hint: 'Drag a line, then drag handles to shape',
+    hint: 'Drag a line, or click a curve to reshape',
     key: 'N',
     cursor: 'crosshair',
   },
@@ -100,6 +100,18 @@ export const TOOLS: readonly ToolDefinition[] = [
     cursor: 'ew-resize',
   },
 ];
+
+/**
+ * Whether a tool edits anything in an edit mode.
+ *
+ * @remarks Blob mode leaves pitch alone, so the Pitch, Draw and Bezier tools have nothing to do
+ * there; Pitch mode leaves blobs alone, so Slice has nothing to split.
+ */
+export function toolWorksIn(tool: ToolId, mode: EditMode): boolean {
+  if (mode === 'blob') return tool !== 'pitch' && tool !== 'pen' && tool !== 'bezier';
+  if (mode === 'pitch') return tool !== 'split';
+  return true;
+}
 
 /** The definition of one tool. */
 export function toolDefinition(id: ToolId): ToolDefinition {
@@ -117,7 +129,10 @@ export type HitKind =
   | 'anchor'
   | 'conflict'
   | 'clipTitle'
-  | 'reference';
+  | 'reference'
+  | 'pitchLine'
+  | 'stroke'
+  | 'selectionEdge';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -131,6 +146,8 @@ export interface Hit {
   conflict: TimingConflict | null;
   /** The reference whose band the position is over. */
   reference: number | null;
+  /** The kept curve the position is on. */
+  stroke?: number | null;
   /** Output seconds under the cursor. */
   time: number;
   /** Source seconds under the cursor; equal to `time` outside any blob. */
@@ -138,8 +155,27 @@ export interface Hit {
   midi: number;
 }
 
-/** Cursor shape for a tool over a given target. */
-export function cursorFor(tool: ToolId, hit: Hit): string {
+/**
+ * Whether the selection carries edge handles that stretch it: under the Time tool, in any mode,
+ * for anything but a single blob, whose own edges already do that.
+ */
+export function stretchHandlesShown(state: AppState): boolean {
+  if (state.tool !== 'time' || state.selection.ranges.length === 0) return false;
+  return state.editMode === 'pitch' || state.selection.blobs.length !== 1;
+}
+
+/** Cursor shape for a tool over a given target, in an edit mode. */
+export function cursorFor(tool: ToolId, hit: Hit, mode: EditMode = 'both'): string {
+  // A tool the mode leaves alone only places the playhead, which is the plain arrow.
+  const idle =
+    (mode === 'blob' && (tool === 'pitch' || tool === 'pen' || tool === 'bezier')) ||
+    (mode === 'pitch' && tool === 'split');
+  if (idle && hit.kind !== 'ruler' && hit.kind !== 'loopEdge') {
+    return 'default';
+  }
+  if (mode === 'pitch' && tool === 'time' && hit.kind === 'blobEdge') {
+    return 'ew-resize';
+  }
   // A boundary is dragged, not resized in place, and `col-resize` is the shape every editor uses
   // for a divider between two things that share a span. Only the Time tool drags a blob's edges
   // and only the Pitch tool drags an anchor; under any other tool they are part of the blob.
@@ -162,6 +198,20 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   }
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
     return 'default';
+  }
+  if (hit.kind === 'stroke') {
+    return 'pointer';
+  }
+  if (hit.kind === 'selectionEdge') {
+    return 'ew-resize';
+  }
+  // Pitch outside every blob is picked up by the tools that move pitch, and selected by the rest.
+  if (hit.kind === 'pitchLine') {
+    return tool === 'pitch'
+      ? 'ns-resize'
+      : tool === 'time'
+        ? 'ew-resize'
+        : toolDefinition(tool).cursor;
   }
   return toolDefinition(tool).cursor;
 }
@@ -187,8 +237,14 @@ export function describeHit(hit: Hit, state: AppState): string {
       return hit.edge === 'start' ? `Blob Start ${clock}` : `Blob End ${clock}`;
     case 'blob':
       return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'pitchLine':
+      return `Pitch ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'stroke':
+      return `Curve ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'selectionEdge':
+      return 'Stretch Selection  Shift Ripple';
     case 'clipTitle':
-      return 'Move Clip  Ctrl Start  Shift Insert';
+      return 'Move Clip  Ctrl Start  Shift Insert  Double-Click Select';
     case 'reference':
       return 'Move Reference  Ctrl Start';
     case 'conflict': {
@@ -633,8 +689,20 @@ export type EditorPreview =
   | { kind: 'pitchDrag'; blobs: readonly BlobId[]; semitones: number; label: string }
   | { kind: 'timeDrag'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }
+  | { kind: 'blobShift'; blobs: readonly BlobId[]; seconds: number; label: string }
+  | {
+      kind: 'stretch';
+      /** The selection's new span. */
+      span: { start: number; end: number };
+      /** The selected blobs as the stretch would leave them. */
+      ghosts: readonly Blob[];
+      /** The pitch line as the stretch would leave it, in Pitch mode. */
+      lines: readonly (readonly GesturePoint[])[];
+      label: string;
+    }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
   | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
+  | { kind: 'lines'; lines: readonly (readonly GesturePoint[])[]; label: string }
   | {
       kind: 'bezier';
       curve: BezierCurve;

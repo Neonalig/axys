@@ -166,6 +166,64 @@ input[type='range'] {
   width: 100%;
 }
 
+/* A horizontal slider is drawn like the mixer's fader: a thin track filled in the accent colour
+   from zero to the value, under a squared handle */
+
+input[type='range']:not(.axys-mixer-fader) {
+  --axys-range-from: 0;
+  --axys-range-to: 0;
+  --axys-range-track: linear-gradient(
+    to right,
+    var(--axys-border) 0 calc(var(--axys-range-from) * 100%),
+    var(--axys-accent) 0 calc(var(--axys-range-to) * 100%),
+    var(--axys-border) 0
+  );
+
+  height: 18px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+}
+
+input[type='range']:not(.axys-mixer-fader)::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--axys-range-track);
+}
+
+input[type='range']:not(.axys-mixer-fader)::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--axys-range-track);
+}
+
+input[type='range']:not(.axys-mixer-fader)::-webkit-slider-thumb {
+  width: 10px;
+  height: 18px;
+  margin-top: -6px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: 3px;
+  background: var(--axys-text);
+  appearance: none;
+}
+
+input[type='range']:not(.axys-mixer-fader)::-moz-range-thumb {
+  width: 10px;
+  height: 18px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: 3px;
+  background: var(--axys-text);
+}
+
+input[type='range']:not(.axys-mixer-fader):disabled {
+  opacity: 0.5;
+}
+
+input[type='range']:not(.axys-mixer-fader):focus-visible {
+  outline: 2px solid var(--axys-accent);
+  outline-offset: 2px;
+}
+
 /* A slider is dragged along its axis, so it takes that axis's cursor. A vertical one sets its own */
 
 input[type='range']:where(:not(:disabled)) {
@@ -221,4 +279,25 @@ input[type='checkbox'] {
 
 .axys-select[aria-expanded='true'] {
   border-color: var(--axys-accent);
+}
+
+/* Keys: a chord drawn one box per key, wherever a shortcut is shown */
+
+.axys-keys {
+  display: inline-flex;
+  gap: var(--axys-space-1);
+  align-items: center;
+  vertical-align: baseline;
+}
+
+.axys-key {
+  /* Trimmed to the capital height and the baseline, so the key's name sits in the middle of its box */
+  padding: 4px var(--axys-space-1);
+  line-height: 16px;
+  text-box: trim-both cap alphabetic;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: var(--axys-radius-sm);
+  font-family: var(--axys-font-mono);
+  font-size: var(--axys-size-sm);
+  text-align: center;
 }

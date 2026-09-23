@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  toolWorksIn,
   bezierAt,
   extendStroke,
   freePosition,
@@ -158,5 +159,17 @@ describe('rippleInsert', () => {
         3,
       ),
     ).toEqual({ position: 3, shift: 1 });
+  });
+});
+
+describe('toolWorksIn', () => {
+  it('disables the tools a mode has nothing for', () => {
+    expect(toolWorksIn('pen', 'blob')).toBe(false);
+    expect(toolWorksIn('bezier', 'blob')).toBe(false);
+    expect(toolWorksIn('pitch', 'blob')).toBe(false);
+    expect(toolWorksIn('split', 'pitch')).toBe(false);
+    expect(toolWorksIn('time', 'blob')).toBe(true);
+    expect(toolWorksIn('pen', 'pitch')).toBe(true);
+    expect(toolWorksIn('split', 'both')).toBe(true);
   });
 });

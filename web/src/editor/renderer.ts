@@ -16,12 +16,17 @@ import { drawGrid, drawPitchLabels } from './layers/grid.js';
 import { drawMidi } from './layers/midi.js';
 import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
-import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
+import { CHIP_HEIGHT, chipWidth, drawHintChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { drawWaveform, fillEnvelope } from './layers/waveform.js';
-import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
+import {
+  drawReferenceBand,
+  drawReferences,
+  REFERENCE_BAND,
+  referenceTitleAt,
+} from './layers/references.js';
 import { othersOf } from '../app/sources.js';
-import { clipOf } from '../core/types.js';
+import { clipEnd, clipOf, clipStart, clipWindow } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
 import { peaksFor } from './peaks.js';
 import type { PeakEnvelope } from './peaks.js';
@@ -35,6 +40,9 @@ export interface HoverReadout {
 }
 
 const GHOST_ALPHA = 0.55;
+
+/** Opacity of what the edit mode does not edit. */
+const DISABLED_ALPHA = 0.35;
 
 /** Opacity of the clips outside the editor's layer, per way of showing them. */
 const OTHERS_ALPHA = { show: 0.5, dim: 0.2 } as const;
@@ -64,6 +72,8 @@ export class EditorRenderer {
   #base: HTMLCanvasElement | null = null;
   /** Where the clips outside the layer are drawn before they are laid under it, faded. */
   #others: HTMLCanvasElement | null = null;
+  /** Where a faint layer is drawn before it is laid over the rest. */
+  #faded: HTMLCanvasElement | null = null;
   #baseKey: BaseKey | null = null;
   /** The blob under the pointer, whose title scrolls when it does not fit, and since when. */
   #hoverBlob: { id: BlobId; since: number } | null = null;
@@ -223,10 +233,17 @@ export class EditorRenderer {
       hover === null ? null : { blob: hover.id, elapsed: performance.now() - hover.since };
     const preview = this.#preview;
     const dragged = preview?.kind === 'clipDrag' ? this.#splitFor(state, preview.clip) : null;
+    const pointer = this.#hover;
+    // The reference name tab under the pointer is drawn faint, so the waveform shows through it.
+    const hoveredTitle =
+      pointer === null || this.#ctx === null
+        ? -1
+        : referenceTitleAt(this.#ctx, state, viewport, pointer);
     const key = baseKey(state, viewport, theme, this.#ratio, [
       hover?.id ?? -1,
       this.#scrolling && marquee !== null ? marquee.elapsed : 0,
       dragged === null ? -1 : dragged.clip,
+      hoveredTitle,
     ]);
     if (this.#baseKey !== null && sameBaseKey(this.#baseKey, key)) {
       return base;
@@ -246,25 +263,67 @@ export class EditorRenderer {
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, viewport.width, viewport.height);
     drawGrid(ctx, state, viewport, theme);
+    // The ruler's lines run down through the plot under everything in it; drawn over it, they
+    // notched every outline they crossed, and the notches slid along it as the view moved.
+    drawRuler(ctx, state, viewport, theme, 'plot');
     this.#drawOthers(ctx, state, viewport, theme);
-    drawWaveform(ctx, state, viewport, theme);
+    // What the edit mode leaves alone is drawn faint, so it reads as out of reach: the blobs and
+    // their audio in Pitch mode, the pitch lines in Blob mode.
+    const blobAlpha = state.editMode === 'pitch' ? DISABLED_ALPHA : 1;
+    const pitchAlpha = state.editMode === 'blob' ? DISABLED_ALPHA : 1;
     drawMidi(ctx, state, viewport, theme);
-    drawReferences(ctx, state, viewport, theme);
-    this.#scrolling = drawBlobs(ctx, state, viewport, theme, marquee);
+    drawReferences(ctx, state, viewport, theme, hoveredTitle);
+    this.#scrolling = this.#faint(ctx, blobAlpha, (layer) => {
+      drawWaveform(layer, state, viewport, theme);
+      return drawBlobs(layer, state, viewport, theme, marquee);
+    });
     if (this.#scrolling) {
       this.invalidate();
     }
-    drawPitch(ctx, state, viewport, theme);
+    this.#faint(ctx, pitchAlpha, (layer) => {
+      drawPitch(layer, state, viewport, theme);
+    });
     drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
     return base;
   }
 
   /**
+   * Runs `draw` straight onto `ctx`, or at `alpha` when that is below one.
+   *
+   * @remarks Faded as a finished picture on a canvas of its own, since the layers set their own
+   * opacities stroke by stroke and would otherwise overwrite the fade.
+   */
+  #faint<T>(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    draw: (layer: CanvasRenderingContext2D) => T,
+  ): T {
+    if (alpha >= 1) return draw(ctx);
+    const canvas = (this.#faded ??= document.createElement('canvas'));
+    if (canvas.width !== this.#canvas.width || canvas.height !== this.#canvas.height) {
+      canvas.width = this.#canvas.width;
+      canvas.height = this.#canvas.height;
+    }
+    const layer = canvas.getContext('2d');
+    if (layer === null) return draw(ctx);
+    layer.setTransform(1, 0, 0, 1, 0, 0);
+    layer.clearRect(0, 0, canvas.width, canvas.height);
+    layer.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
+    const result = draw(layer);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(canvas, 0, 0);
+    ctx.restore();
+    return result;
+  }
+
+  /**
    * Draws every clip outside the editor's layer behind it, faded as a whole.
    *
-   * @remarks Each is drawn by the same layers as the active one, from its own blobs, track and
-   * plan, on a canvas of its own. Fading the finished picture rather than each stroke keeps the
+   * @remarks Each is drawn as its waveform and blobs, from its own blobs, track and plan, on a
+   * canvas of its own, with no pitch track. Fading the finished picture rather than each stroke keeps the
    * layers' own opacities where they overlap.
    */
   #drawOthers(
@@ -295,9 +354,9 @@ export class EditorRenderer {
         conflicts: [],
         selection: { blobs: [], anchors: [], ranges: [] },
       };
+      // Only the layer being edited draws a pitch track; the others are there to line up against.
       drawWaveform(layer, behind, viewport, theme);
       drawBlobs(layer, behind, viewport, theme);
-      drawPitch(layer, behind, viewport, theme);
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -359,6 +418,27 @@ export class EditorRenderer {
         }
         labelAt(ctx, viewport, theme, preview.label, ghostAnchor(state, viewport, preview.blobs));
         break;
+      case 'stretch':
+        drawSpanPreview(ctx, state, viewport, theme, null, preview.span.start, preview.span.end);
+        for (const ghost of preview.ghosts) drawBlobGhost(ctx, state, viewport, theme, ghost, 0, 0);
+        for (const line of preview.lines) drawCurvePreview(ctx, viewport, theme, line);
+        labelAt(ctx, viewport, theme, preview.label, {
+          x: viewport.timeToX(preview.span.end),
+          y: viewport.plotTop + 24,
+        });
+        break;
+      case 'blobShift':
+        for (const blob of blobsOf(state, preview.blobs)) {
+          const moved = {
+            ...blob,
+            start: blob.start + preview.seconds,
+            end: blob.end + preview.seconds,
+          };
+          drawBlobGhost(ctx, state, viewport, theme, moved, 0, 0);
+          drawCoveredPitch(ctx, state, viewport, theme, moved);
+        }
+        labelAt(ctx, viewport, theme, preview.label, ghostAnchor(state, viewport, preview.blobs));
+        break;
       case 'edgeDrag':
         drawEdgePreview(ctx, state, viewport, theme, preview.blob, preview.edge, preview.time);
         labelAt(ctx, viewport, theme, preview.label, {
@@ -376,6 +456,16 @@ export class EditorRenderer {
       case 'curve':
         drawCurvePreview(ctx, viewport, theme, preview.points);
         labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
+        break;
+      case 'lines':
+        for (const line of preview.lines) drawCurvePreview(ctx, viewport, theme, line);
+        labelAt(
+          ctx,
+          viewport,
+          theme,
+          preview.label,
+          curveAnchorPoint(viewport, preview.lines[0] ?? []),
+        );
         break;
       case 'bezier':
         drawCurvePreview(ctx, viewport, theme, preview.points);
@@ -447,7 +537,16 @@ export class EditorRenderer {
     }
     const shift = position - entry.position;
     const middle = viewport.plotTop + viewport.plotHeight / 2;
-    drawWaveBand(ctx, viewport, theme, position, entry.source.duration, null, middle);
+    const window = clipWindow(entry);
+    drawWaveBand(
+      ctx,
+      viewport,
+      theme,
+      position + window.start,
+      window.end - window.start,
+      null,
+      middle,
+    );
     const moving = this.#splitFor(state, clip).moving;
     const view = viewport.view;
     const shifted = new Viewport(
@@ -523,6 +622,8 @@ function baseKey(
     ],
     numbers: [
       state.tool,
+      state.editMode,
+      state.activeStroke ?? -1,
       viewport.width,
       viewport.height,
       ratio,
@@ -699,6 +800,47 @@ function drawBlobGhost(
   ctx.restore();
 }
 
+/**
+ * Draws the detected pitch a blob slid along the audio would cover, where it will sit.
+ *
+ * @remarks The audio does not move, so the line is the audio's own under the blob's new span.
+ */
+function drawCoveredPitch(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  blob: Blob,
+): void {
+  const track = state.track;
+  if (track === null) {
+    return;
+  }
+  ctx.save();
+  ctx.strokeStyle = theme.pitchDetected;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([3, 2]);
+  ctx.beginPath();
+  let open = false;
+  for (let i = 0; i < track.times.length; i += 1) {
+    const time = track.times[i] ?? 0;
+    if (time < blob.start) continue;
+    if (time > blob.end) break;
+    const midi = track.midi[i] ?? Number.NaN;
+    if (!Number.isFinite(midi)) {
+      open = false;
+      continue;
+    }
+    const x = viewport.timeToX(blob.start + blob.timeOffset + (time - blob.start) * blob.timeScale);
+    const y = viewport.midiToY(midi);
+    if (open) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+    open = true;
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawEdgePreview(
   ctx: CanvasRenderingContext2D,
   state: AppState,
@@ -868,8 +1010,8 @@ interface DragSplit {
 
 function splitClip(state: AppState, clip: number): DragSplit {
   const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
-  const start = entry?.position ?? 0;
-  const end = start + (entry?.source.duration ?? 0);
+  const start = entry === undefined ? 0 : clipStart(entry);
+  const end = entry === undefined ? 0 : clipEnd(entry);
   const within = (time: number): boolean => time >= start && time <= end;
   const mine = (blob: Blob): boolean => clipOf(blob.id) === clip;
   return {
@@ -974,7 +1116,7 @@ function drawWaveBand(
     const to = viewport.xToTime(right) - position;
     const span = envelope.sample(from, to, columns);
     ctx.globalAlpha = 0.8;
-    ctx.fillStyle = theme.waveform;
+    ctx.fillStyle = theme.blobBounds;
     fillEnvelope(ctx, span, left, top + bandHeight / 2, bandHeight / 2 - 2);
   }
   ctx.restore();
@@ -1069,7 +1211,7 @@ function labelAt(
 /**
  * Draws a floating readout.
  *
- * @remarks Sized in whole character columns by {@link drawChip}, because these follow the cursor
+ * @remarks Sized in whole character columns by {@link drawHintChip}, because these follow the cursor
  * and the transport and would otherwise resize on every frame a digit changed.
  */
 function drawTooltip(
@@ -1083,5 +1225,5 @@ function drawTooltip(
   const width = chipWidth(ctx, text);
   const left = Math.min(Math.max(4, x), viewport.width - width - 4);
   const top = Math.min(Math.max(RULER_HEIGHT + 2, y), viewport.height - CHIP_HEIGHT - 4);
-  drawChip(ctx, theme, text, left, top);
+  drawHintChip(ctx, theme, text, left, top);
 }

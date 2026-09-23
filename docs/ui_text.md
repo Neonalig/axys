@@ -40,6 +40,13 @@ works inside.
 
 A toolbar button's tooltip is its label and shortcut, `Save Project (Ctrl+S)`, and nothing more.
 
+A setting's tooltip says what the setting controls, never the values it offers, which the control
+already shows. A field label is a noun, never a command.
+
+- No: Cut Pitch, "Sung pitch or a flat line"; Time Display, "Ruler in clock time or bars and beats"
+- Yes: Cut Fill, "Sets the pitch left behind when pitch is cut or moved"; Time Display, "Controls
+  the display format of the time ruler"
+
 ## Standard words
 
 Use the term most mainstream programs use for the same thing, never a paraphrase of it. A label

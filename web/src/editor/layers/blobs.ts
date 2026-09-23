@@ -14,6 +14,7 @@ import { clipOf, displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import { sourceTheme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
+import { LABEL_ALPHA, labelBaseline } from './label.js';
 
 /** Half-height in semitones of the smallest blob body. */
 const MIN_HALF_SEMITONES = 0.5;
@@ -47,6 +48,9 @@ const TITLE_MIN_WIDTH = 28;
 
 /** Padding in pixels either side of a title's text. */
 const TITLE_PADDING = 4;
+
+/** Corner radius of a blob's box and header, in pixels, the one the mixer's faders use. */
+export const CORNER_RADIUS = 3;
 
 const TITLE_FONT = '600 12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
 
@@ -139,6 +143,10 @@ export function evaluateCurve(curve: PitchCurve, seconds: number): number | null
   if (a === undefined || b === undefined) {
     return last.midi;
   }
+  // A released segment follows the blob's own pitch rather than a drawn one.
+  if (a.interp === 'release') {
+    return null;
+  }
   const span = b.time - a.time;
   const t = span <= 0 ? 0 : (seconds - a.time) / span;
   switch (a.interp) {
@@ -172,7 +180,7 @@ export function evaluateCurve(curve: PitchCurve, seconds: number): number | null
  */
 export function targetMidiAt(blob: Blob, seconds: number, detected: number): number {
   const drawn = evaluateCurve(blob.curve, seconds);
-  return drawn ?? detected + blob.pitchOffset;
+  return (drawn ?? detected) + blob.pitchOffset;
 }
 
 /**
@@ -409,27 +417,40 @@ function drawBlob(
   const width = Math.max(2, x1 - x0);
   const height = Math.max(4, bottom - top);
 
+  // Each edge on the device grid on its own, so neither jitters a pixel as the view slides, and
+  // the fill shares them: a fill at the fractional edges covers the pixel beside the outline by a
+  // different amount each frame, which reads as the outline shimmering.
+  const bound = viewport.crispWidth(isSelected ? 2 : 1);
+  const left = viewport.crisp(x0, bound);
+  const upper = viewport.crisp(top, bound);
+  const right = viewport.crisp(x0 + width, bound);
+  const lower = viewport.crisp(top + height, bound);
+
+  // Under a header the top corners are the header's, so the two join square.
+  const headed = titleRect(blob, state.track, viewport) !== null;
+  const radii = headed ? [0, 0, CORNER_RADIUS, CORNER_RADIUS] : CORNER_RADIUS;
+  const box = (): void => {
+    ctx.beginPath();
+    ctx.roundRect(left, upper, right - left, lower - upper, radii);
+  };
+
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = isSelected ? theme.blobFillSelected : theme.blobFill;
-  ctx.fillRect(x0, top, width, height);
+  box();
+  ctx.fill();
 
   // Detail narrower than a few pixels is not legible and costs a draw per blob when zoomed out.
   const detailed = x1 - x0 >= DETAIL_MIN_WIDTH;
 
   ctx.globalAlpha = alpha;
-  const bound = viewport.crispWidth(isSelected ? 2 : 1);
   ctx.lineWidth = bound;
   ctx.strokeStyle = isSelected ? theme.selection : theme.blobBounds;
   if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
-  ctx.strokeRect(
-    viewport.crisp(x0, bound),
-    viewport.crisp(top, bound),
-    Math.round(width),
-    Math.round(height),
-  );
+  box();
+  ctx.stroke();
   ctx.setLineDash([]);
 
   const centreY = viewport.midiToY(blob.detectedCenter + blob.pitchOffset);
@@ -488,11 +509,20 @@ function drawTitle(
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = isSelected ? theme.selection : theme.blobBounds;
-  ctx.fillRect(Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), rect.height);
+  // Out to the outer edges of the blob's outline, which is drawn centred on the device grid.
+  const bound = viewport.crispWidth(isSelected ? 2 : 1);
+  const left = viewport.crisp(rect.x, bound) - bound / 2;
+  const right = viewport.crisp(rect.x + Math.max(2, rect.width), bound) + bound / 2;
+  const top = Math.round(rect.y);
+  ctx.beginPath();
+  ctx.roundRect(left, top, right - left, rect.height, [CORNER_RADIUS, CORNER_RADIUS, 0, 0]);
+  ctx.fill();
   ctx.font = TITLE_FONT;
-  ctx.textBaseline = 'middle';
+  ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
+  ctx.globalAlpha = alpha * LABEL_ALPHA;
   ctx.fillStyle = theme.bg;
+  const baseline = labelBaseline(ctx, top, top + rect.height, viewport.ratio);
   const title = displayTitle(clip);
   const room = rect.width - TITLE_PADDING * 2;
   const overflow = scrolled === null ? 0 : ctx.measureText(title).width - room;
@@ -501,13 +531,13 @@ function drawTitle(
     ctx.rect(rect.x + TITLE_PADDING, rect.y, room, rect.height);
     ctx.clip();
     const offset = marqueeOffset(overflow, scrolled);
-    ctx.fillText(title, rect.x + TITLE_PADDING + offset, rect.y + rect.height / 2 + 0.5);
+    ctx.fillText(title, rect.x + TITLE_PADDING + offset, baseline);
     ctx.restore();
     return true;
   }
   const text = fitText(ctx, title, room);
   if (text !== '') {
-    ctx.fillText(text, rect.x + TITLE_PADDING, rect.y + rect.height / 2 + 0.5);
+    ctx.fillText(text, rect.x + TITLE_PADDING, baseline);
   }
   ctx.restore();
   return false;

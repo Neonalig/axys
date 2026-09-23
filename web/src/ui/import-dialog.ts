@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Import Audio, as floating panels.
+ * Import Audio, as one floating panel in two steps.
  *
- * The first asks whether the audio is a vocal or a reference. Choosing Vocal imports it, and once
- * it has loaded the analysis panel opens, where the pitch method and its settings are changed and
+ * The first step asks whether the audio is a vocal or a reference. Choosing Vocal imports it and
+ * turns the panel into the analysis step, where the pitch method and its settings are changed and
  * the vocal is analysed again as they move, so the blobs and playback follow the settings while
- * the panel is open. Apply keeps the result and remembers the settings for the next import;
- * Cancel takes the import back.
+ * the panel is open. Back takes the import back and asks again; Apply keeps the result and
+ * remembers the settings for the next import; Cancel takes the import back.
  */
 
 import { Dialog } from './dialog.js';
+import type { DialogAction } from './dialog.js';
 import {
   checkboxInput,
   field,
@@ -63,74 +64,92 @@ export interface AnalysisOutcome {
   threshold: number;
 }
 
-/** What the panels ask of the workspace. */
+/** What the panel asks of the workspace. */
 export interface ImportPanelHooks {
   /** Names what is being imported: a file's title, or a count of files. */
   what: string;
   /** Whether to ask vocal or reference first. Without it the import starts at once. */
   askRole: boolean;
+  /** Whether this starts a new project, which starts from Auto Threshold whatever was kept. */
+  fresh?: boolean;
   /** Imports the audio as vocals, analysed with `params`. `null` when nothing came in. */
   importVocals(params: F0Params): Promise<AnalysisOutcome | null>;
   /** Imports the audio as references. */
   importReferences(): Promise<void>;
   /** Analyses the imported vocals again. */
   analyse(params: F0Params): Promise<AnalysisOutcome>;
-  /** Takes the import back. */
+  /** Takes the import back, leaving nothing imported. */
   cancel(): void;
 }
 
+/** One step of the panel: what it runs when the panel closes on it. */
+type StepLeave = (leave: () => void) => void;
+
 /** Starts Import Audio: the vocal or reference question, or the vocal import itself. */
 export function openImportPanel(hooks: ImportPanelHooks): void {
-  const importVocals = async (): Promise<void> => {
-    const params = storedAnalysis();
-    const outcome = await hooks.importVocals(params);
-    if (outcome !== null) openAnalysisPanel(params, outcome, hooks);
+  // One panel for both steps, so it keeps its place and its focus when the step changes.
+  let leave: () => void = () => {};
+  const onLeave: StepLeave = (next) => {
+    leave = next;
   };
-  if (!hooks.askRole) {
-    void importVocals();
-    return;
-  }
+  const dialog = Dialog.open({
+    title: 'Import Audio',
+    icon: 'import',
+    content: document.createElement('div'),
+    blocking: false,
+    onClose: () => {
+      leave();
+    },
+  });
+  if (hooks.askRole) askRole(dialog, hooks, onLeave);
+  else analysisStep(dialog, hooks, false, onLeave);
+}
+
+/** The first step: whether the audio is a vocal or a reference. */
+function askRole(dialog: Dialog, hooks: ImportPanelHooks, onLeave: StepLeave): void {
+  onLeave(() => {});
   const question = document.createElement('p');
   question.className = 'axys-hint';
   question.textContent = `Import ${hooks.what} as a vocal or a reference?`;
-  Dialog.open({
-    title: 'Import Audio',
-    icon: 'import',
-    content: question,
-    blocking: false,
-    actions: [
-      {
-        label: 'Cancel',
-        onSelect: (dialog) => {
-          dialog.close();
-        },
+  dialog.body.replaceChildren(question);
+  dialog.setActions([
+    {
+      label: 'Cancel',
+      onSelect: () => {
+        dialog.close();
       },
-      {
-        label: 'Reference',
-        onSelect: (dialog) => {
-          dialog.close();
-          void hooks.importReferences();
-        },
+    },
+    {
+      label: 'Reference',
+      onSelect: () => {
+        dialog.close();
+        void hooks.importReferences();
       },
-      {
-        label: 'Vocal',
-        kind: 'primary',
-        onSelect: (dialog) => {
-          // The panel goes while the audio loads, since nothing in it can change until then.
-          dialog.close();
-          void importVocals();
-        },
+    },
+    {
+      label: 'Vocal',
+      kind: 'primary',
+      onSelect: () => {
+        analysisStep(dialog, hooks, true, onLeave);
       },
-    ],
-  });
+    },
+  ]);
 }
 
-/** Opens the analysis panel over vocals already imported with `initial`. */
-function openAnalysisPanel(
-  initial: F0Params,
-  first: AnalysisOutcome,
+/**
+ * The second step: imports the vocals, then analyses them again as the settings move.
+ *
+ * @remarks The settings wait until the audio has loaded, since nothing they change exists before
+ * then. With `back`, Back takes the import back and returns to the first step.
+ */
+function analysisStep(
+  dialog: Dialog,
   hooks: ImportPanelHooks,
+  back: boolean,
+  onLeave: StepLeave,
 ): void {
+  const stored = storedAnalysis();
+  const initial = hooks.fresh === true ? { ...stored, autoThreshold: true } : stored;
   // Each method reads its setting its own way, so each keeps its own value.
   let chosen: F0Method = initial.method ?? 'yin';
   let yinThreshold = chosen === 'pyin' ? DEFAULT_F0.threshold : initial.threshold;
@@ -138,7 +157,12 @@ function openAnalysisPanel(
   let strengthValue = initial.strength ?? 0.25;
   let minHz = initial.minHz;
   let maxHz = initial.maxHz;
+  /** Whether the vocals are in, which is when there is something to analyse or take back. */
+  let loaded = false;
+  /** Whether this step is over: applied, cancelled, gone back from or closed. */
   let settled = false;
+  /** Whether the import is to be taken back as soon as it arrives. */
+  let takeBack = false;
 
   const auto = checkboxInput();
   auto.checked = initial.autoThreshold ?? false;
@@ -203,7 +227,10 @@ function openAnalysisPanel(
   };
   auto.addEventListener('change', () => {
     // Turning Auto off keeps the value it chose, as the starting point to fine-tune from.
-    if (!auto.checked) yinThreshold = Number.parseFloat(threshold.input.value);
+    // Exactly, rather than as the slider rounds it to its step, so the vocals need no new pass.
+    if (!auto.checked) {
+      yinThreshold = lastOutcome?.threshold ?? Number.parseFloat(threshold.input.value);
+    }
     threshold.input.disabled = auto.checked;
     schedule();
   });
@@ -275,25 +302,67 @@ function openAnalysisPanel(
     schedule();
   });
 
+  const controls = [method, auto, low, high, threshold.input, mean.input, strength.input];
+  const enable = (on: boolean): void => {
+    for (const control of controls) control.disabled = !on;
+    if (on && chosen === 'yin') threshold.input.disabled = auto.checked;
+  };
+
+  /**
+   * What an analysis with some settings comes to, as a key: Auto Threshold stands for the
+   * threshold it chose last time with the same other settings, when it has chosen one.
+   */
+  const chosenBy = new Map<string, number>();
+  const others = (params: F0Params): string =>
+    JSON.stringify({ ...params, threshold: 0, autoThreshold: false });
+  const effective = (params: F0Params): string | null => {
+    if (params.method !== 'yin' || params.autoThreshold !== true) return JSON.stringify(params);
+    const chose = chosenBy.get(others(params));
+    return chose === undefined
+      ? null
+      : JSON.stringify({ ...params, threshold: chose, autoThreshold: false });
+  };
+  /** The settings the vocals were last analysed with, as {@link effective} keys them. */
+  let analysed: string | null = null;
+  const remember = (params: F0Params, outcome: AnalysisOutcome): void => {
+    if (params.method === 'yin' && params.autoThreshold === true) {
+      chosenBy.set(others(params), outcome.threshold);
+    }
+    analysed = effective(params);
+  };
+
   const report = (outcome: AnalysisOutcome): void => {
     status.textContent = `${String(outcome.blobs)} ${outcome.blobs === 1 ? 'blob' : 'blobs'}`;
     if (chosen === 'yin') showAuto(outcome.threshold);
   };
+  let lastOutcome: AnalysisOutcome | null = null;
 
   let timer = 0;
   let running = false;
   let queued = false;
   const run = async (): Promise<void> => {
+    if (settled) return;
     if (running) {
       queued = true;
+      return;
+    }
+    const params = current();
+    // Turning Auto Threshold off keeps the threshold it chose, and turning it back on chooses
+    // the same one again, so neither changes what the vocals would be analysed to.
+    const key = effective(params);
+    if (key !== null && key === analysed) {
+      if (lastOutcome !== null) report(lastOutcome);
       return;
     }
     running = true;
     status.textContent = 'Analysing';
     try {
-      report(await hooks.analyse(current()));
+      const outcome = await hooks.analyse(params);
+      remember(params, outcome);
+      lastOutcome = outcome;
+      if (!settled) report(outcome);
     } catch {
-      status.textContent = 'Analysis failed';
+      if (!settled) status.textContent = 'Analysis failed';
     } finally {
       running = false;
       if (queued) {
@@ -303,44 +372,79 @@ function openAnalysisPanel(
     }
   };
   function schedule(): void {
+    if (!loaded || settled) return;
     window.clearTimeout(timer);
     timer = window.setTimeout(() => {
       void run();
     }, SETTLE_MS);
   }
+  /** Ends this step, taking the import back now or as soon as it arrives when `undo` says so. */
+  const settle = (undo: boolean): void => {
+    settled = true;
+    window.clearTimeout(timer);
+    if (!undo) return;
+    if (loaded) hooks.cancel();
+    else takeBack = true;
+  };
 
   layout();
-  report(first);
-  showAuto(first.threshold);
-  Dialog.open({
-    title: 'Import Audio',
-    icon: 'import',
-    content,
-    blocking: false,
-    actions: [
-      {
-        label: 'Cancel',
-        onSelect: (dialog) => {
-          settled = true;
-          window.clearTimeout(timer);
-          hooks.cancel();
-          dialog.close();
-        },
+  enable(false);
+  status.textContent = 'Importing';
+  dialog.body.replaceChildren(content);
+  // Closing keeps what was imported and its settings; only Cancel and Back take it back.
+  onLeave(() => {
+    if (settled) return;
+    if (loaded) storeAnalysis(current());
+    settle(false);
+  });
+
+  const actions: DialogAction[] = [
+    {
+      label: 'Cancel',
+      onSelect: () => {
+        settle(true);
+        dialog.close();
       },
-      {
-        label: 'Apply',
-        kind: 'primary',
-        onSelect: (dialog) => {
-          settled = true;
-          window.clearTimeout(timer);
-          storeAnalysis(current());
-          dialog.close();
-        },
-      },
-    ],
-    onClose: () => {
-      // Closing keeps what was imported and its settings; only Cancel takes it back.
-      if (!settled) storeAnalysis(current());
     },
+    {
+      label: 'Apply',
+      kind: 'primary',
+      onSelect: () => {
+        // Kept as it came in, with the settings it came in with, when it has not loaded yet.
+        if (loaded) storeAnalysis(current());
+        settle(false);
+        dialog.close();
+      },
+    },
+  ];
+  if (back) {
+    actions.unshift({
+      label: 'Back',
+      onSelect: () => {
+        // Going back while the audio loads would start a second import racing the first.
+        if (!loaded) return;
+        settle(true);
+        askRole(dialog, hooks, onLeave);
+      },
+    });
+  }
+  dialog.setActions(actions);
+
+  void hooks.importVocals(initial).then((outcome) => {
+    loaded = outcome !== null;
+    if (outcome === null) {
+      if (!settled) dialog.close();
+      return;
+    }
+    if (takeBack) {
+      hooks.cancel();
+      return;
+    }
+    if (settled) return;
+    remember(initial, outcome);
+    lastOutcome = outcome;
+    enable(true);
+    report(outcome);
+    showAuto(outcome.threshold);
   });
 }

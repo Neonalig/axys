@@ -64,6 +64,10 @@ pub mod limits {
     pub const MAX_MAP_EVENTS: usize = 100_000;
     /// Largest accepted anchor count in one pitch curve.
     pub const MAX_CURVE_ANCHORS: usize = 100_000;
+    /// Largest accepted point count in one kept stroke.
+    pub const MAX_STROKE_POINTS: usize = 20_000;
+    /// Largest accepted count of kept strokes in one project.
+    pub const MAX_STROKES: usize = 10_000;
     /// Largest accepted blob count in one project.
     pub const MAX_BLOBS: usize = 100_000;
     /// Quietest a blob or a mixer strip may be set to, in decibels.

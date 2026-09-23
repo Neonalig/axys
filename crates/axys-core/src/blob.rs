@@ -169,9 +169,30 @@ impl Blob {
         Voicing::Silence
     }
 
+    /// The part of the blob inside `[start, end]`, or `None` when less than
+    /// [`MIN_BLOB_SECONDS`] of it is.
+    ///
+    /// The span and subregions are cut at the edges. The curve is left whole, since only the
+    /// part inside the span is ever read.
+    pub fn clipped_to(&self, start: f64, end: f64) -> Option<Blob> {
+        if self.start >= start && self.end <= end {
+            return Some(self.clone());
+        }
+        let from = self.start.max(start);
+        let to = self.end.min(end);
+        if to - from < MIN_BLOB_SECONDS {
+            return None;
+        }
+        let mut blob = self.clone();
+        blob.start = from;
+        blob.end = to;
+        blob.subregions = fit_subregions(&self.subregions, from, to);
+        Some(blob)
+    }
+
     /// Re-derives `detected_center` from `track` over the blob span, keeping the old value
     /// when the span holds no voiced frame.
-    fn rederive_center(&mut self, track: Option<&PitchTrack>) {
+    pub fn rederive_center(&mut self, track: Option<&PitchTrack>) {
         if let Some(track) = track {
             if let Some(midi) = track.median_midi(self.start, self.end) {
                 self.detected_center = midi;
@@ -531,6 +552,52 @@ impl BlobSet {
         blob.subregions = fit_subregions(&blob.subregions, start, end);
         blob.curve = slice_curve(&blob.curve, start, end)?;
         Ok(())
+    }
+
+    /// Slides a blob's span along the audio by `seconds`, leaving its timing edit where it was.
+    ///
+    /// The blob then covers different audio without the audio moving: it is held between its
+    /// neighbours and inside `lower..upper`, its subregions are refitted to the span, its curve
+    /// keeps a boundary anchor wherever the span cut it, and its detected centre is read again
+    /// from `track` when one is given. Returns the distance actually moved.
+    pub fn shift_span(
+        &mut self,
+        id: BlobId,
+        seconds: f64,
+        lower: f64,
+        upper: f64,
+        track: Option<&PitchTrack>,
+    ) -> Result<f64> {
+        if !seconds.is_finite() {
+            return Err(AxysError::Invalid("blob shift is not finite".into()));
+        }
+        let index = self
+            .index_of(id)
+            .ok_or_else(|| AxysError::NotFound(format!("blob {}", id.0)))?;
+        let floor = if index > 0 {
+            self.blobs[index - 1].end.max(lower)
+        } else {
+            lower
+        };
+        let ceiling = self
+            .blobs
+            .get(index + 1)
+            .map_or(upper, |next| next.start.min(upper));
+        let blob = &mut self.blobs[index];
+        let moved = if seconds >= 0.0 {
+            seconds.min((ceiling - blob.end).max(0.0))
+        } else {
+            seconds.max((floor - blob.start).min(0.0))
+        };
+        if moved == 0.0 {
+            return Ok(0.0);
+        }
+        blob.start += moved;
+        blob.end += moved;
+        blob.subregions = fit_subregions(&blob.subregions, blob.start, blob.end);
+        blob.curve = slice_curve(&blob.curve, blob.start, blob.end)?;
+        blob.rederive_center(track);
+        Ok(moved)
     }
 
     /// Reclassifies `[start, end]` inside `id`, merging touching subregions of equal voicing.

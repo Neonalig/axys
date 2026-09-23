@@ -64,8 +64,33 @@
   flex-direction: column;
   gap: var(--axys-space-1);
   min-height: 0;
-  padding: 6px 0 0;
+  overflow: hidden;
   border-radius: var(--axys-radius-sm);
+}
+
+/* A source's box is outlined in its colour, the colour its blobs or band are drawn in */
+
+.axys-mixer-track,
+.axys-mixer-strip.is-reference {
+  /* Inside a source's box its colour is the accent: fills, meters, pressed switches and focus
+     rings */
+  --axys-accent: var(--axys-source);
+  --axys-meter-fill: color-mix(in srgb, var(--axys-source) 45%, black);
+}
+
+/* The metronome and the master have no source colour, so they take the theme's accent */
+
+.axys-mixer-strip.is-standalone:not(.is-reference) {
+  --axys-source: var(--axys-accent);
+}
+
+.axys-mixer-track,
+.axys-mixer-strip.is-standalone {
+  border-color: var(--axys-source, var(--axys-border));
+}
+
+.axys-mixer-strip.is-standalone {
+  overflow: hidden;
 }
 
 /* The source in front, which the editor edits */
@@ -75,18 +100,23 @@
   box-shadow: inset 0 0 0 1px var(--axys-source);
 }
 
-.axys-mixer-track-name {
+/* A source's name heads its box on a fill in its colour, lettered in the dimmed background colour
+   the way a blob's header is. Trimmed to the capital height, so equal padding centres it */
+
+.axys-mixer-track-name,
+.axys-mixer-strip.is-standalone > .axys-mixer-name {
   flex: 0 0 auto;
   overflow: hidden;
-  padding: 0 var(--axys-space-2);
-  cursor: pointer;
-  border-bottom: 2px solid var(--axys-source, transparent);
+  padding: 5px var(--axys-space-2);
+  background: var(--axys-source);
   font-size: var(--axys-size-sm);
   font-weight: var(--axys-weight-strong);
-  color: var(--axys-text);
+  line-height: 16px;
+  color: color-mix(in srgb, var(--axys-bg) 75%, transparent);
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-box: trim-both cap alphabetic;
 }
 
 .axys-mixer-track-strips {
@@ -121,11 +151,20 @@
   flex: 0 0 auto;
 }
 
+/* A readout sits close under the slider it reads, so it reads as that slider's rather than as
+   something between two controls */
+
+.axys-mixer-pan-readout,
+.axys-mixer-level {
+  margin-top: -4px;
+}
+
 .axys-mixer-name {
   overflow: hidden;
   max-width: 100%;
   font-size: var(--axys-size-sm);
   color: var(--axys-text-muted);
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -137,6 +176,22 @@
 .axys-mixer-strip.is-standalone > .axys-mixer-name {
   contain: inline-size;
   width: 100%;
+}
+
+/* A name that opens or renames its source says so */
+
+.axys-mixer-track-name,
+.axys-mixer-strip.is-reference > .axys-mixer-name {
+  cursor: pointer;
+}
+
+/* The standalone strip's padding would inset its header, so the header reaches back over it */
+
+.axys-mixer-strip.is-standalone > .axys-mixer-name {
+  box-sizing: border-box;
+  width: calc(100% + 12px);
+  max-width: none;
+  margin: -6px -6px 0;
 }
 
 .axys-marquee {
@@ -221,6 +276,14 @@
 
 .axys-mixer .axys-mixer-fader:disabled {
   cursor: default;
+  opacity: 0.5;
+}
+
+/* A readout of a strip taken out of play by its mute */
+
+.axys-mixer-pan-readout.is-disabled,
+.axys-mixer-level.is-disabled {
+  opacity: 0.5;
 }
 
 .axys-mixer-fader::-webkit-slider-runnable-track {
@@ -273,7 +336,7 @@
 
 .axys-mixer-switch[aria-pressed='true'].is-mute {
   color: var(--axys-bg);
-  background: var(--axys-warning);
+  background: var(--axys-accent);
 }
 
 .axys-mixer-switch[aria-pressed='true'].is-solo {
@@ -363,7 +426,8 @@
     justify-content: flex-end;
   }
 
-  /* Clamped rather than a plain fraction, so a fader stays long enough to be worth dragging */
+  /* Clamped rather than a plain fraction, so a fader stays long enough to be worth dragging, and
+     kept to a quarter of the window, since the inspector is stacked over it too */
 
   #app.is-mixer-open {
     grid-template-rows:
@@ -422,4 +486,10 @@
 .axys-title:hover:not(:disabled) {
   color: var(--axys-text);
   background: var(--axys-surface-sunken);
+}
+
+/* A mute a solo is overriding: drawn as disabled, still pressable for when the solo ends */
+
+.axys-mixer-switch.is-masked {
+  opacity: 0.45;
 }

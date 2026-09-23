@@ -8,7 +8,8 @@
  * here because they act on the current selection rather than on a fixed object.
  */
 
-import { emptySelection } from './selection.js';
+import { movePitchOps } from './clipboard.js';
+import { emptySelection, selectionForRanges, selectionInMode } from './selection.js';
 import type { Command, CommandContext } from './commands.js';
 import { projectEnd } from './store.js';
 import type { AppState } from './store.js';
@@ -152,12 +153,30 @@ function timeStep(event: KeyboardEvent): number {
 
 function nudgeOp(state: AppState, event: KeyboardEvent): EditOp | null {
   const blobs = state.selection.blobs;
+  if (state.editMode === 'pitch') return nudgePitchLine(state, event);
   if (blobs.length === 0) return null;
+  if (state.editMode === 'blob') {
+    const seconds =
+      event.key === 'ArrowLeft'
+        ? -timeStep(event)
+        : event.key === 'ArrowRight'
+          ? timeStep(event)
+          : 0;
+    if (seconds === 0) return null;
+    // Slid from the leading edge, so a blob never meets one of its own selection.
+    const order = state.blobs
+      .filter((blob) => blobs.includes(blob.id))
+      .sort((a, b) => (seconds > 0 ? b.start - a.start : a.start - b.start));
+    return {
+      type: 'group',
+      ops: order.map((blob): EditOp => ({ type: 'shiftBlob', blob: blob.id, seconds })),
+    };
+  }
   switch (event.key) {
     case 'ArrowUp':
-      return { type: 'movePitch', blobs, semitones: pitchStep(event), anchors: true };
+      return { type: 'movePitch', blobs, semitones: pitchStep(event) };
     case 'ArrowDown':
-      return { type: 'movePitch', blobs, semitones: -pitchStep(event), anchors: true };
+      return { type: 'movePitch', blobs, semitones: -pitchStep(event) };
     case 'ArrowLeft':
       return { type: 'moveTime', blobs, seconds: -timeStep(event) };
     case 'ArrowRight':
@@ -165,6 +184,40 @@ function nudgeOp(state: AppState, event: KeyboardEvent): EditOp | null {
     default:
       return null;
   }
+}
+
+/** In Pitch mode the arrows move the selected pitch line and leave the audio where it is. */
+function nudgePitchLine(state: AppState, event: KeyboardEvent): EditOp | null {
+  const ranges = state.selection.ranges;
+  if (ranges.length === 0) return null;
+  const [seconds, semitones] =
+    event.key === 'ArrowUp'
+      ? [0, pitchStep(event)]
+      : event.key === 'ArrowDown'
+        ? [0, -pitchStep(event)]
+        : event.key === 'ArrowLeft'
+          ? [-timeStep(event), 0]
+          : event.key === 'ArrowRight'
+            ? [timeStep(event), 0]
+            : [0, 0];
+  const ops = movePitchOps(state, ranges, seconds, semitones, state.pitchCutFill);
+  return ops.length === 0 ? null : { type: 'group', ops };
+}
+
+/** Moves the selection with a pitch line nudged in time, so the next press moves it again. */
+function followPitchLine(ctx: CommandContext, event: KeyboardEvent): void {
+  const state = ctx.store.state;
+  if (state.editMode !== 'pitch') return;
+  const seconds =
+    event.key === 'ArrowLeft' ? -timeStep(event) : event.key === 'ArrowRight' ? timeStep(event) : 0;
+  if (seconds === 0) return;
+  const ranges = state.selection.ranges.map((range) => ({
+    start: range.start + seconds,
+    end: range.end + seconds,
+  }));
+  ctx.store.update({
+    selection: selectionInMode(selectionForRanges(state.blobs, ranges), state.editMode),
+  });
 }
 
 /** Arrow keys with an empty selection walk the playhead instead of moving audio. */
@@ -244,6 +297,7 @@ export function bindShortcuts(
       const op = nudgeOp(ctx.store.state, event);
       if (op) {
         ctx.workspace.apply(op);
+        followPitchLine(ctx, event);
         event.preventDefault();
         return;
       }
@@ -253,14 +307,13 @@ export function bindShortcuts(
       }
     }
 
+    // A key bound to several commands runs the first one enabled.
     const pressed = chordOf(event);
-    for (const binding of bindings) {
-      if (!sameChord(pressed, binding.chord)) continue;
-      event.preventDefault();
-      if (!binding.command.enabled(ctx)) return;
-      void binding.command.run(ctx);
-      return;
-    }
+    const matching = bindings.filter((binding) => sameChord(pressed, binding.chord));
+    if (matching.length === 0) return;
+    event.preventDefault();
+    const binding = matching.find((candidate) => candidate.command.enabled(ctx));
+    if (binding !== undefined) void binding.command.run(ctx);
   };
 
   target.addEventListener('keydown', onKeyDown);
