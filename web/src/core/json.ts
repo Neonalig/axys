@@ -243,7 +243,7 @@ export function pitchTrackToArrays(track: PitchTrack): PitchTrackArrays {
   };
 }
 
-function isF0Params(value: unknown): value is F0Params {
+export function isF0Params(value: unknown): value is F0Params {
   return (
     isRecord(value) &&
     isNumber(value.minHz) &&

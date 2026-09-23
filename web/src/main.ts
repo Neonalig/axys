@@ -38,6 +38,7 @@ import type {
   Clip,
   ClipId,
   EditOp,
+  F0Params,
   EditState,
   ExportPreview,
   GuideOverlap,
@@ -76,6 +77,7 @@ import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
+import { openImportPanel, storedAnalysis } from './ui/import-dialog.js';
 import { sourceMenu } from './ui/sources-menu.js';
 import type { MenuEntry } from './ui/menu.js';
 import type { IconName } from './ui/icons.js';
@@ -250,6 +252,11 @@ class AxysWorkspace implements Workspace {
       return;
     }
     if (!(await this.#mayReplaceProject())) return;
+    this.#closeToEmpty();
+  }
+
+  /** Closes the project and returns the editor to empty, without asking. */
+  #closeToEmpty(): void {
     this.#close();
     this.#projectFile = null;
     recordOpenProject('');
@@ -485,28 +492,68 @@ class AxysWorkspace implements Workspace {
    * instead, because that is what it asked for.
    */
   async openAudioFile(file: File, ask = false): Promise<void> {
+    await this.openVocals([file], ask);
+  }
+
+  /**
+   * Starts a project from vocal files through Import Audio, the first as the project and the
+   * rest as clips after it.
+   *
+   * @remarks A project still waiting for audio takes the files as relinks instead.
+   */
+  async openVocals(files: readonly File[], ask = false): Promise<void> {
+    const [first, ...rest] = files;
+    if (first === undefined) return;
     if (this.#hasMissing()) {
-      await this.#relink(file);
+      for (const file of files) await this.#relink(file);
       return;
     }
     if (ask && !(await this.#mayReplaceProject())) return;
+    if (this.#importing) {
+      this.#toast.warn('An import is already running');
+      return;
+    }
+    const clips: ClipId[] = [];
+    openImportPanel({
+      what: describeFiles(files),
+      askRole: false,
+      importVocals: async (params) => {
+        if (!(await this.#startProject(first, params))) return false;
+        clips.push(0);
+        for (const file of rest) {
+          const added = await this.importClipFile(file, undefined, 'free', params);
+          if (added !== null) clips.push(added.clip);
+        }
+        return true;
+      },
+      importReferences: () => Promise.resolve(),
+      analyse: (params) => this.#reanalyseClips(clips, params),
+      cancel: () => {
+        this.#closeToEmpty();
+      },
+    });
+  }
+
+  /** Decodes and analyses one file and opens it as a new project. Resolves false on failure. */
+  async #startProject(file: File, params: F0Params): Promise<boolean> {
     // One import at a time. A second would race the first onto the same session and leave
     // whichever finished last in charge, which is not a choice anybody made.
     if (this.#importing) {
       this.#toast.warn('An import is already running');
-      return;
+      return false;
     }
     this.#progress('Decode Audio', 0.05);
     this.#importing = true;
     try {
       const decoded = await decodeAudioFile(file);
-      const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name);
+      const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name, params);
       const session = this.#core.openSessionFromAnalysis({
         samples: analysed.samples,
         sampleRate: analysed.sampleRate,
         name: analysed.name,
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
+        f0: params,
       });
       this.#close();
       await this.#install(session, null, null);
@@ -514,10 +561,71 @@ class AxysWorkspace implements Workspace {
       if (decoded.resampled) {
         this.#toast.warn(`Resampled to ${String(decoded.sampleRate)} Hz`);
       }
+      return true;
     } catch (error) {
       this.#importFailed('Open Audio', error);
+      return false;
     } finally {
       this.#importing = false;
+    }
+  }
+
+  /**
+   * Analyses clips again with new settings, replacing what their import brought in.
+   *
+   * @remarks Resolves with how many blobs the clips now hold. A clip already edited is refused,
+   * with the reason reported.
+   */
+  async #reanalyseClips(clips: readonly ClipId[], params: F0Params): Promise<number> {
+    const session = this.#session;
+    if (!session) return 0;
+    this.#importing = true;
+    try {
+      const rate = session.sampleRate();
+      for (const clip of clips) {
+        const entry = session.state().clips.find((candidate) => candidate.id === clip);
+        if (entry === undefined) continue;
+        const analysed = await this.#analyse(
+          session.clipSamples(clip),
+          rate,
+          entry.source.name,
+          params,
+        );
+        session.reanalyse(clip, {
+          trackJson: analysed.trackJson,
+          blobsJson: analysed.blobsJson,
+          f0: params,
+        });
+        this.#clipTracks.delete(clip);
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      }
+      this.#idle();
+      this.#publish();
+    } catch (error) {
+      this.#importFailed('Analyse Clip', error);
+      throw error;
+    } finally {
+      this.#importing = false;
+    }
+    return (this.#session?.state().clips ?? [])
+      .filter((clip) => clips.includes(clip.id))
+      .reduce((total, clip) => total + clip.blobs.blobs.length, 0);
+  }
+
+  /** Takes imported clips back: undone where they were the last edit, removed otherwise. */
+  #takeBack(clips: readonly ClipId[]): void {
+    const session = this.#session;
+    if (!session) return;
+    const stranded: ClipId[] = [];
+    for (const clip of [...clips].reverse()) {
+      if (session.history().undo === 'Import Clip') this.undo();
+      else stranded.push(clip);
+    }
+    if (stranded.length > 0) {
+      this.apply({
+        type: 'group',
+        ops: stranded.map((clip): EditOp => ({ type: 'removeClip', clip })),
+      });
     }
   }
 
@@ -536,7 +644,8 @@ class AxysWorkspace implements Workspace {
     file: File,
     position?: number,
     placement: 'free' | 'exact' | 'ripple' = 'free',
-  ): Promise<number | null> {
+    params: F0Params = storedAnalysis(),
+  ): Promise<{ clip: ClipId; end: number } | null> {
     const session = this.#session;
     if (!session) {
       await this.openAudioFile(file);
@@ -571,12 +680,13 @@ class AxysWorkspace implements Workspace {
         title: sourceTitle(file.name),
       });
       this.#reveal(at);
-      const analysed = await this.#analyse(decoded.mono, rate, decoded.name);
+      const analysed = await this.#analyse(decoded.mono, rate, decoded.name, params);
       const clip = session.addClip({
         samples: analysed.samples,
         name: analysed.name,
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
+        f0: params,
         position: at,
         ripple: placement === 'ripple',
         exact: placement === 'exact',
@@ -591,7 +701,7 @@ class AxysWorkspace implements Workspace {
       if (placed) this.#reveal(placed.position);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
-      return placed === undefined ? null : placed.position + placed.source.duration;
+      return placed === undefined ? null : { clip, end: placed.position + placed.source.duration };
     } catch (error) {
       this.#importFailed('Import Vocal', error);
       return null;
@@ -634,18 +744,35 @@ class AxysWorkspace implements Workspace {
       for (const file of files) await this.#relink(file);
       return;
     }
-    const role = await this.#askRole(files);
-    if (role === null) return;
-    let next = position;
-    for (const file of files) {
-      if (role === 'vocal') {
-        if (position !== null && !ripple) await this.importClipFile(file, position, 'exact');
-        else if (next !== null) next = (await this.importClipFile(file, next, 'ripple')) ?? next;
-        else next = (await this.importClipFile(file)) ?? next;
-      } else {
-        await this.importReferenceFile(file, position ?? 0);
-      }
-    }
+    const clips: ClipId[] = [];
+    openImportPanel({
+      what: describeFiles(files),
+      askRole: true,
+      importVocals: async (params) => {
+        let next = position;
+        for (const file of files) {
+          let added: { clip: ClipId; end: number } | null;
+          if (position !== null && !ripple) {
+            added = await this.importClipFile(file, position, 'exact', params);
+          } else if (next !== null) {
+            added = await this.importClipFile(file, next, 'ripple', params);
+          } else {
+            added = await this.importClipFile(file, undefined, 'free', params);
+          }
+          if (added === null) continue;
+          clips.push(added.clip);
+          if (position === null || ripple) next = added.end;
+        }
+        return clips.length > 0;
+      },
+      importReferences: async () => {
+        for (const file of files) await this.importReferenceFile(file, position ?? 0);
+      },
+      analyse: (params) => this.#reanalyseClips(clips, params),
+      cancel: () => {
+        this.#takeBack(clips);
+      },
+    });
   }
 
   /**
@@ -685,23 +812,6 @@ class AxysWorkspace implements Workspace {
   }
 
   /** Asks whether audio is a vocal to edit or a reference to hear. `null` when cancelled. */
-  async #askRole(files: readonly File[]): Promise<'vocal' | 'reference' | null> {
-    const first = files[0];
-    if (first === undefined) return null;
-    const what =
-      files.length === 1 ? sourceTitle(first.name) : `${String(files.length)} audio files`;
-    const answer = await confirmAction({
-      title: 'Import Audio',
-      message: `Import ${what} as a vocal or a reference?`,
-      confirm: 'Vocal',
-      alternative: 'Reference',
-      icon: 'import',
-      kind: 'primary',
-    });
-    if (answer === 'cancel') return null;
-    return answer === 'confirm' ? 'vocal' : 'reference';
-  }
-
   /**
    * Brings in audio to hear beside the vocal, as one undoable edit.
    *
@@ -772,6 +882,7 @@ class AxysWorkspace implements Workspace {
     samples: Float32Array,
     sampleRate: number,
     name: string,
+    f0: F0Params,
   ): Promise<{
     samples: Float32Array;
     sampleRate: number;
@@ -779,7 +890,7 @@ class AxysWorkspace implements Workspace {
     trackJson: string;
     blobsJson: string;
   }> {
-    return await this.#analysis.analyse({ samples, sampleRate, name }, (stage, progress) => {
+    return await this.#analysis.analyse({ samples, sampleRate, name, f0 }, (stage, progress) => {
       this.#progress(stage, progress);
     });
   }
@@ -1673,6 +1784,13 @@ function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
 }
 
 /** Which import a dropped file is, from its name and media type. */
+/** Names files being imported: one file's title, or how many there are. */
+function describeFiles(files: readonly File[]): string {
+  const first = files[0];
+  if (files.length === 1 && first !== undefined) return sourceTitle(first.name);
+  return `${String(files.length)} audio files`;
+}
+
 function kindOf(file: File): 'project' | 'midi' | 'audio' {
   const name = file.name.toLowerCase();
   if (name.endsWith('.axys.json') || name.endsWith('.json')) return 'project';
@@ -1765,10 +1883,8 @@ async function openDropped(
   if (project) {
     await workspace.openProjectFile(project, true);
   } else if (audio.length > 0) {
-    const [first, ...rest] = audio;
-    if (first && !workspace.ready) {
-      await workspace.openAudioFile(first, true);
-      for (const file of rest) await workspace.importClipFile(file);
+    if (!workspace.ready) {
+      await workspace.openVocals(audio, true);
     } else {
       await workspace.dropAudio(audio, at, ripple);
     }

@@ -118,6 +118,8 @@ export class Dialog {
   readonly #element: HTMLElement;
   readonly #backdrop: HTMLElement | null;
   readonly #body: HTMLElement;
+  /** The foot of the panel holding its buttons, present while it has any. */
+  #footer: HTMLElement | null = null;
   readonly #opener: Element | null;
   readonly #onClose: (() => void) | undefined;
   readonly #blocking: boolean;
@@ -194,34 +196,40 @@ export class Dialog {
     element.append(body);
     this.#body = body;
 
-    const actions = options.actions ?? [];
-    if (actions.length > 0) {
-      const footer = document.createElement('div');
-      footer.className = 'axys-group axys-dialog-actions';
-      for (const action of actions) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = action.label;
-        setTooltip(button, action.label);
-        if (action.kind === 'primary') {
-          button.classList.add('is-active');
-        } else if (action.kind === 'danger') {
-          button.classList.add('axys-danger');
-        }
-        button.addEventListener('click', () => {
-          action.onSelect(this);
-        });
-        footer.append(button);
-      }
-      element.append(footer);
-    }
+    this.#element = element;
+    this.setActions(options.actions ?? []);
 
     element.addEventListener('keydown', (event: KeyboardEvent) => {
       this.#onKeyDown(event);
     });
 
     parent.append(element);
-    this.#element = element;
+  }
+
+  /** Replaces the buttons along the foot of the panel, removing the foot with none. */
+  setActions(actions: readonly DialogAction[]): void {
+    this.#footer?.remove();
+    this.#footer = null;
+    if (actions.length === 0) return;
+    const footer = document.createElement('div');
+    footer.className = 'axys-group axys-dialog-actions';
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = action.label;
+      setTooltip(button, action.label);
+      if (action.kind === 'primary') {
+        button.classList.add('is-active');
+      } else if (action.kind === 'danger') {
+        button.classList.add('axys-danger');
+      }
+      button.addEventListener('click', () => {
+        action.onSelect(this);
+      });
+      footer.append(button);
+    }
+    this.#element.append(footer);
+    this.#footer = footer;
   }
 
   /** Opens a panel and focuses its first control. */
