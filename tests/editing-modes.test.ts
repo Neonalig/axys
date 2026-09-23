@@ -89,7 +89,7 @@ describe('editing modes', () => {
       const before = stateOf(scoped);
       const target = before.blobs[1]!;
       apply(scoped, cutBlobOps(selecting(before, target)));
-      const after = stateOf(scoped, { outsidePitch: true });
+      const after = stateOf(scoped);
       expect(after.blobs).toHaveLength(before.blobs.length - 1);
       expect(after.edits?.clips[0]?.silenced).toEqual([]);
 
@@ -135,7 +135,7 @@ describe('editing modes', () => {
       expect(copied?.kind).toBe('pitch');
       const range = { start: target.start, end: target.end };
       const points = placePitch(copied!, range, 0);
-      apply(scoped, pastePitchOps(state, points, false));
+      apply(scoped, pastePitchOps(state, points));
 
       const after = stateOf(scoped);
       const middle = (target.start + target.end) / 2;
@@ -172,7 +172,7 @@ describe('editing modes', () => {
         { start: 0, end: fixture.samples.length / fixture.sampleRate },
         0,
       );
-      const ops = pastePitchOps(state, points, false);
+      const ops = pastePitchOps(state, points);
       expect(ops.filter((op) => op.type === 'replacePitch')).toHaveLength(state.blobs.length);
     } finally {
       scoped.free();

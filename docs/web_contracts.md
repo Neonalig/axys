@@ -190,8 +190,6 @@ export interface AppState {
   mixerCollapsed: boolean;
   /** What editing acts on. */
   editMode: EditMode;
-  /** Whether detected pitch outside every blob is drawn and can be edited. */
-  outsidePitch: boolean;
   /** What cutting pitch leaves in the span it came from. */
   pitchCutFill: PitchCutFill;
   /** What Copy or Cut last took. */
@@ -319,8 +317,9 @@ Cut, Copy and Paste are `Ctrl+X`, `Ctrl+C` and `Ctrl+V` and act on what the edit
 clips in Blob and Pitch, blobs in Blob, the heard pitch line in Pitch. Paste lands at the playhead,
 and pasted pitch is fitted over the selection when there is one. A clipboard only pastes in the
 mode it was taken in. Trim Start and Trim End, `Alt+[` and `Alt+]`, trim the clip under the playhead
-to it, and Reset Trim widens it again. `Q` steps through the edit modes, one command per mode sets
-it, and `Shift+O` shows or hides the pitch outside blobs. The workspace takes clips in and out:
+to it, and Reset Trim widens it again. `Q` and `Shift+Q` step through the edit modes, one command
+per mode sets it, and `W` and `Shift+W` step through the sources. The workspace takes clips in and
+out:
 
 ```ts
 /** Pastes copied parts of clips as new clips at a project time, as one undo step. */

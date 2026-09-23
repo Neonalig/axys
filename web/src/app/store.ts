@@ -61,8 +61,6 @@ export interface AppState {
   inspectorWidth: number;
   /** What editing acts on: blobs and the pitch in them together, blobs alone, or pitch alone. */
   editMode: EditMode;
-  /** Whether detected pitch outside every blob is drawn and can be edited. */
-  outsidePitch: boolean;
   /** What cutting pitch leaves in the span it came from. */
   pitchCutFill: PitchCutFill;
   /** What Copy or Cut last took, or `null` before either has. */
@@ -235,7 +233,6 @@ export function initialState(): AppState {
     mixerCollapsed: true,
     inspectorWidth: 328,
     editMode: 'both',
-    outsidePitch: false,
     pitchCutFill: 'sung',
     clipboard: null,
     activeStroke: null,

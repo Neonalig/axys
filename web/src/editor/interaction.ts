@@ -4,6 +4,7 @@ import {
   emptySelection,
   selectionForRange,
   selectionForRanges,
+  selectionInMode,
   selectionSpan,
   withRange,
 } from '../app/selection.js';
@@ -369,8 +370,10 @@ export class EditorController {
     }
 
     // The tab over a blob names its clip and is where the clip is picked up, so it answers
-    // before the blob under it does.
-    for (const blob of state.blobs) {
+    // before the blob under it does. Picking up a clip moves its audio, so only the tools that
+    // move things answer to it, and only in the mode that moves audio.
+    const tabs = state.editMode === 'both' && (state.tool === 'select' || state.tool === 'time');
+    for (const blob of tabs ? state.blobs : []) {
       const rect = titleRect(blob, state.track, viewport);
       if (
         rect !== null &&
@@ -406,7 +409,7 @@ export class EditorController {
     }
 
     // Pitch outside every blob answers only while it is shown, and is where it was sung.
-    if (state.outsidePitch && state.track !== null) {
+    if (state.track !== null) {
       const detected = detectedAt(state.track, time);
       const owned = state.blobs.some((blob) => time >= blob.start && time < blob.end);
       if (
@@ -1752,7 +1755,6 @@ export class EditorController {
           gesture.seconds,
           gesture.semitones,
           state.pitchCutFill,
-          state.outsidePitch,
         );
         if (ops.length > 0) {
           const parts = [
@@ -2147,7 +2149,10 @@ export class EditorController {
   }
 
   #setSelection(selection: Selection, stroke: number | null = null): void {
-    this.#store.update({ selection, activeStroke: stroke });
+    this.#store.update({
+      selection: selectionInMode(selection, this.#store.state.editMode),
+      activeStroke: stroke,
+    });
   }
 
   /** The kept curve within grabbing distance of a canvas position, the newest first. */

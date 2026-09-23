@@ -9,7 +9,7 @@
  */
 
 import { movePitchOps } from './clipboard.js';
-import { emptySelection, selectionForRanges } from './selection.js';
+import { emptySelection, selectionForRanges, selectionInMode } from './selection.js';
 import type { Command, CommandContext } from './commands.js';
 import { projectEnd } from './store.js';
 import type { AppState } from './store.js';
@@ -200,14 +200,7 @@ function nudgePitchLine(state: AppState, event: KeyboardEvent): EditOp | null {
           : event.key === 'ArrowRight'
             ? [timeStep(event), 0]
             : [0, 0];
-  const ops = movePitchOps(
-    state,
-    ranges,
-    seconds,
-    semitones,
-    state.pitchCutFill,
-    state.outsidePitch,
-  );
+  const ops = movePitchOps(state, ranges, seconds, semitones, state.pitchCutFill);
   return ops.length === 0 ? null : { type: 'group', ops };
 }
 
@@ -222,7 +215,9 @@ function followPitchLine(ctx: CommandContext, event: KeyboardEvent): void {
     start: range.start + seconds,
     end: range.end + seconds,
   }));
-  ctx.store.update({ selection: selectionForRanges(state.blobs, ranges) });
+  ctx.store.update({
+    selection: selectionInMode(selectionForRanges(state.blobs, ranges), state.editMode),
+  });
 }
 
 /** Arrow keys with an empty selection walk the playhead instead of moving audio. */

@@ -236,8 +236,7 @@ export function samplePitch(state: AppState, ranges: readonly TimeRange[]): Pitc
     if (!Number.isFinite(detected)) continue;
     const blob = blobHolding(state.blobs, source);
     if (blob === undefined) {
-      // Pitch outside every blob is often breath or bleed, so it is read only while it is shown.
-      if (state.outsidePitch && clipAt(state, source) !== undefined) {
+      if (clipAt(state, source) !== undefined) {
         heard.push({ time: source, midi: detected });
       }
       continue;
@@ -360,7 +359,7 @@ export function drawStrokeOps(
   };
   if (bezier !== null && bezier !== undefined) stroke.bezier = bezier;
   ops.push({ type: 'setStroke', stroke });
-  ops.push(...pastePitchOps(state, [stroke.points], state.outsidePitch));
+  ops.push(...pastePitchOps(state, [stroke.points]));
   return ops;
 }
 
@@ -502,7 +501,6 @@ function anchorsOf(points: readonly PitchPoint[], time: (seconds: number) => num
 export function pastePitchOps(
   state: AppState,
   lines: readonly (readonly PitchPoint[])[],
-  outside: boolean,
 ): EditOp[] {
   const ops: EditOp[] = [];
   const added: Blob[] = [];
@@ -529,7 +527,6 @@ export function pastePitchOps(
         fill: { kind: 'contour', anchors },
       });
     }
-    if (!outside) continue;
     for (const gap of outsideRuns(state, first.time, last.time)) {
       const inside = lineWithin(run, gap.start, gap.end);
       if (inside.length < 2) continue;
@@ -626,7 +623,6 @@ export function movePitchOps(
   seconds: number,
   semitones: number,
   fill: PitchCutFill,
-  outside: boolean,
 ): EditOp[] {
   const lines = samplePitch(state, ranges);
   if (lines.length === 0 || (seconds === 0 && semitones === 0)) return [];
@@ -639,7 +635,7 @@ export function movePitchOps(
       midi: point.midi + semitones,
     })),
   }));
-  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones), outside), ...kept];
+  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones)), ...kept];
 }
 
 /**
@@ -693,7 +689,7 @@ export function stretchOps(
       }));
       ops.push(
         ...cutPitchOps(state, state.selection.ranges, fill),
-        ...pastePitchOps(state, stretched, state.outsidePitch),
+        ...pastePitchOps(state, stretched),
         ...kept,
       );
       return { ops, ranges };

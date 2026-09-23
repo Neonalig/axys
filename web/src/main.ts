@@ -17,7 +17,7 @@ import { startOffline } from './app/offline.js';
 import { bindShortcuts } from './app/shortcuts.js';
 import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
-import { emptySelection, selectionForRanges } from './app/selection.js';
+import { emptySelection, selectionForRanges, selectionInMode } from './app/selection.js';
 import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js';
 import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { PitchCutFill } from './app/clipboard.js';
@@ -1221,7 +1221,7 @@ class AxysWorkspace implements Workspace {
         view,
         // A span over one layer names other blobs over the next, so a new layer starts clear.
         selection: kept
-          ? selectionForRanges(patch.blobs, state.selection.ranges)
+          ? selectionInMode(selectionForRanges(patch.blobs, state.selection.ranges), state.editMode)
           : emptySelection(),
       });
     } catch (error) {
@@ -1626,7 +1626,10 @@ class AxysWorkspace implements Workspace {
         projectName: edits.name,
         // An edit can split, join or replace blobs, so what the selected span amounts to is
         // worked out again rather than left naming blobs the edit may have just removed.
-        selection: selectionForRanges(blobs, this.#store.state.selection.ranges),
+        selection: selectionInMode(
+          selectionForRanges(blobs, this.#store.state.selection.ranges),
+          this.#store.state.editMode,
+        ),
         dirty: true,
       });
       this.#audio.setTail(endLeniency(this.#store.state));
@@ -2372,7 +2375,6 @@ async function start(): Promise<void> {
     inspectorCollapsed: preferences.inspectorCollapsed,
     mixerCollapsed: preferences.mixerCollapsed,
     inspectorWidth: preferences.inspectorWidth,
-    outsidePitch: preferences.outsidePitch,
     pitchCutFill: preferences.pitchCutFill,
     view: { ...store.state.view, timeDisplay: preferences.timeDisplay },
   });

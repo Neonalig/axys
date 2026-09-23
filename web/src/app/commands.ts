@@ -22,7 +22,7 @@ import {
 } from './clipboard.js';
 import type { ClipboardContent } from './clipboard.js';
 import { savePreferences } from './preferences.js';
-import { selectionSpan } from './selection.js';
+import { selectionForRanges, selectionInMode, selectionSpan } from './selection.js';
 import { othersOf, stepSource } from './sources.js';
 import { EDIT_MODES, editModeLabel, projectEnd, projectRate } from './store.js';
 import type { AppState, AppStore, EditMode } from './store.js';
@@ -497,11 +497,7 @@ function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
     content.kind === 'blobs'
       ? pasteBlobOps(state, content, at, mode === 'replace')
       : [
-          ...pastePitchOps(
-            state,
-            placePitch(content, selectedRange(state), at),
-            state.outsidePitch,
-          ),
+          ...pastePitchOps(state, placePitch(content, selectedRange(state), at)),
           ...placeStrokes(state, content, selectedRange(state), at),
         ];
   if (ops.length === 0) {
@@ -516,8 +512,12 @@ function pasteClipboard(ctx: CommandContext, mode: PasteMode): void {
 }
 
 /** Sets the edit mode. */
+/** Sets the edit mode, reading the selected spans again as the new mode selects them. */
 function setEditMode(ctx: CommandContext, mode: EditMode): void {
-  if (ctx.store.state.editMode !== mode) ctx.store.update({ editMode: mode });
+  const state = ctx.store.state;
+  if (state.editMode === mode) return;
+  const selection = selectionInMode(selectionForRanges(state.blobs, state.selection.ranges), mode);
+  ctx.store.update({ editMode: mode, selection });
 }
 
 function timelineOf(state: AppState): TimelineMap | null {
@@ -1092,7 +1092,7 @@ export function buildCommands(): Command[] {
       id: 'view.sources',
       label: 'Next Source',
       group: 'View',
-      shortcut: ']',
+      shortcut: 'W',
       enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
       run: (ctx) => {
         stepFocus(ctx, 1);
@@ -1102,7 +1102,7 @@ export function buildCommands(): Command[] {
       id: 'view.previousSource',
       label: 'Previous Source',
       group: 'View',
-      shortcut: '[',
+      shortcut: 'Shift+W',
       enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
       run: (ctx) => {
         stepFocus(ctx, -1);
@@ -1147,18 +1147,6 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      id: 'view.toggleOutsidePitch',
-      label: 'Outside Pitch',
-      group: 'View',
-      shortcut: 'Shift+O',
-      enabled: () => true,
-      run: (ctx) => {
-        const on = !ctx.store.state.outsidePitch;
-        savePreferences({ outsidePitch: on });
-        ctx.store.update({ outsidePitch: on });
-      },
-    },
-    {
       id: 'tools.nextEditMode',
       label: 'Next Edit Mode',
       group: 'Tools',
@@ -1167,6 +1155,18 @@ export function buildCommands(): Command[] {
       run: (ctx) => {
         const index = EDIT_MODES.indexOf(ctx.store.state.editMode);
         setEditMode(ctx, EDIT_MODES[(index + 1) % EDIT_MODES.length] ?? 'both');
+      },
+    },
+    {
+      id: 'tools.previousEditMode',
+      label: 'Previous Edit Mode',
+      group: 'Tools',
+      shortcut: 'Shift+Q',
+      enabled: ready,
+      run: (ctx) => {
+        const index = EDIT_MODES.indexOf(ctx.store.state.editMode);
+        const count = EDIT_MODES.length;
+        setEditMode(ctx, EDIT_MODES[(index + count - 1) % count] ?? 'both');
       },
     },
     ...EDIT_MODES.map((mode): Command => ({

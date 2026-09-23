@@ -36,8 +36,6 @@ export interface Preferences {
   mixerCollapsed: boolean;
   /** How wide the inspector column is, in pixels. */
   inspectorWidth: number;
-  /** Whether detected pitch outside every blob is drawn and can be edited. */
-  outsidePitch: boolean;
   /** What cutting pitch leaves in the span it came from. */
   pitchCutFill: PitchCutFill;
 }
@@ -76,7 +74,6 @@ export function defaultPreferences(): Preferences {
     inspectorCollapsed: false,
     mixerCollapsed: true,
     inspectorWidth: INSPECTOR_DEFAULT_WIDTH,
-    outsidePitch: false,
     pitchCutFill: 'sung',
   };
 }
@@ -124,8 +121,6 @@ export function loadPreferences(): Preferences {
       typeof record['inspectorWidth'] === 'number'
         ? clampInspectorWidth(record['inspectorWidth'])
         : defaults.inspectorWidth,
-    outsidePitch:
-      typeof record['outsidePitch'] === 'boolean' ? record['outsidePitch'] : defaults.outsidePitch,
     pitchCutFill: oneOf(record['pitchCutFill'], PITCH_CUT_FILLS, defaults.pitchCutFill),
   };
 }

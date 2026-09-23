@@ -634,7 +634,7 @@ exactly as it did.
 Every clip outside the layer is drawn behind it, faded, in its own colour. A click on one brings
 its clip forward, which rebuilds the layer around it; a click that lands on the layer acts on the
 layer, so dragging one source never disturbs the one it overlaps. Focus is also reached by the
-Sources menu, by `[` and `]`, and by clicking a clip's track on the desk. Dim Others and Hide
+Sources menu, by `W` and `Shift+W`, and by clicking a clip's track on the desk. Dim Others and Hide
 Others, cycled with `\`, edit the active clip alone with the rest faint or gone.
 
 Which clip is in front and how the others show are view state, saved with the project and never
@@ -836,11 +836,9 @@ Decided where the backlog left it open:
 Copying took the pitch only where it was sung inside a blob, so a Bezier drawn across three blobs
 came back as three pieces and pasted with holes wherever the copy had crossed a gap or a consonant.
 A copy now takes one line per selected span: what each blob is heard singing, the detected pitch
-outside every blob while it is shown, any kept curve's own points across its span, joined straight
-across whatever is left unpitched, and held level to the span's edges. Pasting lays each line whole,
-so every blob it lands on takes its part. The Pitch-mode moves and the arrow keys read the same
-line. Outside pitch is left out while it is hidden, because unedited it is as often breath or bleed
-as it is singing, and copying it drew spikes wherever that line jumped.
+outside every blob, any kept curve's own points across its span, joined straight across whatever is
+left unpitched, and held level to the span's edges. Pasting lays each line whole, so every blob it
+lands on takes its part. The Pitch-mode moves and the arrow keys read the same line.
 
 ### A drawn curve is kept whole
 
@@ -849,7 +847,7 @@ crossed, so a Bezier across three blobs became three pieces with nothing between
 it copied the pieces with the gaps filled from whatever was sung there. Every stroke is now also
 kept whole in the edit state as a `Stroke`: its line through time, and a Bezier's four points. It
 is not heard itself; the blobs it crosses are given their parts of it, each keeping the rest of what
-it sang, and pitch outside every blob makes a blob of its own only while it is shown.
+it sang, and pitch outside every blob makes a blob of its own.
 
 A kept curve is drawn dotted and faint wherever no blob carries it, so a line drawn over a gap still
 shows where it runs. The Select or Bezier tool picks one up: a Bezier opens with its handles for
@@ -862,6 +860,27 @@ new curves, and moving the line in Pitch mode moves them with it.
 A freehand stroke is kept as the points left once it has been reduced to within two pixels of what
 was drawn, and a Bezier as its samples reduced to within one, so both come back as drawn at the
 zoom they were drawn at.
+
+### Outside pitch has no switch
+
+Outside Pitch was a toolbar toggle that drew and opened for editing the detected pitch outside every
+blob. Analysis puts nearly every voiced frame in a blob, so with the toggle on there was nearly
+always nothing new to see, and the button read as doing nothing. What is left outside is mostly
+what a Blob-mode cut left behind, which is exactly what should stay in sight. It is now always drawn,
+faint and dotted, and always edited like pitch inside a blob; the toggle, its key and its setting
+are gone.
+
+### Each mode selects what it edits
+
+A selection is spans, and each mode reads them its own way. Blob and Pitch and Blob select the
+blobs the spans reach, and the inspector shows them. Pitch selects the spans and the anchors in them
+and no blobs, since there it edits the pitch line alone. Changing mode keeps the spans and reads them
+again, so the blobs under a span come back into the selection on leaving Pitch and drop out on
+entering it. A clip's tab picks the clip up only in Blob and Pitch with the Select or Time tool,
+since moving a clip moves audio; everywhere else the tab is part of the blob under it.
+
+`W` steps to the next source and `Shift+W` to the one before, beside `Q` and `Shift+Q` for the
+edit modes, so both cycles sit under one hand. The brackets they took are free.
 
 ### A selection stretches by its edges
 

@@ -180,11 +180,9 @@ export function drawPitch(
     drawUncertainty(ctx, columns, viewport, theme);
     drawDetected(ctx, columns, viewport, theme);
   }
-  if (state.outsidePitch) {
-    const outside = outsideTrack(state);
-    if (outside !== null) {
-      drawDetected(ctx, collect(outside, viewport), viewport, theme, OUTSIDE_STYLE);
-    }
+  const outside = outsideTrack(state);
+  if (outside !== null) {
+    drawDetected(ctx, collect(outside, viewport), viewport, theme, OUTSIDE_STYLE);
   }
   drawBridges(ctx, state.track, state.blobs, viewport, theme);
   drawTarget(ctx, state, viewport, theme);

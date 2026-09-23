@@ -65,7 +65,6 @@
     "modeBoth": "blend",
     "modeBlob": "rectangle-horizontal",
     "modePitch": "activity",
-    "outsidePitch": "chart-spline",
     "cut": "scissors",
     "copy": "copy",
     "paste": "clipboard-paste",

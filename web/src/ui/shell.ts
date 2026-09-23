@@ -191,7 +191,6 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'transport.loopSelection': 'Loop',
   'transport.toggleMetronome': 'Metronome',
   'view.followPlayhead': 'Follow',
-  'view.toggleOutsidePitch': 'Outside',
   'midi.alignGuide': 'Align',
   'view.sources': 'Sources',
   'help.showDiagnostics': 'Help',
@@ -266,7 +265,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       {
         label: 'Next Source',
         icon: 'sources',
-        key: ']',
+        key: 'W',
         enabled: shell.can('view.sources'),
         run: () => {
           shell.run('view.sources');
@@ -275,7 +274,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       {
         label: 'Previous Source',
         icon: 'sources',
-        key: '[',
+        key: 'Shift+W',
         enabled: shell.can('view.previousSource'),
         run: () => {
           shell.run('view.previousSource');
@@ -467,7 +466,6 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Keyboard Shortcuts': 'keyboard',
   'Find Command': 'search',
   'Help and Diagnostics': 'help',
-  'Outside Pitch': 'outsidePitch',
   Cut: 'cut',
   Copy: 'copy',
   Paste: 'paste',
@@ -1038,13 +1036,6 @@ export class AppShell {
       button.setAttribute('aria-pressed', String(state.editMode === mode));
       button.disabled = state.phase !== 'ready';
     }
-    this.#setFace('view.toggleOutsidePitch', {
-      icon: 'outsidePitch',
-      label: 'Outside',
-      tooltip: state.outsidePitch ? 'Hide Outside Pitch (Shift+O)' : 'Show Outside Pitch (Shift+O)',
-      pressed: state.outsidePitch,
-    });
-
     for (const [tool, button] of this.#toolButtons) {
       button.setAttribute('aria-pressed', String(state.tool === tool));
       button.disabled = state.phase !== 'ready';
