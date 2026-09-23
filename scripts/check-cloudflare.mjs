@@ -46,6 +46,28 @@ export function reasons(body) {
   return errors.map((error) => `\n  [${error.code}] ${error.message}`).join('');
 }
 
+/**
+ * The accounts this token can reach, as lines to append to a failure.
+ *
+ * @remarks Names the mismatch rather than leaving the account id and the token's own scope to be
+ * compared by hand. An id the token can reach is not the configured one, so it is not a secret
+ * this run holds and is printed. A token too narrow to list accounts says so instead.
+ */
+async function reachable(token) {
+  const accounts = await get('/accounts', token);
+  if (accounts.success !== true) {
+    return '\nThis token cannot list accounts either. Check its Permissions are Account, Cloudflare Pages, Edit.';
+  }
+  const found = (accounts.result ?? []).map((entry) => `${entry.name} (${entry.id})`);
+  if (found.length === 0) {
+    return '\nThis token reaches no account at all. Check Account Resources on the token.';
+  }
+  return (
+    `\nThis token reaches: ${found.join(', ')}.` +
+    '\nSet CLOUDFLARE_ACCOUNT_ID to one of those ids, or widen Account Resources on the token.'
+  );
+}
+
 /** Prints a GitHub error annotation, or a plain line elsewhere, and stops. */
 function fail(message) {
   console.error(env.GITHUB_ACTIONS ? `::error::${message}` : `error: ${message}`);
@@ -85,9 +107,8 @@ async function main() {
   const projects = await get(`/accounts/${account}/pages/projects`, token);
   if (projects.success !== true) {
     fail(
-      `The token is in date but cannot reach this account.${reasons(projects)}\n` +
-        'The token and CLOUDFLARE_ACCOUNT_ID must belong to the same Cloudflare account. ' +
-        "Compare Account Resources on the token against that account's Account ID.",
+      `The token is in date but cannot reach this account's Pages.${reasons(projects)}` +
+        `${await reachable(token)}`,
     );
   }
 
