@@ -770,11 +770,16 @@ class AxysWorkspace implements Workspace {
    * project contract has since changed leaves the editor empty rather than showing a failure over
    * an empty canvas. The caller decides what becomes of the copy. `id` is the copy's own, which
    * the project goes on saving to.
+   *
+   * Only a document the core refuses answers `false`, since the caller deletes that copy. A copy
+   * that reads but fails to open for another reason, such as the audio engine going away while
+   * it opened, answers `true` and stays stored for the next launch.
    */
   async restoreProjectJson(json: string, id: string): Promise<boolean> {
+    let migrated: string;
     try {
-      await this.#openProject(this.#core.readProject(json).json, id);
-      return true;
+      migrated = this.#core.readProject(json).json;
+      this.#core.openSession(migrated).free();
     } catch {
       this.#store.update({
         phase: 'empty',
@@ -783,6 +788,16 @@ class AxysWorkspace implements Workspace {
       });
       return false;
     }
+    try {
+      await this.#openProject(migrated, id);
+    } catch {
+      this.#store.update({
+        phase: this.#session ? 'ready' : 'empty',
+        message: null,
+        analysis: { running: false, progress: 0, stage: '' },
+      });
+    }
+    return true;
   }
 
   /**
