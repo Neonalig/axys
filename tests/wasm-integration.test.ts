@@ -474,6 +474,131 @@ describe('wasm boundary', () => {
     }
   });
 
+  it('puts a second clip on the lane as one undo step and exports both', () => {
+    const scoped = core.Session.create(samples, sampleRate, 'lane', analysis, '');
+    try {
+      const clip = scoped.addClip(
+        samples,
+        'second.wav',
+        analysis.trackJson(),
+        analysis.blobsJson(),
+        '',
+        100,
+      );
+      expect(clip).toBe(1);
+      expect((JSON.parse(scoped.historyJson()) as HistoryJson).undo).toBe('Import Clip');
+      const plans = JSON.parse(scoped.clipPlansJson()) as { clip: number; position: number }[];
+      expect(plans.map((entry) => entry.position)).toEqual([0, 100]);
+      const duration = samples.length / sampleRate;
+      expect(scoped.outputFrames()).toBe(Math.round((100 + duration) * sampleRate));
+
+      // Blobs read back in project seconds, the second clip's numbered for it.
+      const blobs = JSON.parse(scoped.blobsJson()) as BlobJson[];
+      const later = blobs.filter((blob) => blob.id >= 2 ** 20);
+      expect(later.length).toBeGreaterThan(0);
+      expect(at(later, 0).start).toBeGreaterThanOrEqual(100);
+
+      expect(scoped.undo()).toBe(true);
+      expect(JSON.parse(scoped.clipPlansJson())).toHaveLength(1);
+      expect(scoped.redo()).toBe(true);
+      expect(JSON.parse(scoped.clipPlansJson())).toHaveLength(2);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('refuses a second clip at another sample rate', () => {
+    const scoped = core.Session.create(samples, sampleRate, 'lane', analysis, '');
+    try {
+      const track = JSON.parse(analysis.trackJson()) as { sampleRate: number };
+      track.sampleRate = sampleRate / 2;
+      expect(() =>
+        scoped.addClip(samples, 'other.wav', JSON.stringify(track), analysis.blobsJson(), '', 0),
+      ).toThrow(/Hz/);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('keeps a reference in the document without taking its audio', () => {
+    const scoped = core.Session.create(samples, sampleRate, 'lane', analysis, '');
+    let reopened: TestCore['Session']['prototype'] | null = null;
+    try {
+      const source = {
+        name: 'backing.mp3',
+        sampleRate,
+        channels: 2,
+        frames: 48_000,
+        duration: 1,
+        fingerprint: '0123456789abcdef',
+        mime: null,
+      };
+      const id = scoped.addReference(JSON.stringify(source), 2.5);
+      const media = JSON.parse(scoped.mediaJson()) as {
+        references: { id: number; position: number }[];
+      };
+      expect(media.references).toEqual([expect.objectContaining({ id, position: 2.5 })]);
+
+      reopened = reopenProject(core, scoped.projectJson(''), samples);
+      const state = JSON.parse(reopened.stateJson()) as { references: { id: number }[] };
+      expect(state.references.map((reference) => reference.id)).toEqual([id]);
+      // A reference is heard, never rendered: the export is the vocal alone.
+      expect(reopened.outputFrames()).toBe(scoped.outputFrames());
+    } finally {
+      reopened?.free();
+      scoped.free();
+    }
+  });
+
+  it('migrates a single-source document to one clip', () => {
+    const scoped = core.Session.create(samples, sampleRate, 'old', analysis, '');
+    try {
+      const current = JSON.parse(scoped.projectJson('')) as {
+        clips: { source: unknown; analysis: unknown; track: unknown }[];
+        edits: { clips: { blobs: unknown }[]; mixer: { click: unknown } };
+        base: { clips: { blobs: unknown }[]; mixer: { click: unknown } };
+      } & Record<string, unknown>;
+      const media = at(current.clips, 0);
+      const strip = { gainDb: 0, pan: 0, mute: false, solo: false };
+      const desk = { processed: strip, original: { ...strip, mute: true }, click: strip };
+      const old = {
+        ...current,
+        schemaVersion: 1,
+        source: media.source,
+        analysis: media.analysis,
+        track: media.track,
+        clips: undefined,
+        references: undefined,
+        edits: {
+          ...current.edits,
+          clips: undefined,
+          blobs: at(current.edits.clips, 0).blobs,
+          mixer: desk,
+        },
+        base: {
+          ...current.base,
+          clips: undefined,
+          blobs: at(current.base.clips, 0).blobs,
+          mixer: desk,
+        },
+      };
+      const migrated = JSON.parse(core.migrateProject(JSON.stringify(old))) as {
+        schemaVersion: number;
+        edits: { clips: unknown[] };
+      };
+      expect(migrated.schemaVersion).toBe(core.schemaVersion());
+      expect(migrated.edits.clips).toHaveLength(1);
+      const reopened = reopenProject(core, JSON.stringify(migrated), samples);
+      try {
+        expect(reopened.blobsJson()).toBe(scoped.blobsJson());
+      } finally {
+        reopened.free();
+      }
+    } finally {
+      scoped.free();
+    }
+  });
+
   it('renders the requested number of samples through PlaybackRenderer', () => {
     const renderer = core.PlaybackRenderer.create(
       samples,
