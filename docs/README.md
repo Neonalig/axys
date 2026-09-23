@@ -10,5 +10,6 @@
 | [web_contracts.md](web_contracts.md)   | The public TypeScript modules and APIs `web/src` must implement.               |
 | [testing.md](testing.md)               | What is checked automatically, what has to be listened to, and the envelope.   |
 | [deployment.md](deployment.md)         | How a build is produced and hosted.                                            |
+| [ui_text.md](ui_text.md)               | How every label, tooltip, dialog, toast and message is worded.                 |
 
 Where two disagree, the design bible wins and the other is the defect.
