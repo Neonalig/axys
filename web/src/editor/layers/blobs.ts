@@ -176,7 +176,7 @@ export function evaluateCurve(curve: PitchCurve, seconds: number): number | null
  */
 export function targetMidiAt(blob: Blob, seconds: number, detected: number): number {
   const drawn = evaluateCurve(blob.curve, seconds);
-  return drawn ?? detected + blob.pitchOffset;
+  return (drawn ?? detected) + blob.pitchOffset;
 }
 
 /**

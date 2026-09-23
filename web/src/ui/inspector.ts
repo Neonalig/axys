@@ -910,7 +910,6 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted - blob.detectedCenter,
-        anchors: true,
       }));
     });
 
@@ -921,7 +920,6 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted,
-        anchors: true,
       }));
     });
 
@@ -932,7 +930,6 @@ export class Inspector {
         type: 'setPitchOffset',
         blob: blob.id,
         semitones: wanted / 100,
-        anchors: true,
       }));
     });
 

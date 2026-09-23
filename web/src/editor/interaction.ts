@@ -309,7 +309,9 @@ export class EditorController {
           continue;
         }
         const ax = viewport.timeToX(sourceToOutput(blob, anchor.time));
-        const ay = viewport.midiToY(anchor.midi);
+        // An anchor is heard, and drawn, with its blob's offset added.
+        const heard = anchor.midi + blob.pitchOffset;
+        const ay = viewport.midiToY(heard);
         if (Math.hypot(ax - x, ay - y) <= ANCHOR_RADIUS) {
           return {
             ...base,
@@ -317,7 +319,7 @@ export class EditorController {
             blob: blob.id,
             anchor: index,
             sourceTime: anchor.time,
-            midi: anchor.midi,
+            midi: heard,
           };
         }
       }
@@ -462,7 +464,7 @@ export class EditorController {
           time: point.time,
           midi: point.midi + semitones,
         },
-        `Anchor ${noteNameWithCents(point.midi + semitones, this.#accidentals())}`,
+        `Anchor ${noteNameWithCents(point.midi + blob.pitchOffset + semitones, this.#accidentals())}`,
       );
       return;
     }
@@ -470,7 +472,7 @@ export class EditorController {
       return;
     }
     this.#commit(
-      { type: 'movePitch', blobs: [...selection.blobs], semitones, anchors: true },
+      { type: 'movePitch', blobs: [...selection.blobs], semitones },
       `Move Pitch ${formatSemitones(semitones)}`,
     );
   }
@@ -500,12 +502,19 @@ export class EditorController {
     const selection = this.#store.state.selection;
     const anchor = selection.anchors[0];
     if (selection.blobs.length === 0 && anchor !== undefined) {
-      const point = this.#blob(anchor.blob)?.curve.anchors[anchor.index];
-      if (point === undefined) {
+      const owner = this.#blob(anchor.blob);
+      const point = owner?.curve.anchors[anchor.index];
+      if (owner === undefined || point === undefined) {
         return;
       }
       this.#commit(
-        { type: 'moveAnchor', blob: anchor.blob, index: anchor.index, time: point.time, midi },
+        {
+          type: 'moveAnchor',
+          blob: anchor.blob,
+          index: anchor.index,
+          time: point.time,
+          midi: midi - owner.pitchOffset,
+        },
         `Anchor ${noteNameWithCents(midi, this.#accidentals())}`,
       );
       return;
@@ -517,7 +526,7 @@ export class EditorController {
     if (selection.blobs.length === 1) {
       const semitones = midi - first.detectedCenter;
       this.#commit(
-        { type: 'setPitchOffset', blob: first.id, semitones, anchors: true },
+        { type: 'setPitchOffset', blob: first.id, semitones },
         `Move Pitch ${noteNameWithCents(midi, this.#accidentals())}`,
       );
       return;
@@ -527,7 +536,7 @@ export class EditorController {
       return;
     }
     this.#commit(
-      { type: 'movePitch', blobs: [...selection.blobs], semitones: delta, anchors: true },
+      { type: 'movePitch', blobs: [...selection.blobs], semitones: delta },
       `Move Pitch ${formatSemitones(delta)}`,
     );
   }
@@ -1530,7 +1539,6 @@ export class EditorController {
               type: 'movePitch',
               blobs: gesture.blobs,
               semitones: gesture.semitones,
-              anchors: true,
             },
             `Move Pitch ${formatSemitones(gesture.semitones)}`,
           );
@@ -1543,7 +1551,8 @@ export class EditorController {
             blob: gesture.blob,
             index: gesture.index,
             time: gesture.time,
-            midi: gesture.midi,
+            // Dragged in heard pitch, stored without the blob's offset.
+            midi: gesture.midi - (this.#blob(gesture.blob)?.pitchOffset ?? 0),
           },
           `Anchor ${noteNameWithCents(gesture.midi, this.#accidentals())}`,
         );
@@ -1845,7 +1854,8 @@ export class EditorController {
       const anchors = gestureAnchors(
         inside.map((point) => ({
           time: clamp(outputToSource(blob, point.time), blob.start, blob.end),
-          midi: point.midi,
+          // Drawn in heard pitch; the blob's offset is added again when it is heard.
+          midi: point.midi - blob.pitchOffset,
         })),
         interp,
       );

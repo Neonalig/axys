@@ -290,6 +290,21 @@ name.
   inside the blob and makes "strength 0.5 moves halfway" exactly observable.
 - **A drawn curve replaces the corrected target rather than adding to it**, but the blob's own pitch
   offset still translates it, so moving a blob moves its drawn contour with it.
+
+### A drawn curve is stored without its blob's offset
+
+A blob with a curve is heard at the curve plus its pitch offset, so the offset is what carries a
+drawing when the blob moves in pitch. Moving the blob also transposed its anchors, to keep the
+handles under the line they had been drawn on, and the move was heard twice: a semitone up sounded
+two. The anchors now stay where they are and the editor adds the offset wherever it reads one: the
+handles are drawn and hit at the curve plus the offset, and a stroke, an anchor drag or a typed
+anchor pitch has the offset taken off before it is stored. `ReplacePitch` already worked this way.
+
+`MovePitch` and `SetPitchOffset` still read the `anchors` field a history may carry and ignore it,
+so a history recorded with it replays with each move heard once, as it was asked for. A `DrawSpan`
+recorded over a moved blob stored the drawn pitch as it was drawn, so it replays sounding as it
+did then, the offset above the line that was drawn.
+
 - **The time map stretches the gaps between blobs** to absorb blob moves and forces each point
   strictly past the previous one, so the map stays monotone and invertible.
 - **Undo is re-derivation, not an inverse patch.** `History` stores operations; the session replays

@@ -633,7 +633,7 @@ function drawAnchors(
       if (x < -6 || x > viewport.width + 6) {
         continue;
       }
-      const y = viewport.midiToY(anchor.midi);
+      const y = viewport.midiToY(anchor.midi + blob.pitchOffset);
       const active = selected.has(`${blob.id}:${index}`);
       ctx.fillStyle = active ? theme.handleActive : theme.pitchTarget;
       ctx.strokeStyle = theme.bg;

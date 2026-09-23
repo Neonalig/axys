@@ -401,6 +401,7 @@ export type EditOp =
   | { type: 'joinBlobs'; first: BlobId; second: BlobId }
   | { type: 'moveBoundary'; blob: BlobId; edge: Edge; time: number }
   | { type: 'setVoicing'; blob: BlobId; start: number; end: number; voicing: Voicing }
+  /** `anchors` is only ever read from a recorded history, and the core ignores it. */
   | { type: 'movePitch'; blobs: BlobId[]; semitones: number; anchors?: boolean }
   | { type: 'setPitchOffset'; blob: BlobId; semitones: number; anchors?: boolean }
   | { type: 'moveTime'; blobs: BlobId[]; seconds: number }

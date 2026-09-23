@@ -92,7 +92,11 @@ pub enum EditOp {
         blobs: Vec<BlobId>,
         /// Relative transposition in semitones.
         semitones: f64,
-        /// Moves the blobs' drawn anchors by the same amount.
+        /// Read from recorded histories and otherwise ignored.
+        ///
+        /// A drawn curve is heard with the blob's offset added, so the offset alone already moves
+        /// it. Histories recorded while this also transposed the anchors replay with the move
+        /// heard once rather than twice.
         #[serde(default, skip_serializing_if = "is_false")]
         anchors: bool,
     },
@@ -102,7 +106,7 @@ pub enum EditOp {
         blob: BlobId,
         /// Absolute transposition in semitones.
         semitones: f64,
-        /// Moves the blob's drawn anchors by as much as the transposition changes.
+        /// Read from recorded histories and otherwise ignored, as for [`EditOp::MovePitch`].
         #[serde(default, skip_serializing_if = "is_false")]
         anchors: bool,
     },
@@ -660,31 +664,20 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
                 .set_voicing(*blob, start - offset, end - offset, *voicing)?;
         }
         EditOp::MovePitch {
-            blobs,
-            semitones,
-            anchors,
+            blobs, semitones, ..
         } => {
             let semitones = finite(*semitones, "pitch move")?;
             for id in require_all(state, blobs)? {
                 if let Some(b) = state.blob_mut(id) {
                     b.pitch_offset += semitones;
-                    if *anchors {
-                        b.curve = b.curve.transposed(semitones);
-                    }
                 }
             }
         }
         EditOp::SetPitchOffset {
-            blob,
-            semitones,
-            anchors,
+            blob, semitones, ..
         } => {
             let semitones = finite(*semitones, "pitch offset")?;
-            let b = blob_mut(state, *blob)?;
-            if *anchors {
-                b.curve = b.curve.transposed(semitones - b.pitch_offset);
-            }
-            b.pitch_offset = semitones;
+            blob_mut(state, *blob)?.pitch_offset = semitones;
         }
         EditOp::MoveTime { blobs, seconds } => {
             let seconds = finite(*seconds, "time move")?;
@@ -1698,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_pitch_carries_drawn_anchors_when_asked() {
+    fn a_recorded_anchor_flag_leaves_the_drawing_to_the_offset() {
         let mut s = state();
         apply(
             &mut s,
@@ -1709,28 +1702,67 @@ mod tests {
             },
         )
         .unwrap();
-        let moved = |anchors: bool| EditOp::MovePitch {
-            blobs: vec![BlobId(1)],
-            semitones: 2.0,
-            anchors,
-        };
-        apply(&mut s, None, &moved(false)).unwrap();
-        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 60.0);
-        apply(&mut s, None, &moved(true)).unwrap();
-        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 62.0);
-        apply(
-            &mut s,
-            None,
-            &EditOp::SetPitchOffset {
-                blob: BlobId(1),
-                semitones: 1.0,
-                anchors: true,
-            },
+        let recorded: EditOp = serde_json::from_str(
+            r#"{ "type": "movePitch", "blobs": [1], "semitones": 2, "anchors": true }"#,
         )
         .unwrap();
+        apply(&mut s, None, &recorded).unwrap();
         let blob = s.blob(BlobId(1)).unwrap();
-        assert_eq!(blob.pitch_offset, 1.0);
-        assert_eq!(blob.curve.anchors()[0].midi, 59.0);
+        assert_eq!(blob.pitch_offset, 2.0);
+        assert_eq!(blob.curve.anchors()[0].midi, 60.0);
+    }
+
+    /// The target the plan compiles for blob 1 at `time`, over a flat track at 60.
+    fn heard_at(state: &EditState, time: f64) -> f64 {
+        let track = steady_track(60.0);
+        let clip = &state.clips[0];
+        let plan = crate::target::compile_plan(&crate::target::PlanInputs {
+            track: &track,
+            blobs: &clip.blobs,
+            silenced: &[],
+            sample_rate: 48_000.0,
+            duration: 2.0,
+            scale: &state.scale,
+            modulation: &state.modulation,
+            formant: state.formant,
+            guide: None,
+            hop: 0.005,
+        })
+        .unwrap();
+        f64::from(plan.target_midi.at(time))
+    }
+
+    #[test]
+    fn moving_a_drawn_blob_moves_what_it_sounds_by_exactly_the_amount_asked() {
+        for anchors in [false, true] {
+            let mut s = state();
+            let draw = EditOp::DrawSpan {
+                blob: BlobId(1),
+                anchors: vec![Anchor::new(0.0, 62.0), Anchor::new(1.0, 62.0)],
+            };
+            apply(&mut s, None, &draw).unwrap();
+            assert!((heard_at(&s, 0.5) - 62.0).abs() < 1e-4);
+            let moved = EditOp::MovePitch {
+                blobs: vec![BlobId(1)],
+                semitones: 1.0,
+                anchors,
+            };
+            apply(&mut s, None, &moved).unwrap();
+            assert!(
+                (heard_at(&s, 0.5) - 63.0).abs() < 1e-4,
+                "anchors: {anchors}"
+            );
+            let set = EditOp::SetPitchOffset {
+                blob: BlobId(1),
+                semitones: 3.0,
+                anchors,
+            };
+            apply(&mut s, None, &set).unwrap();
+            assert!(
+                (heard_at(&s, 0.5) - 65.0).abs() < 1e-4,
+                "anchors: {anchors}"
+            );
+        }
     }
 
     #[test]
