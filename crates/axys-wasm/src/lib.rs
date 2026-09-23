@@ -17,7 +17,8 @@ use axys_core::analysis::energy::{
     analyse_energy, observe_energy, EnergyFrames, EnergyGrid, EnergyTrack,
 };
 use axys_core::analysis::f0::{
-    decode_f0, detect_f0, observe_f0, F0Candidates, F0Frames, F0Params, PitchFrame, PitchTrack,
+    decode_f0, detect_f0, observe_f0, voicing_threshold, F0Candidates, F0Frames, F0Params,
+    PitchFrame, PitchTrack,
 };
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
@@ -194,10 +195,18 @@ pub struct Analysis {
     track: PitchTrack,
     energy: EnergyTrack,
     blobs: BlobSet,
+    /// The voicing threshold decoding used, which differs from the one asked for when YIN
+    /// raised it to suit the clip.
+    threshold: f64,
 }
 
 #[wasm_bindgen]
 impl Analysis {
+    /// The voicing threshold decoding used.
+    pub fn threshold(&self) -> f64 {
+        self.threshold
+    }
+
     /// Frame times in seconds.
     pub fn times(&self) -> Vec<f32> {
         self.track.to_arrays().times
@@ -244,7 +253,11 @@ impl Analysis {
 #[wasm_bindgen]
 pub fn analyse(samples: &[f32], sample_rate: f64, params_json: &str) -> Result<Analysis, JsValue> {
     let params = AnalysisParams::from_json(params_json)?;
-    let track = detect_f0(samples, sample_rate, &params.f0).map_err(to_js)?;
+    let layout = F0Frames::new(samples.len(), sample_rate, &params.f0).map_err(to_js)?;
+    let candidates =
+        observe_f0(&layout, &params.f0, samples, 0, 0..layout.count()).map_err(to_js)?;
+    let track = decode_f0(&layout, &params.f0, &candidates).map_err(to_js)?;
+    let threshold = voicing_threshold(&candidates, &params.f0);
     let energy = analyse_energy(
         samples,
         sample_rate,
@@ -252,7 +265,7 @@ pub fn analyse(samples: &[f32], sample_rate: f64, params_json: &str) -> Result<A
         params.f0.hop_seconds,
     )
     .map_err(to_js)?;
-    finish_analysis(track, energy, &params)
+    finish_analysis(track, energy, &params, threshold)
 }
 
 /// Segments a pitch and energy track into provisional blobs.
@@ -260,12 +273,14 @@ fn finish_analysis(
     track: PitchTrack,
     energy: EnergyTrack,
     params: &AnalysisParams,
+    threshold: f64,
 ) -> Result<Analysis, JsValue> {
     let blobs = segment(&track, &energy, &params.segment).map_err(to_js)?;
     Ok(Analysis {
         track,
         energy,
         blobs,
+        threshold,
     })
 }
 
@@ -429,9 +444,10 @@ pub fn analyse_spans(
     let candidates =
         F0Candidates::from_parts(freq, dprime, cost, counts, rms, unvoiced).map_err(to_js)?;
     let track = decode_f0(&layouts.f0, &params.f0, &candidates).map_err(to_js)?;
+    let threshold = voicing_threshold(&candidates, &params.f0);
     let frames = EnergyFrames::from_parts(energy_rms, flux, zcr).map_err(to_js)?;
     let energy = layouts.energy.finish(frames).map_err(to_js)?;
-    finish_analysis(track, energy, &params)
+    finish_analysis(track, energy, &params, threshold)
 }
 
 /// What an export of one output range would produce, measured before encoding.

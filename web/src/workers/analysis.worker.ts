@@ -104,6 +104,7 @@ async function run(request: AnalyseRequest): Promise<void> {
         trackJson,
         energyJson,
         blobsJson,
+        threshold: analysis.threshold(),
         times,
         midi,
         confidence,

@@ -50,6 +50,9 @@ export interface DialogOptions {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/** Where a press leaves a non-blocking panel open. */
+const KEEPS_PANEL_OPEN = '.axys-canvas-area, .axys-toolbar, .axys-mixer, .axys-menu';
+
 /** Distance in pixels a panel is kept from the viewport edge while it is dragged. */
 const MARGIN = 8;
 
@@ -330,10 +333,11 @@ export class Dialog {
 
   #onOutside = (event: Event): void => {
     if (event.target instanceof Node && !this.#element.contains(event.target)) {
-      // Only a press on another panel or on the page chrome dismisses it; the editor canvas is
-      // where this panel's result is shown, so pressing there is part of using it.
+      // Only a press on another panel or elsewhere on the page dismisses it. The canvas shows
+      // this panel's result, and the toolbar and mixer play it, so pressing there is part of
+      // using it, and a menu open from one of its drop-downs belongs to it.
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('.axys-canvas-area') === null) {
+      if (target?.closest(KEEPS_PANEL_OPEN) === null) {
         this.close();
       }
     }

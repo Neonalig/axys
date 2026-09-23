@@ -530,18 +530,23 @@ pub fn decode_f0(
             layout.count
         )));
     }
-    let threshold = if params.auto_threshold && params.method == F0Method::Yin {
-        clip_threshold(candidates, params)
-    } else {
-        params.threshold
-    };
-    let states = decode(candidates, threshold);
+    let states = decode(candidates, voicing_threshold(candidates, params));
     let hop_seconds = layout.hop_seconds();
     Ok(PitchTrack {
         sample_rate: layout.sample_rate,
         hop_seconds,
         frames: candidates.to_frames(&states, hop_seconds),
     })
+}
+
+/// The voicing threshold decoding uses: YIN's own, raised to suit the clip when
+/// `auto_threshold` is set.
+pub fn voicing_threshold(candidates: &F0Candidates, params: &F0Params) -> f64 {
+    if params.auto_threshold && params.method == F0Method::Yin {
+        clip_threshold(candidates, params)
+    } else {
+        params.threshold
+    }
 }
 
 /// Fraction of the clip's 95th percentile frame RMS above which a frame counts as sung.

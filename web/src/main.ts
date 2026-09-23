@@ -78,6 +78,7 @@ import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
 import { openImportPanel, storedAnalysis } from './ui/import-dialog.js';
+import type { AnalysisOutcome } from './ui/import-dialog.js';
 import { sourceMenu } from './ui/sources-menu.js';
 import type { MenuEntry } from './ui/menu.js';
 import type { IconName } from './ui/icons.js';
@@ -207,6 +208,8 @@ class AxysWorkspace implements Workspace {
   #missing: MissingMedia = { clips: [], references: [] };
   /** Each reference's channels at the project rate, kept so the engine can be handed copies. */
   readonly #references = new Map<ReferenceId, Float32Array[]>();
+  /** The voicing threshold the latest analysis used, which Auto Threshold may have raised. */
+  #lastThreshold = 0;
   /** Each clip's detected pitch in its own source seconds, read once for drawing it behind. */
   readonly #clipTracks = new Map<ClipId, PitchTrackArrays>();
   #importing = false;
@@ -518,13 +521,13 @@ class AxysWorkspace implements Workspace {
       what: describeFiles(files),
       askRole: false,
       importVocals: async (params) => {
-        if (!(await this.#startProject(first, params))) return false;
+        if (!(await this.#startProject(first, params))) return null;
         clips.push(0);
         for (const file of rest) {
           const added = await this.importClipFile(file, undefined, 'free', params);
           if (added !== null) clips.push(added.clip);
         }
-        return true;
+        return this.#outcome(clips);
       },
       importReferences: () => Promise.resolve(),
       analyse: (params) => this.#reanalyseClips(clips, params),
@@ -576,9 +579,9 @@ class AxysWorkspace implements Workspace {
    * @remarks Resolves with how many blobs the clips now hold. A clip already edited is refused,
    * with the reason reported.
    */
-  async #reanalyseClips(clips: readonly ClipId[], params: F0Params): Promise<number> {
+  async #reanalyseClips(clips: readonly ClipId[], params: F0Params): Promise<AnalysisOutcome> {
     const session = this.#session;
-    if (!session) return 0;
+    if (!session) return this.#outcome(clips);
     this.#importing = true;
     try {
       const rate = session.sampleRate();
@@ -607,9 +610,15 @@ class AxysWorkspace implements Workspace {
     } finally {
       this.#importing = false;
     }
-    return (this.#session?.state().clips ?? [])
+    return this.#outcome(clips);
+  }
+
+  /** How many blobs some clips hold, and the threshold their latest analysis used. */
+  #outcome(clips: readonly ClipId[]): AnalysisOutcome {
+    const blobs = (this.#session?.state().clips ?? [])
       .filter((clip) => clips.includes(clip.id))
       .reduce((total, clip) => total + clip.blobs.blobs.length, 0);
+    return { blobs, threshold: this.#lastThreshold };
   }
 
   /** Takes imported clips back: undone where they were the last edit, removed otherwise. */
@@ -763,7 +772,7 @@ class AxysWorkspace implements Workspace {
           clips.push(added.clip);
           if (position === null || ripple) next = added.end;
         }
-        return clips.length > 0;
+        return clips.length > 0 ? this.#outcome(clips) : null;
       },
       importReferences: async () => {
         for (const file of files) await this.importReferenceFile(file, position ?? 0);
@@ -890,9 +899,14 @@ class AxysWorkspace implements Workspace {
     trackJson: string;
     blobsJson: string;
   }> {
-    return await this.#analysis.analyse({ samples, sampleRate, name, f0 }, (stage, progress) => {
-      this.#progress(stage, progress);
-    });
+    const result = await this.#analysis.analyse(
+      { samples, sampleRate, name, f0 },
+      (stage, progress) => {
+        this.#progress(stage, progress);
+      },
+    );
+    this.#lastThreshold = result.threshold;
+    return result;
   }
 
   #importFailed(operation: string, error: unknown): void {

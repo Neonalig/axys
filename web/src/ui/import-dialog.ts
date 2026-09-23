@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Import Audio, as a floating panel in two steps.
+ * Import Audio, as floating panels.
  *
- * The first asks whether the audio is a vocal or a reference. Choosing Vocal imports it and turns
- * the panel into the analysis step, where the pitch method and its settings are changed and the
- * vocal is analysed again as they move, so the blobs and playback follow the settings while the
- * panel is open. Apply keeps the result and remembers the settings for the next import; Cancel
- * takes the import back.
+ * The first asks whether the audio is a vocal or a reference. Choosing Vocal imports it, and once
+ * it has loaded the analysis panel opens, where the pitch method and its settings are changed and
+ * the vocal is analysed again as they move, so the blobs and playback follow the settings while
+ * the panel is open. Apply keeps the result and remembers the settings for the next import;
+ * Cancel takes the import back.
  */
 
 import { Dialog } from './dialog.js';
@@ -55,122 +55,103 @@ function storeAnalysis(params: F0Params): void {
   }
 }
 
-/** What the panel asks of the workspace. */
+/** What an analysis of the imported vocals came to. */
+export interface AnalysisOutcome {
+  /** Blobs the vocals now hold. */
+  blobs: number;
+  /** The voicing threshold decoding used, which Auto Threshold may have raised. */
+  threshold: number;
+}
+
+/** What the panels ask of the workspace. */
 export interface ImportPanelHooks {
   /** Names what is being imported: a file's title, or a count of files. */
   what: string;
-  /** Whether to ask vocal or reference first. Without it the panel opens on the analysis step. */
+  /** Whether to ask vocal or reference first. Without it the import starts at once. */
   askRole: boolean;
-  /** Imports the audio as vocals, analysed with `params`. Resolves false when nothing came in. */
-  importVocals(params: F0Params): Promise<boolean>;
+  /** Imports the audio as vocals, analysed with `params`. `null` when nothing came in. */
+  importVocals(params: F0Params): Promise<AnalysisOutcome | null>;
   /** Imports the audio as references. */
   importReferences(): Promise<void>;
-  /** Analyses the imported vocals again. Resolves with how many blobs they now hold. */
-  analyse(params: F0Params): Promise<number>;
+  /** Analyses the imported vocals again. */
+  analyse(params: F0Params): Promise<AnalysisOutcome>;
   /** Takes the import back. */
   cancel(): void;
 }
 
-/** Opens Import Audio. */
-export function openImportPanel(hooks: ImportPanelHooks): Dialog {
-  let settled = false;
-  let settings: (() => F0Params) | null = null;
-  const content = document.createElement('div');
-  content.className = 'axys-panel';
-
-  const dialog = Dialog.open({
-    title: 'Import Audio',
-    icon: 'import',
-    content,
-    blocking: false,
-    onClose: () => {
-      // Closing keeps what was imported and its settings; only Cancel takes it back.
-      if (!settled && settings !== null) storeAnalysis(settings());
-    },
-  });
-
-  const analysisStep = async (): Promise<void> => {
+/** Starts Import Audio: the vocal or reference question, or the vocal import itself. */
+export function openImportPanel(hooks: ImportPanelHooks): void {
+  const importVocals = async (): Promise<void> => {
     const params = storedAnalysis();
-    const status = document.createElement('p');
-    status.className = 'axys-hint';
-    status.textContent = 'Analysing';
-    content.replaceChildren(status);
-    dialog.setActions([]);
-    const ok = await hooks.importVocals(params);
-    if (!ok) {
-      settled = true;
-      dialog.close();
-      return;
-    }
-    settings = showSettings(content, dialog, params, status, hooks, () => {
-      settled = true;
-    });
+    const outcome = await hooks.importVocals(params);
+    if (outcome !== null) openAnalysisPanel(params, outcome, hooks);
   };
-
   if (!hooks.askRole) {
-    void analysisStep();
-    return dialog;
+    void importVocals();
+    return;
   }
-
   const question = document.createElement('p');
   question.className = 'axys-hint';
   question.textContent = `Import ${hooks.what} as a vocal or a reference?`;
-  content.append(question);
-  dialog.setActions([
-    {
-      label: 'Cancel',
-      onSelect: () => {
-        settled = true;
-        dialog.close();
+  Dialog.open({
+    title: 'Import Audio',
+    icon: 'import',
+    content: question,
+    blocking: false,
+    actions: [
+      {
+        label: 'Cancel',
+        onSelect: (dialog) => {
+          dialog.close();
+        },
       },
-    },
-    {
-      label: 'Reference',
-      onSelect: () => {
-        settled = true;
-        dialog.close();
-        void hooks.importReferences();
+      {
+        label: 'Reference',
+        onSelect: (dialog) => {
+          dialog.close();
+          void hooks.importReferences();
+        },
       },
-    },
-    {
-      label: 'Vocal',
-      kind: 'primary',
-      onSelect: () => {
-        void analysisStep();
+      {
+        label: 'Vocal',
+        kind: 'primary',
+        onSelect: (dialog) => {
+          // The panel goes while the audio loads, since nothing in it can change until then.
+          dialog.close();
+          void importVocals();
+        },
       },
-    },
-  ]);
-  return dialog;
+    ],
+  });
 }
 
-/** Fills the panel with the method and its settings, analysing again as they change. */
-function showSettings(
-  content: HTMLElement,
-  dialog: Dialog,
+/** Opens the analysis panel over vocals already imported with `initial`. */
+function openAnalysisPanel(
   initial: F0Params,
-  status: HTMLElement,
+  first: AnalysisOutcome,
   hooks: ImportPanelHooks,
-  onSettled: () => void,
-): () => F0Params {
+): void {
   // Each method reads its setting its own way, so each keeps its own value.
   let chosen: F0Method = initial.method ?? 'yin';
   let yinThreshold = chosen === 'pyin' ? DEFAULT_F0.threshold : initial.threshold;
   let pyinMean = chosen === 'pyin' ? initial.threshold : DEFAULT_F0.threshold;
-  let strengthValue = initial.strength ?? DEFAULT_F0.strength ?? 0.25;
+  let strengthValue = initial.strength ?? 0.25;
   let minHz = initial.minHz;
   let maxHz = initial.maxHz;
+  let settled = false;
+
+  const auto = checkboxInput();
+  auto.checked = initial.autoThreshold ?? false;
   const current = (): F0Params => ({
     ...initial,
     method: chosen,
-    threshold: chosen === 'pyin' ? pyinMean : yinThreshold,
+    // With Auto Threshold the slider shows what the clip chose, and the default is the floor.
+    threshold: chosen === 'pyin' ? pyinMean : auto.checked ? DEFAULT_F0.threshold : yinThreshold,
     strength: strengthValue,
     autoThreshold: auto.checked,
     minHz,
     maxHz,
   });
-
-  const method = selectInput(METHODS.map((entry) => ({ value: entry.value, label: entry.label })));
-  method.value = chosen;
 
   const slider = (
     label: string,
@@ -179,12 +160,15 @@ function showSettings(
     max: number,
     value: number,
     set: (value: number) => void,
-  ): HTMLElement => {
+  ): { row: HTMLElement; input: HTMLInputElement; show(value: number): void } => {
     const input = rangeInput(min, max, 0.01);
-    input.value = String(value);
     const readout = document.createElement('span');
     readout.className = 'axys-readout';
-    readout.textContent = value.toFixed(2);
+    const show = (next: number): void => {
+      input.value = String(next);
+      readout.textContent = next.toFixed(2);
+    };
+    show(value);
     input.addEventListener('input', () => {
       const next = Number.parseFloat(input.value);
       readout.textContent = next.toFixed(2);
@@ -199,7 +183,7 @@ function showSettings(
     pair.className = 'axys-control-pair';
     pair.append(input, readout);
     row.append(caption, pair);
-    return row;
+    return { row, input, show };
   };
 
   const threshold = slider(
@@ -212,10 +196,17 @@ function showSettings(
       yinThreshold = value;
     },
   );
-  const auto = checkboxInput();
-  auto.checked = initial.autoThreshold ?? false;
-  auto.addEventListener('change', schedule);
-  const autoRow = field('Auto Threshold', auto, 'Raise the threshold to suit the recording');
+  const autoRow = field('Auto Threshold', auto, 'Set the threshold to suit the recording');
+  const showAuto = (chose: number): void => {
+    threshold.input.disabled = auto.checked;
+    if (auto.checked) threshold.show(chose);
+  };
+  auto.addEventListener('change', () => {
+    // Turning Auto off keeps the value it chose, as the starting point to fine-tune from.
+    if (!auto.checked) yinThreshold = Number.parseFloat(threshold.input.value);
+    threshold.input.disabled = auto.checked;
+    schedule();
+  });
   const mean = slider(
     'Threshold Mean',
     'Centre of the thresholds pYIN weighs',
@@ -253,14 +244,20 @@ function showSettings(
   low.addEventListener('change', range);
   high.addEventListener('change', range);
 
+  const method = selectInput(METHODS.map((entry) => ({ value: entry.value, label: entry.label })));
+  method.value = chosen;
+  const status = document.createElement('p');
+  status.className = 'axys-hint';
+  const content = document.createElement('div');
+  content.className = 'axys-panel';
   const methodRows = (): HTMLElement[] => {
     switch (chosen) {
       case 'pyin':
-        return [mean];
+        return [mean.row];
       case 'swipe':
-        return [strength];
+        return [strength.row];
       default:
-        return [threshold, autoRow];
+        return [threshold.row, autoRow];
     }
   };
   const layout = (): void => {
@@ -278,6 +275,11 @@ function showSettings(
     schedule();
   });
 
+  const report = (outcome: AnalysisOutcome): void => {
+    status.textContent = `${String(outcome.blobs)} ${outcome.blobs === 1 ? 'blob' : 'blobs'}`;
+    if (chosen === 'yin') showAuto(outcome.threshold);
+  };
+
   let timer = 0;
   let running = false;
   let queued = false;
@@ -289,8 +291,7 @@ function showSettings(
     running = true;
     status.textContent = 'Analysing';
     try {
-      const blobs = await hooks.analyse(current());
-      status.textContent = `${String(blobs)} ${blobs === 1 ? 'blob' : 'blobs'}`;
+      report(await hooks.analyse(current()));
     } catch {
       status.textContent = 'Analysis failed';
     } finally {
@@ -309,27 +310,37 @@ function showSettings(
   }
 
   layout();
-  status.textContent = '';
-  dialog.setActions([
-    {
-      label: 'Cancel',
-      onSelect: () => {
-        onSettled();
-        window.clearTimeout(timer);
-        hooks.cancel();
-        dialog.close();
+  report(first);
+  showAuto(first.threshold);
+  Dialog.open({
+    title: 'Import Audio',
+    icon: 'import',
+    content,
+    blocking: false,
+    actions: [
+      {
+        label: 'Cancel',
+        onSelect: (dialog) => {
+          settled = true;
+          window.clearTimeout(timer);
+          hooks.cancel();
+          dialog.close();
+        },
       },
-    },
-    {
-      label: 'Apply',
-      kind: 'primary',
-      onSelect: () => {
-        onSettled();
-        window.clearTimeout(timer);
-        storeAnalysis(current());
-        dialog.close();
+      {
+        label: 'Apply',
+        kind: 'primary',
+        onSelect: (dialog) => {
+          settled = true;
+          window.clearTimeout(timer);
+          storeAnalysis(current());
+          dialog.close();
+        },
       },
+    ],
+    onClose: () => {
+      // Closing keeps what was imported and its settings; only Cancel takes it back.
+      if (!settled) storeAnalysis(current());
     },
-  ]);
-  return current;
+  });
 }

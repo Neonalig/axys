@@ -64,6 +64,8 @@ export interface AnalysisResult {
   trackJson: string;
   energyJson: string;
   blobsJson: string;
+  /** The voicing threshold decoding used, raised from the one asked for by Auto Threshold. */
+  threshold: number;
   times: Float32Array;
   midi: Float32Array;
   confidence: Float32Array;
