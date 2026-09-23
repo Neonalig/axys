@@ -11,6 +11,9 @@ export default defineConfig({
     __AXYS_VERSION__: JSON.stringify('test'),
     __AXYS_REVISION__: JSON.stringify('test'),
     __AXYS_REPOSITORY__: JSON.stringify('https://example.invalid/axys'),
+    __AXYS_SIGNATURE__: JSON.stringify(''),
+    __AXYS_OFFICIAL_REPOSITORY__: JSON.stringify('https://example.invalid/axys'),
+    __AXYS_OFFICIAL_KEY__: JSON.stringify(''),
   },
   test: {
     environment: 'node',

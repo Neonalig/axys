@@ -9,6 +9,9 @@
 
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
+import { checkProvenance } from '../app/provenance.js';
+import type { Provenance } from '../app/provenance.js';
+import { browserLabel } from '../browser.js';
 import { probeCapabilities } from '../capabilities.js';
 import { coreLoadReport } from '../core/wasm.js';
 import { Dialog } from './dialog.js';
@@ -65,7 +68,8 @@ export function buildInfo(): BuildInfo {
   };
 }
 
-function definition(list: HTMLElement, term: string, value: string): void {
+/** Adds a term and its value to a readout list, returning the value element. */
+function definition(list: HTMLElement, term: string, value: string): HTMLElement {
   const item = document.createElement('li');
   const name = document.createElement('span');
   name.className = 'axys-readout-label';
@@ -75,6 +79,7 @@ function definition(list: HTMLElement, term: string, value: string): void {
   detail.textContent = value;
   item.append(name, detail);
   list.append(item);
+  return detail;
 }
 
 function heading(text: string): HTMLElement {
@@ -152,7 +157,11 @@ export function renderSourceCode(): HTMLElement {
   list.className = 'axys-caps';
   definition(list, 'Version', info.version);
   definition(list, 'Revision', info.revision);
+  const badge = definition(list, 'Build', 'Checking Signature');
   section.append(list);
+  void checkProvenance().then((provenance) => {
+    showProvenance(badge, provenance, info);
+  });
 
   const paragraph = document.createElement('p');
   paragraph.className = 'axys-hint axys-blurb';
@@ -172,11 +181,36 @@ export function renderSourceCode(): HTMLElement {
     const warning = document.createElement('p');
     warning.className = 'axys-hint axys-warning';
     warning.textContent =
-      'This build records no revision, so the link resolves to the repository rather than the exact source. A host serving a modified Axys must set AXYS_SOURCE_REPOSITORY and AXYS_SOURCE_REVISION at build time';
+      'This build records no revision, so the link opens the repository rather than the exact source.';
     section.append(warning);
   }
 
   return section;
+}
+
+const PROVENANCE: Readonly<Record<Provenance, { label: string; state: string }>> = {
+  official: { label: 'Verified Source', state: 'is-ok' },
+  unofficial: { label: 'Unofficial Build', state: 'is-missing' },
+  invalid: { label: 'Signature Invalid', state: 'is-blocking' },
+  unchecked: { label: 'Signature Unchecked', state: 'is-missing' },
+};
+
+/** Fills the Build row with the signature check's result and the reason behind it. */
+function showProvenance(badge: HTMLElement, provenance: Provenance, info: BuildInfo): void {
+  const { label, state } = PROVENANCE[provenance];
+  badge.textContent = label;
+  badge.classList.add(state);
+  const reasons: Record<Provenance, string> = {
+    official: `Signed by the official Axys release pipeline.\n\nSource: ${info.repository}\nRevision: ${info.revision}`,
+    unofficial: `Not signed by the official Axys release pipeline.\n\nThis build publishes its source at ${info.repository}.`,
+    invalid:
+      'The release signature does not match this build.\n\nThe build may have been modified after release.',
+    unchecked: [
+      `Ed25519 signatures are not supported by ${browserLabel()}.`,
+      'Supported Browsers:\n- Chrome 137+\n- Edge 137+\n- Firefox 129+\n- Safari 17+',
+    ].join('\n\n'),
+  };
+  setTooltip(badge, reasons[provenance]);
 }
 
 /**

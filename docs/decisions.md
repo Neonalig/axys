@@ -1445,9 +1445,12 @@ once, and a leaving panel takes no pointer events so the page is usable immediat
   `AGPL-3.0-or-later`. `THIRD_PARTY_LICENSES.md` lists them.
 - The npm dependencies are development tooling only. Nothing third-party is bundled into `dist/`
   beyond the application's own compiled output.
-- The in-app Source Code entry resolves to the repository and the build's revision, supplied at
-  build time by `AXYS_SOURCE_REPOSITORY` and `AXYS_SOURCE_REVISION` so a fork or third-party host
-  can point it at their own corresponding source.
+- The in-app Source Code entry resolves to the repository in `source.json` at the build's
+  revision. A release build fails when that repository is not the one being built, as a reminder
+  that a fork must publish its own source; it is a check, not a lock.
+- Official release builds carry an Ed25519 signature over repository, revision and version, and the
+  Help dialog verifies it against the public key in `source.json` to show Verified Source. Forks
+  need no key; their builds show Unofficial Build beside their own source link.
 
 ## Supported envelope
 

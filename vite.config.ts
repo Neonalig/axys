@@ -6,6 +6,34 @@ import { join, relative, resolve } from 'node:path';
 import { defineConfig, transformWithOxc } from 'vite';
 import type { Plugin } from 'vite';
 
+import {
+  buildingRepository,
+  normaliseRepository,
+  publicKeyOf,
+  signBuild,
+  signedMessage,
+  sourceProblem,
+} from './scripts/source-check.mjs';
+
+/** What `source.json` records. */
+interface SourceConfig {
+  /** Public repository holding this build's corresponding source. */
+  repository: string;
+  /** The upstream repository and the Ed25519 public key its release builds are signed with. */
+  official: { repository: string; publicKey: string };
+}
+
+const source = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, 'source.json'), 'utf8'),
+) as SourceConfig;
+
+/** The one version string every other copy is stamped from. */
+const version = (
+  JSON.parse(readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')) as {
+    version: string;
+  }
+).version;
+
 /**
  * Reads the source revision for the in-app Source Code entry.
  *
@@ -20,6 +48,50 @@ function sourceRevision(): string {
   } catch {
     return 'unknown';
   }
+}
+
+const revision = sourceRevision();
+
+/**
+ * Signs this build for the in-app Verified Source badge, or returns an empty signature.
+ *
+ * @throws When `AXYS_SIGNING_KEY` does not match the official public key, or when an
+ * `AXYS_RELEASE` build of the official repository has no key.
+ */
+function buildSignature(): string {
+  const key = process.env.AXYS_SIGNING_KEY?.trim();
+  if (!key) {
+    const official =
+      buildingRepository(process.env) === normaliseRepository(source.official.repository);
+    if (process.env.AXYS_RELEASE === 'true' && official) {
+      throw new Error(
+        'Release builds of the official repository must be signed. Set the AXYS_SIGNING_KEY Actions secret; see docs/deployment.md.',
+      );
+    }
+    return '';
+  }
+  if (publicKeyOf(key) !== source.official.publicKey) {
+    throw new Error(
+      'AXYS_SIGNING_KEY does not match official.publicKey in source.json. Run node scripts/signing-key.mjs to generate a matching pair.',
+    );
+  }
+  return signBuild(key, signedMessage(source.repository, revision, version));
+}
+
+/**
+ * Fails a release build when `source.json` does not name the repository being built, so every
+ * deployed copy links to its own public source. A development server only warns.
+ */
+function sourceCheck(): Plugin {
+  return {
+    name: 'axys-source-check',
+    configResolved(config) {
+      const problem = sourceProblem(source.repository, buildingRepository(process.env));
+      if (problem === null) return;
+      if (config.command === 'build') throw new Error(problem);
+      config.logger.warn(problem);
+    },
+  };
 }
 
 /** Cross-origin isolation, matching what `web/public/_headers` sends in production. */
@@ -91,13 +163,14 @@ export default defineConfig(() => ({
     alias: { '@': resolve(import.meta.dirname, 'web/src') },
   },
   define: {
-    __AXYS_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.0.0'),
-    __AXYS_REVISION__: JSON.stringify(sourceRevision()),
-    __AXYS_REPOSITORY__: JSON.stringify(
-      process.env.AXYS_SOURCE_REPOSITORY ?? 'https://github.com/Neonalig/axys',
-    ),
+    __AXYS_VERSION__: JSON.stringify(version),
+    __AXYS_REVISION__: JSON.stringify(revision),
+    __AXYS_REPOSITORY__: JSON.stringify(source.repository),
+    __AXYS_SIGNATURE__: JSON.stringify(buildSignature()),
+    __AXYS_OFFICIAL_REPOSITORY__: JSON.stringify(source.official.repository),
+    __AXYS_OFFICIAL_KEY__: JSON.stringify(source.official.publicKey),
   },
-  plugins: [serviceWorker(process.env.npm_package_version ?? '0.0.0', sourceRevision())],
+  plugins: [sourceCheck(), serviceWorker(version, revision)],
   worker: {
     format: 'es' as const,
   },

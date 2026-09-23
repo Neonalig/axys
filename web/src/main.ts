@@ -1059,11 +1059,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
     const item = document.createElement('li');
     const name = document.createElement('strong');
     name.textContent = cap.label;
-    item.append(
-      name,
-      document.createTextNode(`
-${cap.reason}`),
-    );
+    item.append(name, document.createTextNode(`\n${cap.reason}`));
     list.append(item);
   }
   section.append(list);

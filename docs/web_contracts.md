@@ -501,7 +501,8 @@ while the mode is Visual Only.
 
 `editor/layers/readout.ts` draws every readout the canvas floats over itself, in a monospaced face
 and sized in whole character columns, so a figure counting up does not resize its own box. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
-build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`.
+build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`,
+and the build's signature check from `app/provenance.ts`.
 `ui/theme.ts` exports the colour tokens as CSS custom properties with a high-contrast variant.
 
 ## Persistence: `persistence/`
