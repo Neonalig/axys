@@ -48,6 +48,16 @@
   display: none;
 }
 
+/*
+ * The drop target is translucent so an open project shows where a file will land. Over the empty
+ * editor there is nothing to see through to, and the card's own lines would read through the
+ * target's, so the card steps aside while something is dragged over the window.
+ */
+
+.axys-canvas-area:has(> .axys-drop:not([hidden])) > .axys-empty {
+  visibility: hidden;
+}
+
 /* Context menus */
 
 .axys-menu {

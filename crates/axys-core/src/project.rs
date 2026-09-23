@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::{F0Params, PitchTrack};
 use crate::analysis::segment::SegmentParams;
-use crate::blob::BlobSet;
+use crate::blob::{Blob, BlobId, BlobSet};
+use crate::clip::{clip_of, Clip, ClipId, Reference, ReferenceId};
 use crate::dsp::formant::FormantMode;
 use crate::edit::History;
 use crate::midi::{GuideSelection, NoteMapping};
@@ -21,7 +22,7 @@ use crate::units::{AccidentalStyle, Tuning};
 use crate::{AxysError, Result};
 
 /// Current project schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Version of the analysis pipeline whose output a stored track came from.
 pub const ANALYSER_VERSION: u32 = 1;
@@ -47,6 +48,16 @@ pub struct SourceInfo {
     pub mime: Option<String>,
 }
 
+impl SourceInfo {
+    /// True when `other` describes the same decoded media.
+    pub fn same_media(&self, other: &SourceInfo) -> bool {
+        self.fingerprint == other.fingerprint
+            && self.sample_rate == other.sample_rate
+            && self.channels == other.channels
+            && self.frames == other.frames
+    }
+}
+
 /// Parameters and version that produced the stored analysis, so it can be recomputed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +81,7 @@ impl Default for AnalysisInfo {
 }
 
 /// The mutable part of a project: everything an edit operation may change.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditState {
     /// What the project is called.
@@ -81,9 +92,12 @@ pub struct EditState {
     /// rest of the history.
     #[serde(default)]
     pub name: String,
-    /// Editable regions of the analysed vocal.
+    /// Vocal clips on the editable lane, in the order they were imported.
     #[serde(default)]
-    pub blobs: BlobSet,
+    pub clips: Vec<Clip>,
+    /// Audio heard beside the vocal and never edited.
+    #[serde(default)]
+    pub references: Vec<Reference>,
     /// Key and scale used by pitch-scale correction.
     #[serde(default)]
     pub scale: ScaleSettings,
@@ -113,22 +127,70 @@ pub struct EditState {
     pub mixer: MixerSettings,
 }
 
-impl Default for EditState {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            blobs: BlobSet::new(),
-            scale: ScaleSettings::default(),
-            modulation: ModulationSettings::default(),
-            formant: FormantMode::default(),
-            timeline: TimelineMap::default(),
-            guide: None,
-            mappings: Vec::new(),
-            tuning: Tuning::default(),
-            accidentals: AccidentalStyle::default(),
-            mixer: MixerSettings::default(),
-        }
+impl EditState {
+    /// The clip with an id, when it is on the lane.
+    pub fn clip(&self, id: ClipId) -> Option<&Clip> {
+        self.clips.iter().find(|clip| clip.id == id)
     }
+
+    /// The clip with an id, mutably, when it is on the lane.
+    pub fn clip_mut(&mut self, id: ClipId) -> Option<&mut Clip> {
+        self.clips.iter_mut().find(|clip| clip.id == id)
+    }
+
+    /// The reference with an id, when it is in the project.
+    pub fn reference(&self, id: ReferenceId) -> Option<&Reference> {
+        self.references.iter().find(|reference| reference.id == id)
+    }
+
+    /// A blob, in its clip's source seconds.
+    pub fn blob(&self, id: BlobId) -> Option<&Blob> {
+        self.clip(clip_of(id))?.blobs.get(id)
+    }
+
+    /// A blob, mutably, in its clip's source seconds.
+    pub fn blob_mut(&mut self, id: BlobId) -> Option<&mut Blob> {
+        self.clip_mut(clip_of(id))?.blobs.get_mut(id)
+    }
+
+    /// Every blob on the lane in project seconds, as one ordered set.
+    ///
+    /// Clips never overlap on the lane, so neither do their blobs.
+    pub fn project_blobs(&self) -> Result<BlobSet> {
+        let blobs: Vec<Blob> = self.clips.iter().flat_map(Clip::project_blobs).collect();
+        BlobSet::from_blobs(blobs)
+    }
+
+    /// Project seconds at which the last clip or reference ends.
+    pub fn duration(&self) -> f64 {
+        let clips = self.clips.iter().map(Clip::end);
+        let references = self
+            .references
+            .iter()
+            .map(|reference| reference.position + reference.source.duration);
+        clips.chain(references).fold(0.0, f64::max)
+    }
+}
+
+/// What a project keeps about one clip's audio, whether or not the clip is on the lane now.
+///
+/// A clip taken off the lane can be put back by undo, so its analysis stays with the project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipMedia {
+    /// The clip this media belongs to.
+    pub clip: ClipId,
+    /// Immutable facts about the imported audio.
+    pub source: SourceInfo,
+    /// Parameters and version that produced the stored analysis.
+    #[serde(default)]
+    pub analysis: AnalysisInfo,
+    /// Stored analysis output. Discardable: it can be rebuilt from the source and params.
+    #[serde(default)]
+    pub track: Option<PitchTrack>,
+    /// The segmentation analysis produced, numbered for the clip, which a reset restores.
+    #[serde(default)]
+    pub blobs: BlobSet,
 }
 
 /// Saved editor view state, restored on reopen.
@@ -197,14 +259,11 @@ pub struct Project {
     /// to and the editor still keeps one copy of it. A reader that means to change the name
     /// changes `edits.name`; this field follows it.
     pub name: String,
-    /// Immutable facts about the imported source audio.
-    pub source: SourceInfo,
-    /// Parameters and version that produced the stored analysis.
+    /// The audio and analysis of every clip the project or its history can put on the lane.
+    pub clips: Vec<ClipMedia>,
+    /// Every reference the project or its history can bring in, for relinking.
     #[serde(default)]
-    pub analysis: AnalysisInfo,
-    /// Stored analysis output. Discardable: it can be rebuilt from the source and params.
-    #[serde(default)]
-    pub track: Option<PitchTrack>,
+    pub references: Vec<Reference>,
     /// Everything an edit operation may change.
     #[serde(default)]
     pub edits: EditState,
@@ -223,9 +282,10 @@ pub struct Project {
 }
 
 impl Project {
-    /// Creates an empty project over already-decoded source audio.
+    /// Creates a project with one clip over already-decoded source audio.
     pub fn new(name: String, source: SourceInfo, analysis: AnalysisInfo) -> Self {
         let edits = EditState {
+            clips: vec![Clip::new(ClipId(0), source.clone(), 0.0, BlobSet::new())],
             timeline: TimelineMap {
                 sample_rate: f64::from(source.sample_rate),
                 ..TimelineMap::default()
@@ -236,9 +296,14 @@ impl Project {
             schema_version: SCHEMA_VERSION,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             name,
-            source,
-            analysis,
-            track: None,
+            clips: vec![ClipMedia {
+                clip: ClipId(0),
+                source,
+                analysis,
+                track: None,
+                blobs: BlobSet::new(),
+            }],
+            references: Vec::new(),
             base: edits.clone(),
             edits,
             midi: None,
@@ -262,12 +327,16 @@ impl Project {
             .map_err(|e| AxysError::Invalid(format!("project document is malformed: {e}")))
     }
 
-    /// True when `source` describes the same media as `other`.
+    /// True when `other` describes the same media as one of the project's clips.
     pub fn matches_source(&self, other: &SourceInfo) -> bool {
-        self.source.fingerprint == other.fingerprint
-            && self.source.sample_rate == other.sample_rate
-            && self.source.channels == other.channels
-            && self.source.frames == other.frames
+        self.clips
+            .iter()
+            .any(|media| media.source.same_media(other))
+    }
+
+    /// The media kept for a clip.
+    pub fn clip_media(&self, clip: ClipId) -> Option<&ClipMedia> {
+        self.clips.iter().find(|media| media.clip == clip)
     }
 }
 
@@ -311,7 +380,7 @@ pub fn migrate(value: serde_json::Value) -> Result<serde_json::Value> {
     let version = read_schema_version(&value)?;
     match version {
         SCHEMA_VERSION => {}
-        // 1 => upgrade_1_to_2(&mut value)?,
+        1 => upgrade_1_to_2(&mut value)?,
         v if v > SCHEMA_VERSION => {
             return Err(AxysError::Unsupported(format!(
                 "project schema version {v} is newer than {SCHEMA_VERSION}"
@@ -330,6 +399,114 @@ pub fn migrate(value: serde_json::Value) -> Result<serde_json::Value> {
         );
     }
     Ok(value)
+}
+
+/// Rewrites a single-source document as a project with one clip at the start of the lane.
+///
+/// The source, analysis and track become clip 0's media; each edit state's blobs become clip 0
+/// on its lane; and the desk, wherever it appears including inside recorded operations, gains
+/// the per-clip shape with the old vocal strips as clip 0's track.
+fn upgrade_1_to_2(value: &mut serde_json::Value) -> Result<()> {
+    use serde_json::{json, Map, Value};
+
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| AxysError::Invalid("project document is not an object".into()))?;
+    let source = object
+        .remove("source")
+        .ok_or_else(|| AxysError::Invalid("project document has no source".into()))?;
+    let analysis = object.remove("analysis");
+    let track = object.remove("track");
+
+    let lane_of = |state: Option<&mut Value>| -> Value {
+        state
+            .and_then(Value::as_object_mut)
+            .and_then(|state| state.remove("blobs"))
+            .unwrap_or_else(|| json!({ "blobs": [], "nextId": 0 }))
+    };
+    let edits_blobs = lane_of(object.get_mut("edits"));
+    let base_blobs = lane_of(object.get_mut("base"));
+
+    let mut media = Map::new();
+    media.insert("clip".into(), json!(0));
+    media.insert("source".into(), source.clone());
+    if let Some(analysis) = analysis {
+        media.insert("analysis".into(), analysis);
+    }
+    if let Some(track) = track {
+        media.insert("track".into(), track);
+    }
+    media.insert("blobs".into(), base_blobs.clone());
+    object.insert("clips".into(), Value::Array(vec![Value::Object(media)]));
+
+    for (key, blobs) in [("edits", edits_blobs), ("base", base_blobs)] {
+        let state = object
+            .entry(key)
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(state) = state.as_object_mut() {
+            state.insert(
+                "clips".into(),
+                json!([{ "id": 0, "source": source, "position": 0.0, "blobs": blobs }]),
+            );
+            if let Some(mixer) = state.get_mut("mixer") {
+                upgrade_mixer(mixer);
+            }
+        }
+    }
+    if let Some(history) = object.get_mut("history").and_then(Value::as_object_mut) {
+        for stack in ["applied", "undone"] {
+            if let Some(ops) = history.get_mut(stack).and_then(Value::as_array_mut) {
+                for op in ops {
+                    upgrade_mixer_ops(op);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Gives a single-source desk the per-clip shape, its vocal strips becoming clip 0's track.
+fn upgrade_mixer(mixer: &mut serde_json::Value) {
+    let Some(desk) = mixer.as_object_mut() else {
+        return;
+    };
+    if desk.contains_key("clips") {
+        return;
+    }
+    let processed = desk.remove("processed");
+    let original = desk.remove("original");
+    if let (Some(processed), Some(original)) = (processed, original) {
+        desk.insert(
+            "clips".into(),
+            serde_json::json!([{ "clip": 0, "processed": processed, "original": original }]),
+        );
+    }
+    desk.insert("references".into(), serde_json::json!([]));
+}
+
+/// Upgrades the desk inside a recorded operation, looking inside groups.
+fn upgrade_mixer_ops(op: &mut serde_json::Value) {
+    let Some(object) = op.as_object_mut() else {
+        return;
+    };
+    match object.get("type").and_then(serde_json::Value::as_str) {
+        Some("setMixer") => {
+            if let Some(mixer) = object.get_mut("mixer") {
+                upgrade_mixer(mixer);
+            }
+        }
+        Some("group") => {
+            if let Some(ops) = object
+                .get_mut("ops")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for op in ops {
+                    upgrade_mixer_ops(op);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn read_schema_version(value: &serde_json::Value) -> Result<u32> {
@@ -450,7 +627,6 @@ pub fn from_base64(text: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blob::{Blob, BlobId};
     use crate::curve::Anchor;
     use crate::edit::EditOp;
     use crate::midi::GuideMode;
@@ -479,7 +655,7 @@ mod tests {
         blob.curve.insert(Anchor::new(0.6, 60.0));
         blob.curve.insert(Anchor::new(1.0, 61.0));
         let second = Blob::new(BlobId(2), 1.5, 2.0, 64.0);
-        project.edits.blobs =
+        project.edits.clips[0].blobs =
             BlobSet::from_blobs(vec![blob, second]).expect("blobs are non-overlapping");
 
         project.edits.scale.root = 2;
@@ -520,7 +696,7 @@ mod tests {
         project.edits.tuning = Tuning { a4_hz: 442.0 };
         project.edits.accidentals = AccidentalStyle::Flats;
 
-        project.track = Some(PitchTrack {
+        project.clips[0].track = Some(PitchTrack {
             sample_rate: 48_000.0,
             hop_seconds: 0.005,
             frames: Vec::new(),
@@ -563,11 +739,9 @@ mod tests {
         assert_eq!(parsed.schema_version, SCHEMA_VERSION);
         assert_eq!(parsed.app_version, project.app_version);
         assert_eq!(parsed.name, "Take One");
-        assert_eq!(parsed.source, project.source);
-        assert_eq!(parsed.analysis, project.analysis);
-        assert_eq!(parsed.track, project.track);
-        assert_eq!(parsed.edits.blobs.len(), 2);
-        assert_eq!(parsed.edits.blobs.blobs()[0].curve.len(), 2);
+        assert_eq!(parsed.clips, project.clips);
+        assert_eq!(parsed.edits.clips[0].blobs.len(), 2);
+        assert_eq!(parsed.edits.clips[0].blobs.blobs()[0].curve.len(), 2);
         assert_eq!(parsed.edits.scale, project.edits.scale);
         assert_eq!(parsed.edits.modulation, project.edits.modulation);
         assert_eq!(parsed.edits.formant, FormantMode::Shift(-2.0));
@@ -596,7 +770,8 @@ mod tests {
         let project = Project::new("x".to_string(), source(), AnalysisInfo::default());
         assert_eq!(project.edits.timeline.sample_rate, 48_000.0);
         assert_eq!(project.schema_version, SCHEMA_VERSION);
-        assert!(project.track.is_none());
+        assert!(project.clips[0].track.is_none());
+        assert_eq!(project.edits.clips.len(), 1);
         assert!(!project.app_version.is_empty());
     }
 
@@ -627,7 +802,7 @@ mod tests {
 
         let mut impostor = source();
         impostor.fingerprint = fingerprint(&[0.9, 0.8, 0.7]);
-        assert_eq!(impostor.name, project.source.name);
+        assert_eq!(impostor.name, project.clips[0].source.name);
         assert!(!project.matches_source(&impostor));
     }
 
@@ -749,6 +924,37 @@ mod tests {
             "schemaVersion": SCHEMA_VERSION,
             "appVersion": "0.0.0",
             "name": "Minimal",
+            "clips": [{
+                "clip": 0,
+                "source": {
+                    "name": "a.wav",
+                    "sampleRate": 48000,
+                    "channels": 1,
+                    "frames": 480,
+                    "duration": 0.01,
+                    "fingerprint": "0000000000000000"
+                }
+            }]
+        })
+        .to_string();
+        let project = Project::from_json(&json).expect("minimal document parses");
+        assert_eq!(project.name, "Minimal");
+        assert_eq!(project.clips[0].source.mime, None);
+        assert_eq!(project.clips[0].analysis, AnalysisInfo::default());
+        assert_eq!(project.view, ViewState::default());
+        assert_eq!(project.edits, EditState::default());
+        assert!(project.clips[0].track.is_none());
+        assert!(project.references.is_empty());
+        assert!(project.midi.is_none());
+        assert!(!project.history.can_undo());
+    }
+
+    #[test]
+    fn a_minimal_single_source_document_becomes_one_clip() {
+        let json = serde_json::json!({
+            "schemaVersion": 1,
+            "appVersion": "0.0.0",
+            "name": "Minimal",
             "source": {
                 "name": "a.wav",
                 "sampleRate": 48000,
@@ -759,15 +965,58 @@ mod tests {
             }
         })
         .to_string();
-        let project = Project::from_json(&json).expect("minimal document parses");
-        assert_eq!(project.name, "Minimal");
-        assert_eq!(project.source.mime, None);
-        assert_eq!(project.analysis, AnalysisInfo::default());
-        assert_eq!(project.view, ViewState::default());
-        assert_eq!(project.edits, EditState::default());
-        assert!(project.track.is_none());
-        assert!(project.midi.is_none());
-        assert!(!project.history.can_undo());
+        let project = Project::from_json(&json).expect("minimal document migrates");
+        assert_eq!(project.schema_version, SCHEMA_VERSION);
+        assert_eq!(project.clips.len(), 1);
+        assert_eq!(project.clips[0].clip, ClipId(0));
+        assert_eq!(project.clips[0].source.name, "a.wav");
+        assert_eq!(project.edits.clips.len(), 1);
+        assert_eq!(project.edits.clips[0].position, 0.0);
+        assert!(project.edits.clips[0].blobs.is_empty());
+        assert_eq!(project.base.clips.len(), 1);
+    }
+
+    #[test]
+    fn a_single_source_project_keeps_its_blobs_desk_and_history() {
+        let strip = |gain: f64, mute: bool| serde_json::json!({ "gainDb": gain, "pan": 0.0, "mute": mute, "solo": false });
+        let desk = serde_json::json!({
+            "processed": strip(-3.0, false),
+            "original": strip(0.0, true),
+            "click": strip(-11.0, false)
+        });
+        let blobs = serde_json::json!({
+            "blobs": [serde_json::to_value(Blob::new(BlobId(1), 0.5, 1.0, 60.0)).expect("blob")],
+            "nextId": 2
+        });
+        let json = serde_json::json!({
+            "schemaVersion": 1,
+            "appVersion": "0.0.0",
+            "name": "Old",
+            "source": serde_json::to_value(source()).expect("source"),
+            "track": { "sampleRate": 48000.0, "hopSeconds": 0.005, "frames": [] },
+            "edits": { "name": "Old", "blobs": blobs.clone(), "mixer": desk.clone() },
+            "base": { "name": "Old", "blobs": blobs, "mixer": desk.clone() },
+            "history": {
+                "applied": [{ "type": "group", "ops": [{ "type": "setMixer", "mixer": desk }] }],
+                "undone": []
+            }
+        })
+        .to_string();
+        let project = Project::from_json(&json).expect("migrates");
+        assert!(project.clips[0].track.is_some());
+        assert_eq!(project.clips[0].blobs.len(), 1);
+        assert_eq!(project.edits.clips[0].blobs.len(), 1);
+        assert_eq!(project.edits.clips[0].source, source());
+        let track = project.edits.mixer.clip(ClipId(0));
+        assert_eq!(track.processed.gain_db, -3.0);
+        assert!(track.original.mute);
+        let EditOp::Group { ops } = &project.history.applied()[0] else {
+            panic!("the group survives");
+        };
+        let EditOp::SetMixer { mixer } = &ops[0] else {
+            panic!("the desk edit survives");
+        };
+        assert_eq!(mixer.clip(ClipId(0)).processed.gain_db, -3.0);
     }
 
     #[test]

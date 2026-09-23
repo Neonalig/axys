@@ -29,15 +29,18 @@ export interface RestoreResult {
 /**
  * Opens the newest stored copy that this build can still read.
  *
- * @param open Opens one document, answering whether it opened. It must not throw, and must not
- * report a failure to the user: a copy that cannot be read is this function's to report.
+ * @param open Opens one document and the id it is stored under, answering whether it opened. It
+ * must not throw, and must not report a failure to the user: a copy that cannot be read is this
+ * function's to report.
+ * @param preferred The id to try before the newest, such as the project that was open last.
  * @remarks A copy that neither loads nor opens is removed and the next is tried, so one bad copy
  * cannot hide a good older one. Only a failure to list the copies at all ends the search, which
  * leaves every copy in place for a later attempt.
  */
 export async function restoreNewest(
   source: RestoreSource,
-  open: (json: string) => Promise<boolean>,
+  open: (json: string, id: string) => Promise<boolean>,
+  preferred: string | null = null,
 ): Promise<RestoreResult> {
   let stored: readonly { id: string }[];
   try {
@@ -46,15 +49,19 @@ export async function restoreNewest(
     return { opened: null, discarded: 0 };
   }
 
+  const ordered = [
+    ...stored.filter((copy) => copy.id === preferred),
+    ...stored.filter((copy) => copy.id !== preferred),
+  ];
   let discarded = 0;
-  for (const copy of stored) {
+  for (const copy of ordered) {
     let json: string | null;
     try {
       json = await source.load(copy.id);
     } catch {
       json = null;
     }
-    if (json !== null && (await open(json))) {
+    if (json !== null && (await open(json, copy.id))) {
       return { opened: copy.id, discarded };
     }
     try {

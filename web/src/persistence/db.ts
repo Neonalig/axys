@@ -188,8 +188,11 @@ function summarise(id: string, document: Project, updated: number): ProjectSumma
     id,
     name: document.name,
     updated,
-    sourceName: document.source.name,
-    duration: document.source.duration,
+    sourceName: document.edits.clips[0]?.source.name ?? document.name,
+    duration: Math.max(
+      0,
+      ...document.edits.clips.map((clip) => clip.position + clip.source.duration),
+    ),
   };
 }
 
@@ -287,6 +290,12 @@ export class ProjectStore {
     } catch (error) {
       throw toPersistenceError(error, 'Deleting the project');
     }
+  }
+
+  /** Deletes every project but the `keep` most recently saved. */
+  async prune(keep: number): Promise<void> {
+    const stored = await this.list();
+    for (const old of stored.slice(Math.max(0, keep))) await this.remove(old.id);
   }
 
   /** Releases the database connection. */

@@ -10,6 +10,7 @@
 
 import { emptySelection } from './selection.js';
 import type { Command, CommandContext } from './commands.js';
+import { projectEnd } from './store.js';
 import type { AppState } from './store.js';
 import type { EditOp } from '../core/types.js';
 
@@ -191,7 +192,7 @@ function seekBy(ctx: CommandContext, event: KeyboardEvent): boolean {
 function jumpToPercent(ctx: CommandContext, code: string): boolean {
   const index = DIGIT_ROW.indexOf(code) < 0 ? NUMPAD_ROW.indexOf(code) : DIGIT_ROW.indexOf(code);
   if (index < 0) return false;
-  const duration = ctx.store.state.source?.duration ?? 0;
+  const duration = projectEnd(ctx.store.state);
   if (!(duration > 0)) return false;
   ctx.editor.goTo((duration * index) / (DIGIT_ROW.length - 1));
   return true;

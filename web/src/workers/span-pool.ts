@@ -57,6 +57,11 @@ export class SpanPool {
     }
   }
 
+  /** Has every span worker load its core now rather than on its first span. */
+  warm(): void {
+    for (const worker of this.#idle) worker.postMessage({ type: 'warm' });
+  }
+
   /** Workers still running. */
   get size(): number {
     return this.#workers;

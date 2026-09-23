@@ -18,14 +18,17 @@ import type {
   CancelRequest,
   CancelledMessage,
   EncodedMessage,
+  ClipAudio,
   EncodedWav,
   ExportWavRequest,
   FailedMessage,
   ProgressMessage,
+  ReferenceAudio,
   RenderRangeRequest,
   RenderedMessage,
   RenderedRange,
   RequestId,
+  WarmRequest,
 } from './protocol';
 
 /** Receives a worker's stage name and its completed fraction, 0 to 1. */
@@ -55,7 +58,12 @@ export interface RenderJob {
 /** A saved project to render and encode as a WAV file. */
 export interface ExportJob {
   projectJson: string;
-  samples: Float32Array;
+  /** Every clip's mono samples at the project rate, each transferred to the worker. */
+  clips: ClipAudio[];
+  /** Every reference's channels at the project rate, each transferred to the worker. */
+  references: ReferenceAudio[];
+  /** Whether the file mixes the references in, which makes it stereo. */
+  withReferences: boolean;
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
@@ -102,6 +110,20 @@ abstract class WorkerClient {
     const pending = [...this.#pending.values()];
     this.#pending.clear();
     for (const job of pending) job.fail(new WorkerCancelled(job.operation));
+  }
+
+  /**
+   * Starts the worker and has it load its core now rather than on its first job.
+   *
+   * @remarks So work keeps running if the page loses its server after it has loaded.
+   */
+  warm(): void {
+    const request: WarmRequest = { type: 'warm' };
+    try {
+      this.#ensure().postMessage(request);
+    } catch {
+      // A worker that will not start fails its first job instead, with the reason.
+    }
   }
 
   /** Builds the worker this client drives. */
@@ -255,8 +277,8 @@ export class RenderClient extends WorkerClient {
   /**
    * Renders a saved project and encodes it as a WAV file.
    *
-   * @remarks `job.samples` is transferred to the worker and comes back on
-   * {@link EncodedWav.source}.
+   * @remarks Every buffer in `job.clips` and `job.references` is transferred to the worker and
+   * not returned.
    */
   exportWav(job: ExportJob, onProgress?: ProgressListener): Promise<EncodedWav> {
     return this.start<EncodedWav>(
@@ -266,12 +288,17 @@ export class RenderClient extends WorkerClient {
           type: 'exportWav',
           id,
           projectJson: job.projectJson,
-          samples: job.samples,
+          clips: job.clips,
+          references: job.references,
+          withReferences: job.withReferences,
           range: job.range,
           depth: job.depth,
           sampleRate: job.sampleRate,
         },
-        transfer: [bufferOf(job.samples)],
+        transfer: [
+          ...job.clips.map((clip) => bufferOf(clip.samples)),
+          ...job.references.flatMap((reference) => reference.channels.map(bufferOf)),
+        ],
       }),
       (message) => (message.type === 'encoded' ? message.result : null),
       onProgress,

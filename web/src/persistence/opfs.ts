@@ -24,7 +24,9 @@ export type MediaBackend = 'opfs' | 'indexeddb';
 const MEDIA_DIRECTORY = 'media';
 
 function fileName(fingerprint: string): string {
-  if (!/^[0-9a-f]{16}$/.test(fingerprint)) {
+  // A fingerprint, or one with a lowercase suffix naming a second copy of the same audio kept in
+  // another shape, the way a reference keeps its channels beside a clip's mono.
+  if (!/^[0-9a-f]{16}(-[a-z]+)?$/.test(fingerprint)) {
     throw new PersistenceError('corrupt', `Not an audio fingerprint: ${fingerprint}`);
   }
   return `${fingerprint}.pcm`;

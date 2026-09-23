@@ -98,18 +98,22 @@ export interface ImportedProject {
 /**
  * Reads a `.axys.json` file back and validates it against the project contract.
  *
+ * @param read Brings a document of any supported schema version up to the current one and
+ * validates it, which is the core's to do because it owns the migration.
  * @throws PersistenceError with kind `corrupt` when the file is not a readable project.
  */
-export async function importProject(file: File): Promise<ImportedProject> {
+export async function importProject(
+  file: File,
+  read: (json: string) => ImportedProject,
+): Promise<ImportedProject> {
   let text: string;
   try {
     text = await file.text();
   } catch (cause) {
     throw new PersistenceError('io', `Could not read ${file.name}.`, { cause });
   }
-  let project: Project;
   try {
-    project = parseJson(text, isProject, 'project');
+    return read(text);
   } catch (cause) {
     throw new PersistenceError(
       'corrupt',
@@ -117,7 +121,6 @@ export async function importProject(file: File): Promise<ImportedProject> {
       { cause },
     );
   }
-  return { json: text, project };
 }
 
 /** Mixes decoded channels down to mono the way the core does. */

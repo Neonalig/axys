@@ -10,18 +10,28 @@
 import { loadCore } from '../core/wasm';
 import { observeSpan } from '../wasm/axys_wasm.js';
 import { measureTransfers } from './protocol';
-import type { ObserveSpanRequest, SpanMeasures, SpanResponse } from './protocol';
+import type { ObserveSpanRequest, SpanMeasures, SpanResponse, WarmRequest } from './protocol';
 
 /** The dedicated worker scope, narrowed from the ambient global. */
 interface SpanScope {
-  addEventListener(type: 'message', fn: (event: MessageEvent<ObserveSpanRequest>) => void): void;
+  addEventListener(
+    type: 'message',
+    fn: (event: MessageEvent<ObserveSpanRequest | WarmRequest>) => void,
+  ): void;
   postMessage(message: SpanResponse, transfer: Transferable[]): void;
 }
 
 const scope = globalThis as unknown as SpanScope;
 
 scope.addEventListener('message', (event) => {
-  void run(event.data);
+  const request = event.data;
+  if (request.type === 'warm') {
+    void loadCore().catch(() => {
+      // The first span reports the failure.
+    });
+    return;
+  }
+  void run(request);
 });
 
 async function run(request: ObserveSpanRequest): Promise<void> {

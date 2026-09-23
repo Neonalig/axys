@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::PitchTrack;
 use crate::blob::{BlobId, BlobSet, Edge, Voicing};
+use crate::clip::{
+    clip_of, fit_to_source, free_position, numbered_for, Clip, ClipId, Reference, ReferenceId,
+    Span, MAX_CLIPS, MAX_REFERENCES,
+};
 use crate::curve::{Anchor, PitchCurve};
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideSelection, NoteMapping};
@@ -189,6 +193,46 @@ pub enum EditOp {
         /// Absolute level in decibels; 0.0 is the blob as sung.
         gain_db: f64,
     },
+    /// Removes blobs and silences the material they covered.
+    DeleteBlobs {
+        /// Blobs to delete.
+        blobs: Vec<BlobId>,
+    },
+    /// Puts an imported vocal on the lane.
+    AddClip {
+        /// The clip, its blobs numbered for it. A position that would overlap another clip is
+        /// moved to the nearest free one.
+        clip: Clip,
+    },
+    /// Moves a clip along the lane.
+    MoveClip {
+        /// Clip to move.
+        clip: ClipId,
+        /// Wanted position in project seconds; an overlapping one lands on the nearest free one.
+        position: f64,
+    },
+    /// Takes a clip off the lane.
+    RemoveClip {
+        /// Clip to remove.
+        clip: ClipId,
+    },
+    /// Brings in audio heard beside the vocal.
+    AddReference {
+        /// The reference to add.
+        reference: Reference,
+    },
+    /// Moves a reference along the timeline.
+    MoveReference {
+        /// Reference to move.
+        reference: ReferenceId,
+        /// New start in project seconds.
+        position: f64,
+    },
+    /// Takes a reference out of the project.
+    RemoveReference {
+        /// Reference to remove.
+        reference: ReferenceId,
+    },
     /// Replaces the monitor levels.
     SetMixer {
         /// New mixer settings.
@@ -283,6 +327,13 @@ impl EditOp {
             EditOp::ResetRange { .. } => "Reset Range",
             EditOp::SetExcluded { .. } => "Exclude Blob",
             EditOp::SetGain { .. } => "Set Gain",
+            EditOp::DeleteBlobs { .. } => "Delete Blobs",
+            EditOp::AddClip { .. } => "Import Clip",
+            EditOp::MoveClip { .. } => "Move Clip",
+            EditOp::RemoveClip { .. } => "Delete Clip",
+            EditOp::AddReference { .. } => "Import Reference",
+            EditOp::MoveReference { .. } => "Move Reference",
+            EditOp::RemoveReference { .. } => "Delete Reference",
             EditOp::SetMixer { .. } => "Set Mixer",
             EditOp::SetScale { .. } => "Set Scale",
             EditOp::SetTuning { .. } => "Set Tuning",
@@ -374,9 +425,35 @@ impl History {
     }
 }
 
+/// The per-clip evidence an operation may read: each clip's detected pitch and the segmentation
+/// its analysis produced.
+pub trait ClipSources {
+    /// Detected pitch of a clip, in its source seconds.
+    fn track(&self, clip: ClipId) -> Option<&PitchTrack>;
+    /// The analysed segmentation of a clip, which a range reset restores.
+    fn baseline(&self, clip: ClipId) -> Option<&BlobSet>;
+}
+
+/// The same evidence for every clip, which is what a project with one source has.
+struct Uniform<'a> {
+    track: Option<&'a PitchTrack>,
+    baseline: Option<&'a BlobSet>,
+}
+
+impl ClipSources for Uniform<'_> {
+    fn track(&self, _clip: ClipId) -> Option<&PitchTrack> {
+        self.track
+    }
+
+    fn baseline(&self, _clip: ClipId) -> Option<&BlobSet> {
+        self.baseline
+    }
+}
+
 /// Applies one operation to the mutable parts of a project.
 ///
-/// Analysis results are never modified, so any op can be recomputed from the source.
+/// Analysis results are never modified, so any op can be recomputed from the source. `track` is
+/// read for every clip, which suits a project with one.
 pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> Result<()> {
     apply_with_baseline(state, track, None, op)
 }
@@ -385,22 +462,46 @@ pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> 
 ///
 /// Only [`EditOp::ResetRange`] needs `baseline`; every other operation ignores it. A
 /// `ResetRange` without one fails rather than silently resetting nothing, because the caller
-/// asked for the analysed blobs back and there is nothing else to give them.
+/// asked for the analysed blobs back and there is nothing else to give them. Like [`apply`], the
+/// same evidence is read for every clip.
 pub fn apply_with_baseline(
     state: &mut EditState,
     track: Option<&PitchTrack>,
     baseline: Option<&BlobSet>,
     op: &EditOp,
 ) -> Result<()> {
+    apply_in(state, &Uniform { track, baseline }, op)
+}
+
+/// Applies one operation, reading each clip's own evidence from `sources`.
+///
+/// Times in an operation are project seconds. Each is moved into the owning clip's source
+/// seconds before it reaches the clip, so the clip's blobs never change meaning when the clip
+/// moves.
+pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -> Result<()> {
     match op {
         EditOp::SplitBlob { blob, time } => {
-            state.blobs.split(*blob, *time, track)?;
+            let track = sources.track(clip_of(*blob));
+            let clip = owner(state, *blob)?;
+            let at = finite(*time, "split time")? - clip.position;
+            clip.blobs.split(*blob, at, track)?;
         }
         EditOp::JoinBlobs { first, second } => {
-            state.blobs.join(*first, *second, track)?;
+            if clip_of(*first) != clip_of(*second) {
+                return Err(AxysError::Invalid(
+                    "blobs from different clips cannot be joined".into(),
+                ));
+            }
+            let track = sources.track(clip_of(*first));
+            owner(state, *first)?.blobs.join(*first, *second, track)?;
         }
         EditOp::MoveBoundary { blob, edge, time } => {
-            state.blobs.move_boundary(*blob, *edge, *time)?;
+            let clip = owner(state, *blob)?;
+            // Held inside the clip's own audio, so an edge dragged past it cannot reach a blob of
+            // the clip beside it.
+            let at = (finite(*time, "boundary time")? - clip.position)
+                .clamp(0.0, clip.source.duration.max(0.0));
+            clip.blobs.move_boundary(*blob, *edge, at)?;
         }
         EditOp::SetVoicing {
             blob,
@@ -409,12 +510,15 @@ pub fn apply_with_baseline(
             voicing,
         } => {
             let (start, end) = finite_span(*start, *end)?;
-            state.blobs.set_voicing(*blob, start, end, *voicing)?;
+            let clip = owner(state, *blob)?;
+            let offset = clip.position;
+            clip.blobs
+                .set_voicing(*blob, start - offset, end - offset, *voicing)?;
         }
         EditOp::MovePitch { blobs, semitones } => {
             let semitones = finite(*semitones, "pitch move")?;
             for id in require_all(state, blobs)? {
-                if let Some(b) = state.blobs.get_mut(id) {
+                if let Some(b) = state.blob_mut(id) {
                     b.pitch_offset += semitones;
                 }
             }
@@ -426,7 +530,7 @@ pub fn apply_with_baseline(
         EditOp::MoveTime { blobs, seconds } => {
             let seconds = finite(*seconds, "time move")?;
             for id in require_all(state, blobs)? {
-                if let Some(b) = state.blobs.get_mut(id) {
+                if let Some(b) = state.blob_mut(id) {
                     b.time_offset += seconds;
                 }
             }
@@ -441,9 +545,10 @@ pub fn apply_with_baseline(
             blob_mut(state, *blob)?.time_scale = scale;
         }
         EditOp::AddAnchor { blob, anchor } => {
-            let anchor = *anchor;
+            let mut anchor = *anchor;
             finite(anchor.time, "anchor time")?;
             finite(anchor.midi, "anchor pitch")?;
+            anchor.time -= position_of(state, *blob)?;
             let curve = &mut blob_mut(state, *blob)?.curve;
             room_for(curve, 1)?;
             curve.insert(anchor);
@@ -454,15 +559,24 @@ pub fn apply_with_baseline(
             time,
             midi,
         } => {
+            let at = finite(*time, "anchor time")? - position_of(state, *blob)?;
             blob_mut(state, *blob)?
                 .curve
-                .move_anchor(*index, *time, *midi)?;
+                .move_anchor(*index, at, *midi)?;
         }
         EditOp::RemoveAnchor { blob, index } => {
             blob_mut(state, *blob)?.curve.remove(*index)?;
         }
         EditOp::DrawSpan { blob, anchors } => {
-            draw_span(&mut blob_mut(state, *blob)?.curve, anchors)?;
+            let offset = position_of(state, *blob)?;
+            let local: Vec<Anchor> = anchors
+                .iter()
+                .map(|anchor| Anchor {
+                    time: anchor.time - offset,
+                    ..*anchor
+                })
+                .collect();
+            draw_span(&mut blob_mut(state, *blob)?.curve, &local)?;
         }
         EditOp::SmoothSpan {
             blob,
@@ -472,10 +586,12 @@ pub fn apply_with_baseline(
         } => {
             let (start, end) = finite_span(*start, *end)?;
             let amount = finite(*amount, "smoothing amount")?.clamp(0.0, 1.0);
+            let track = sources.track(clip_of(*blob));
+            let offset = position_of(state, *blob)?;
             let blob = blob_mut(state, *blob)?;
             let (blob_start, blob_end) = (blob.start, blob.end);
-            let start = start.max(blob_start);
-            let end = end.min(blob_end);
+            let start = (start - offset).max(blob_start);
+            let end = (end - offset).min(blob_end);
             if amount > 0.0 && end > start {
                 materialise_span(&mut blob.curve, track, start, end)?;
                 smooth_span(&mut blob.curve, start, end, amount)?;
@@ -483,7 +599,10 @@ pub fn apply_with_baseline(
         }
         EditOp::ResetSpan { blob, start, end } => {
             let (start, end) = finite_span(*start, *end)?;
-            blob_mut(state, *blob)?.curve.clear_span(start, end);
+            let offset = position_of(state, *blob)?;
+            blob_mut(state, *blob)?
+                .curve
+                .clear_span(start - offset, end - offset);
         }
         EditOp::ResetBlob { blob } => {
             let blob = blob_mut(state, *blob)?;
@@ -496,17 +615,24 @@ pub fn apply_with_baseline(
         }
         EditOp::ResetRange { start, end } => {
             let (start, end) = finite_span(*start, *end)?;
-            let Some(baseline) = baseline else {
-                return Err(AxysError::Invalid(
-                    "the analysed segmentation is unavailable, so a range cannot be reset".into(),
-                ));
-            };
-            state.blobs.restore_range(baseline, start, end)?;
+            for clip in &mut state.clips {
+                let (from, to) = (start - clip.position, end - clip.position);
+                if to <= 0.0 || from >= clip.source.duration {
+                    continue;
+                }
+                let Some(baseline) = sources.baseline(clip.id) else {
+                    return Err(AxysError::Invalid(
+                        "the analysed segmentation is unavailable, so a range cannot be reset"
+                            .into(),
+                    ));
+                };
+                clip.blobs.restore_range(baseline, from, to)?;
+                // Deleted blobs are part of the segmentation, so restoring it brings them back.
+                clip.unsilence(from, to);
+            }
             // Restoring the segmentation discards blob ids, so any guide mapping onto one that
             // no longer exists goes with it rather than being left pointing at nothing.
-            state
-                .mappings
-                .retain(|mapping| state.blobs.get(mapping.blob).is_some());
+            forget_missing_mappings(state);
         }
         EditOp::SetExcluded { blob, excluded } => {
             blob_mut(state, *blob)?.excluded = *excluded;
@@ -515,6 +641,99 @@ pub fn apply_with_baseline(
             let gain_db = finite(*gain_db, "gain")?;
             blob_mut(state, *blob)?.gain_db =
                 gain_db.clamp(crate::limits::MIN_GAIN_DB, crate::limits::MAX_GAIN_DB);
+        }
+        EditOp::DeleteBlobs { blobs } => {
+            for id in require_all(state, blobs)? {
+                let clip = owner(state, id)?;
+                let removed = clip.blobs.remove(id)?;
+                clip.silence(Span {
+                    start: removed.start,
+                    end: removed.end,
+                });
+            }
+            forget_missing_mappings(state);
+        }
+        EditOp::AddClip { clip } => {
+            if state.clips.len() >= MAX_CLIPS {
+                return Err(AxysError::Invalid(format!(
+                    "a project holds at most {MAX_CLIPS} clips"
+                )));
+            }
+            if state.clip(clip.id).is_some() {
+                return Err(AxysError::Invalid(format!(
+                    "clip {} is already on the lane",
+                    clip.id.0
+                )));
+            }
+            if !numbered_for(&clip.blobs, clip.id) {
+                return Err(AxysError::Invalid(format!(
+                    "clip {} carries blobs numbered for another clip",
+                    clip.id.0
+                )));
+            }
+            let duration = finite(clip.source.duration, "clip duration")?;
+            if duration <= 0.0 {
+                return Err(AxysError::Invalid("a clip must have some duration".into()));
+            }
+            let mut clip = clip.clone();
+            fit_to_source(&mut clip.blobs, duration);
+            clip.position = free_position(
+                &lane_spans(state, None),
+                duration,
+                finite(clip.position, "clip position")?,
+            );
+            state.clips.push(clip);
+        }
+        EditOp::MoveClip { clip, position } => {
+            let wanted = finite(*position, "clip position")?;
+            let others = lane_spans(state, Some(*clip));
+            let target = state
+                .clip_mut(*clip)
+                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?;
+            target.position = free_position(&others, target.source.duration, wanted);
+        }
+        EditOp::RemoveClip { clip } => {
+            let before = state.clips.len();
+            state.clips.retain(|entry| entry.id != *clip);
+            if state.clips.len() == before {
+                return Err(AxysError::NotFound(format!("clip {}", clip.0)));
+            }
+            forget_missing_mappings(state);
+        }
+        EditOp::AddReference { reference } => {
+            if state.references.len() >= MAX_REFERENCES {
+                return Err(AxysError::Invalid(format!(
+                    "a project holds at most {MAX_REFERENCES} references"
+                )));
+            }
+            if state.reference(reference.id).is_some() {
+                return Err(AxysError::Invalid(format!(
+                    "reference {} is already in the project",
+                    reference.id.0
+                )));
+            }
+            let mut reference = reference.clone();
+            reference.position = finite(reference.position, "reference position")?.max(0.0);
+            state.references.push(reference);
+        }
+        EditOp::MoveReference {
+            reference,
+            position,
+        } => {
+            let position = finite(*position, "reference position")?.max(0.0);
+            state
+                .references
+                .iter_mut()
+                .find(|entry| entry.id == *reference)
+                .ok_or_else(|| AxysError::NotFound(format!("reference {}", reference.0)))?
+                .position = position;
+        }
+        EditOp::RemoveReference { reference } => {
+            let before = state.references.len();
+            state.references.retain(|entry| entry.id != *reference);
+            if state.references.len() == before {
+                return Err(AxysError::NotFound(format!("reference {}", reference.0)));
+            }
         }
         EditOp::SetMixer { mixer } => {
             state.mixer = mixer.validated()?;
@@ -569,7 +788,7 @@ pub fn apply_with_baseline(
             state.guide = selection.clone();
         }
         EditOp::SetMapping { mapping } => {
-            if state.blobs.get(mapping.blob).is_none() {
+            if state.blob(mapping.blob).is_none() {
                 return Err(AxysError::NotFound(format!("blob {}", mapping.blob.0)));
             }
             match state.mappings.iter_mut().find(|m| m.blob == mapping.blob) {
@@ -579,7 +798,7 @@ pub fn apply_with_baseline(
         }
         EditOp::SetMappings { mappings } => {
             for mapping in mappings {
-                if state.blobs.get(mapping.blob).is_none() {
+                if state.blob(mapping.blob).is_none() {
                     return Err(AxysError::NotFound(format!("blob {}", mapping.blob.0)));
                 }
             }
@@ -596,7 +815,7 @@ pub fn apply_with_baseline(
         }
         EditOp::Group { ops } => {
             for op in ops {
-                apply_with_baseline(state, track, baseline, op)?;
+                apply_in(state, sources, op)?;
             }
         }
     }
@@ -627,15 +846,51 @@ fn finite_span(start: f64, end: f64) -> Result<(f64, f64)> {
 /// Borrows a blob mutably, reporting a missing id.
 fn blob_mut(state: &mut EditState, id: BlobId) -> Result<&mut crate::blob::Blob> {
     state
-        .blobs
-        .get_mut(id)
+        .blob_mut(id)
         .ok_or_else(|| AxysError::NotFound(format!("blob {}", id.0)))
+}
+
+/// Borrows the clip that owns a blob, reporting a blob that is not on the lane.
+fn owner(state: &mut EditState, id: BlobId) -> Result<&mut Clip> {
+    match state.clip_mut(clip_of(id)) {
+        Some(clip) if clip.blobs.get(id).is_some() => Ok(clip),
+        _ => Err(AxysError::NotFound(format!("blob {}", id.0))),
+    }
+}
+
+/// Project seconds of the clip that owns a blob, which its times are measured from.
+fn position_of(state: &EditState, id: BlobId) -> Result<f64> {
+    match state.clip(clip_of(id)) {
+        Some(clip) if clip.blobs.get(id).is_some() => Ok(clip.position),
+        _ => Err(AxysError::NotFound(format!("blob {}", id.0))),
+    }
+}
+
+/// The project spans every clip but `except` occupies on the lane.
+fn lane_spans(state: &EditState, except: Option<ClipId>) -> Vec<(f64, f64)> {
+    state
+        .clips
+        .iter()
+        .filter(|clip| Some(clip.id) != except)
+        .map(|clip| (clip.position, clip.end()))
+        .collect()
+}
+
+/// Drops the guide mappings that name a blob no longer on the lane.
+fn forget_missing_mappings(state: &mut EditState) {
+    let kept: Vec<_> = state
+        .mappings
+        .iter()
+        .copied()
+        .filter(|mapping| state.blob(mapping.blob).is_some())
+        .collect();
+    state.mappings = kept;
 }
 
 /// Checks that every id in a selection exists before any of them is changed.
 fn require_all(state: &EditState, ids: &[BlobId]) -> Result<Vec<BlobId>> {
     for id in ids {
-        if state.blobs.get(*id).is_none() {
+        if state.blob(*id).is_none() {
             return Err(AxysError::NotFound(format!("blob {}", id.0)));
         }
     }
@@ -826,7 +1081,13 @@ mod tests {
     fn state_with(blobs: Vec<Blob>) -> EditState {
         EditState {
             name: "Test".to_string(),
-            blobs: BlobSet::from_blobs(blobs).unwrap(),
+            clips: vec![Clip::new(
+                ClipId(0),
+                crate::clip::test_source("Test", 100.0),
+                0.0,
+                BlobSet::from_blobs(blobs).unwrap(),
+            )],
+            references: Vec::new(),
             scale: ScaleSettings::default(),
             modulation: ModulationSettings::default(),
             formant: FormantMode::default(),
@@ -867,13 +1128,7 @@ mod tests {
     }
 
     fn anchors_of(state: &EditState, id: u32) -> Vec<Anchor> {
-        state
-            .blobs
-            .get(BlobId(id))
-            .unwrap()
-            .curve
-            .anchors()
-            .to_vec()
+        state.blob(BlobId(id)).unwrap().curve.anchors().to_vec()
     }
 
     #[test]
@@ -888,7 +1143,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(s.blobs.len(), 3);
+        assert_eq!(s.clips[0].blobs.len(), 3);
     }
 
     #[test]
@@ -903,8 +1158,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(s.blobs.len(), 1);
-        assert_eq!(s.blobs.get(BlobId(1)).unwrap().end, 2.0);
+        assert_eq!(s.clips[0].blobs.len(), 1);
+        assert_eq!(s.clips[0].blobs.get(BlobId(1)).unwrap().end, 2.0);
     }
 
     #[test]
@@ -920,7 +1175,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!((s.blobs.get(BlobId(1)).unwrap().end - 0.6).abs() < 1e-9);
+        assert!((s.clips[0].blobs.get(BlobId(1)).unwrap().end - 0.6).abs() < 1e-9);
     }
 
     #[test]
@@ -938,7 +1193,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            s.blobs.get(BlobId(1)).unwrap().voicing_at(0.1),
+            s.clips[0].blobs.get(BlobId(1)).unwrap().voicing_at(0.1),
             Voicing::Unvoiced
         );
     }
@@ -969,8 +1224,8 @@ mod tests {
         };
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
-        assert!((s.blobs.get(BlobId(1)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
-        assert!((s.blobs.get(BlobId(2)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
+        assert!((s.clips[0].blobs.get(BlobId(1)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
+        assert!((s.clips[0].blobs.get(BlobId(2)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
     }
 
     #[test]
@@ -986,7 +1241,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, AxysError::NotFound(_)));
-        assert_eq!(s.blobs.get(BlobId(1)).unwrap().pitch_offset, 0.0);
+        assert_eq!(s.clips[0].blobs.get(BlobId(1)).unwrap().pitch_offset, 0.0);
     }
 
     #[test]
@@ -998,19 +1253,28 @@ mod tests {
         };
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
-        assert_eq!(s.blobs.get(BlobId(1)).unwrap().pitch_offset, -2.0);
+        assert_eq!(s.clips[0].blobs.get(BlobId(1)).unwrap().pitch_offset, -2.0);
     }
 
     #[test]
     fn set_mixer_replaces_the_desk_and_clamps_what_it_is_given() {
         let mut s = state();
         let mut mixer = MixerSettings::default();
-        mixer.original.mute = false;
-        mixer.processed.gain_db = -3.0;
+        let mut track = crate::mixer::ClipStrips::new(ClipId(0));
+        track.original.mute = false;
+        track.processed.gain_db = -3.0;
+        mixer.clips.push(track);
         mixer.click.pan = 9.0;
-        apply(&mut s, None, &EditOp::SetMixer { mixer }).unwrap();
-        assert!(!s.mixer.original.mute);
-        assert_eq!(s.mixer.processed.gain_db, -3.0);
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetMixer {
+                mixer: mixer.clone(),
+            },
+        )
+        .unwrap();
+        assert!(!s.mixer.clip(ClipId(0)).original.mute);
+        assert_eq!(s.mixer.clip(ClipId(0)).processed.gain_db, -3.0);
         assert_eq!(s.mixer.click.pan, 1.0);
 
         mixer.click.pan = f64::INFINITY;
@@ -1029,7 +1293,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(s.blobs.get(BlobId(1)).unwrap().gain_db, -6.0);
+        assert_eq!(s.clips[0].blobs.get(BlobId(1)).unwrap().gain_db, -6.0);
         apply(
             &mut s,
             None,
@@ -1040,7 +1304,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            s.blobs.get(BlobId(1)).unwrap().gain_db,
+            s.clips[0].blobs.get(BlobId(1)).unwrap().gain_db,
             crate::limits::MAX_GAIN_DB
         );
     }
@@ -1057,7 +1321,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!((s.blobs.get(BlobId(2)).unwrap().time_offset - 0.25).abs() < 1e-9);
+        assert!((s.clips[0].blobs.get(BlobId(2)).unwrap().time_offset - 0.25).abs() < 1e-9);
     }
 
     #[test]
@@ -1075,7 +1339,7 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, AxysError::Invalid(_)), "accepted {bad}");
         }
-        assert_eq!(s.blobs.get(BlobId(1)).unwrap().time_scale, 1.0);
+        assert_eq!(s.clips[0].blobs.get(BlobId(1)).unwrap().time_scale, 1.0);
         apply(
             &mut s,
             None,
@@ -1085,7 +1349,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(s.blobs.get(BlobId(1)).unwrap().time_scale, 1.5);
+        assert_eq!(s.clips[0].blobs.get(BlobId(1)).unwrap().time_scale, 1.5);
     }
 
     #[test]
@@ -1456,7 +1720,7 @@ mod tests {
 
     #[test]
     fn reset_range_restores_the_analysed_segmentation() {
-        let baseline = state().blobs;
+        let baseline = state().clips[0].blobs.clone();
         let mut s = state();
         apply(
             &mut s,
@@ -1476,7 +1740,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(s.blobs.len(), 3);
+        assert_eq!(s.clips[0].blobs.len(), 3);
 
         apply_with_baseline(
             &mut s,
@@ -1489,15 +1753,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(s.blobs.len(), 2, "the split is undone");
-        let spans: Vec<(f64, f64)> = s.blobs.blobs().iter().map(|b| (b.start, b.end)).collect();
+        assert_eq!(s.clips[0].blobs.len(), 2, "the split is undone");
+        let spans: Vec<(f64, f64)> = s.clips[0]
+            .blobs
+            .blobs()
+            .iter()
+            .map(|b| (b.start, b.end))
+            .collect();
         assert_eq!(spans, vec![(0.0, 1.0), (1.0, 2.0)]);
-        assert_eq!(s.blobs.get(BlobId(2)).unwrap().pitch_offset, 0.0);
+        assert_eq!(s.clips[0].blobs.get(BlobId(2)).unwrap().pitch_offset, 0.0);
     }
 
     #[test]
     fn reset_range_leaves_blobs_outside_the_span_alone() {
-        let baseline = state().blobs;
+        let baseline = state().clips[0].blobs.clone();
         let mut s = state();
         apply(
             &mut s,
@@ -1530,12 +1799,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            s.blobs.len(),
+            s.clips[0].blobs.len(),
             2,
             "the split halves collapse back into one blob"
         );
         assert_eq!(
-            s.blobs.get(BlobId(2)).unwrap().pitch_offset,
+            s.clips[0].blobs.get(BlobId(2)).unwrap().pitch_offset,
             4.0,
             "a blob the span never reached keeps its edit"
         );
@@ -1558,7 +1827,7 @@ mod tests {
 
     #[test]
     fn reset_range_rejects_an_empty_span() {
-        let baseline = state().blobs;
+        let baseline = state().clips[0].blobs.clone();
         let mut s = state();
         assert!(apply_with_baseline(
             &mut s,
@@ -1613,7 +1882,7 @@ mod tests {
         .unwrap();
         apply(&mut s, None, &EditOp::ResetBlob { blob: BlobId(1) }).unwrap();
 
-        let b = s.blobs.get(BlobId(1)).unwrap();
+        let b = s.clips[0].blobs.get(BlobId(1)).unwrap();
         assert_eq!(b.pitch_offset, 0.0);
         assert_eq!(b.time_offset, 0.0);
         assert_eq!(b.time_scale, 1.0);
@@ -2368,5 +2637,253 @@ mod tests {
         assert!(serde_json::from_str::<EditOp>("{\"type\":\"noSuchOp\"}").is_err());
         assert!(serde_json::from_str::<EditOp>("{\"type\":\"splitBlob\"}").is_err());
         assert!(serde_json::from_str::<EditOp>("[]").is_err());
+    }
+
+    /// A second clip of two seconds, numbered for clip 1, with one blob at 0.5..1.5.
+    fn second_clip(position: f64) -> Clip {
+        let first = ClipId(1).first_blob().0;
+        Clip::new(
+            ClipId(1),
+            crate::clip::test_source("second.wav", 2.0),
+            position,
+            BlobSet::from_blobs(vec![blob(first, 0.5, 1.5)]).unwrap(),
+        )
+    }
+
+    /// Clip 0 from [`state`], made two seconds long so a second clip can sit beside it.
+    fn two_clips() -> EditState {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(5.0),
+            },
+        )
+        .unwrap();
+        s
+    }
+
+    #[test]
+    fn an_edit_in_project_seconds_lands_in_the_clip_source_seconds() {
+        let mut s = two_clips();
+        let id = ClipId(1).first_blob();
+        apply(
+            &mut s,
+            None,
+            &EditOp::SplitBlob {
+                blob: id,
+                time: 6.0,
+            },
+        )
+        .unwrap();
+        let clip = s.clip(ClipId(1)).unwrap();
+        assert_eq!(clip.blobs.len(), 2);
+        assert_eq!(clip.blobs.get(id).unwrap().end, 1.0);
+        assert!(clip
+            .blobs
+            .blobs()
+            .iter()
+            .all(|b| clip_of(b.id) == ClipId(1)));
+
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddAnchor {
+                blob: id,
+                anchor: Anchor::new(5.75, 62.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blob(id).unwrap().curve.anchors()[0].time, 0.75);
+    }
+
+    #[test]
+    fn a_clip_added_over_another_lands_beside_it() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(1.5),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 2.0);
+    }
+
+    #[test]
+    fn moving_a_clip_keeps_its_blobs_in_their_own_time() {
+        let mut s = two_clips();
+        let before = s.clip(ClipId(1)).unwrap().blobs.clone();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveClip {
+                clip: ClipId(1),
+                position: 9.0,
+            },
+        )
+        .unwrap();
+        let clip = s.clip(ClipId(1)).unwrap();
+        assert_eq!(clip.position, 9.0);
+        assert_eq!(clip.blobs, before);
+        assert_eq!(
+            s.project_blobs().unwrap().blobs().last().unwrap().start,
+            9.5
+        );
+    }
+
+    #[test]
+    fn a_boundary_cannot_be_dragged_into_the_next_clip() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip: second_clip(2.0),
+            },
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveBoundary {
+                blob: BlobId(2),
+                edge: Edge::End,
+                time: 2.8,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.blob(BlobId(2)).unwrap().end, 2.0);
+        assert!(s.project_blobs().is_ok());
+    }
+
+    #[test]
+    fn a_clip_cannot_be_moved_onto_another() {
+        let mut s = two_clips();
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveClip {
+                clip: ClipId(1),
+                position: 0.5,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 2.0);
+    }
+
+    #[test]
+    fn removing_a_clip_takes_its_mappings_with_it() {
+        let mut s = two_clips();
+        let id = ClipId(1).first_blob();
+        s.mappings = vec![
+            NoteMapping {
+                blob: id,
+                note: Some(0),
+                manual: false,
+                opted_out: false,
+            },
+            NoteMapping {
+                blob: BlobId(1),
+                note: Some(1),
+                manual: false,
+                opted_out: false,
+            },
+        ];
+        apply(&mut s, None, &EditOp::RemoveClip { clip: ClipId(1) }).unwrap();
+        assert!(s.clip(ClipId(1)).is_none());
+        assert_eq!(s.mappings.len(), 1);
+        assert!(apply(&mut s, None, &EditOp::RemoveClip { clip: ClipId(1) }).is_err());
+    }
+
+    #[test]
+    fn blobs_from_different_clips_are_not_joined() {
+        let mut s = two_clips();
+        let op = EditOp::JoinBlobs {
+            first: BlobId(2),
+            second: ClipId(1).first_blob(),
+        };
+        assert!(apply(&mut s, None, &op).is_err());
+    }
+
+    #[test]
+    fn deleting_a_blob_silences_its_material_and_a_reset_brings_it_back() {
+        let mut s = state();
+        let baseline = s.clips[0].blobs.clone();
+        apply(
+            &mut s,
+            None,
+            &EditOp::DeleteBlobs {
+                blobs: vec![BlobId(2)],
+            },
+        )
+        .unwrap();
+        assert!(s.blob(BlobId(2)).is_none());
+        assert_eq!(
+            s.clips[0].silenced,
+            vec![Span {
+                start: 1.0,
+                end: 2.0
+            }]
+        );
+
+        apply_with_baseline(
+            &mut s,
+            None,
+            Some(&baseline),
+            &EditOp::ResetRange {
+                start: 0.9,
+                end: 2.1,
+            },
+        )
+        .unwrap();
+        assert!(s.blob(BlobId(2)).is_some());
+        assert!(s.clips[0].silenced.is_empty());
+    }
+
+    #[test]
+    fn a_reference_is_added_moved_and_removed() {
+        let mut s = state();
+        s.clips[0].source.duration = 2.0;
+        let reference = Reference {
+            id: ReferenceId(0),
+            source: crate::clip::test_source("vocal.mp3", 30.0),
+            position: -2.0,
+        };
+        apply(&mut s, None, &EditOp::AddReference { reference }).unwrap();
+        assert_eq!(s.references[0].position, 0.0);
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveReference {
+                reference: ReferenceId(0),
+                position: 4.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.references[0].position, 4.0);
+        assert_eq!(s.duration(), 34.0);
+        apply(
+            &mut s,
+            None,
+            &EditOp::RemoveReference {
+                reference: ReferenceId(0),
+            },
+        )
+        .unwrap();
+        assert!(s.references.is_empty());
+    }
+
+    #[test]
+    fn a_clip_whose_blobs_belong_to_another_is_refused() {
+        let mut s = state();
+        let mut clip = second_clip(5.0);
+        clip.id = ClipId(2);
+        assert!(apply(&mut s, None, &EditOp::AddClip { clip }).is_err());
     }
 }

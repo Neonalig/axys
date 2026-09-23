@@ -318,7 +318,7 @@ folded into the operation and restored by Discard, but Apply cannot tell the two
 
 ### A stroke belongs to the take, not to a blob
 
-The pen and the line start anywhere, including over open canvas, and apply to every blob they
+The pen and the Bezier start anywhere, including over open canvas, and apply to every blob they
 cross. Each blob is given the part of the stroke that falls inside it, with a point interpolated at
 each edge the stroke crosses so a curve reaches the boundary instead of stopping at the last sample
 inside it.
@@ -572,6 +572,127 @@ Two names for one sound is a thing to work out rather than a thing to read.
 
 Swap Vocal is gone, command and all. Two strips with their own mutes already say which take is
 playing and set it, and a second way to say it is a second thing to keep in step. `C` is free.
+
+## Multiple sources
+
+### Clips on one lane, never overlapping
+
+A project holds several vocal clips, each one imported file with its own analysis, blobs and
+plan, placed at a position on the one editable lane. The design bible keeps one monophonic vocal
+lane, so clips do not overlap: a clip dropped or dragged over another lands against the nearer
+edge of the clip it would have covered, and the preview shows where before the pointer is let go.
+Reordering is dragging a clip past its neighbour into the gap beyond it.
+
+That rule is what keeps the editor unchanged underneath. The lane's blobs, taken together in
+project seconds, are always one valid ordered set, so selection, snapping, conflicts and MIDI
+mapping read one list rather than a list per clip.
+
+Rejected: overlapping clips summed together. Every time-domain question the editor asks, which
+blob is under the pointer, what a span covers, where the playhead sits in source time, would have
+needed a clip to answer it.
+
+### A clip keeps its own time, and the lane adds its position
+
+Everything inside a clip stays in that clip's source seconds: its track, blobs, silenced spans and
+plan. Moving a clip changes one number and nothing it holds. The session hands the editor blobs
+shifted into project seconds, and an operation arriving in project seconds is moved back into the
+owning clip's before it is applied, so every existing operation kept its shape.
+
+Blob ids are partitioned by clip, twenty low bits each, so a blob id alone names its clip and no
+operation needed a clip field. The first clip's ids are the ids a single-source project always
+had, which is what made the migration a rename.
+
+### Importing a second source is an edit
+
+The first clip is the base the history replays over, as the single source was. Every clip after
+it, and every reference, is brought in by an `addClip` or `addReference` operation carrying the
+source's facts and its analysed blobs, so undo takes an import back and redo returns it. The
+session keeps every clip it has seen, on the lane or not, because a redo needs the audio and the
+analysis again, and the document keeps their media for the same reason.
+
+### Plans per clip, and one plan for the editor
+
+Each clip compiles its own plan against its own track, with the guide's timeline moved by the
+clip's position. The worklet renders a voice per clip at its position, and the export mixes them
+the same way at offline quality.
+
+The editor draws the target line and converts the playhead from one plan. The session joins the
+clips' plans into one in project seconds, sampling each curve onto the lane grid at the nearest
+sample, which keeps the edges of an edited span from drawing a line towards MIDI zero. With one
+clip at zero the lane plan is that clip's own, exactly, so a single-source project draws and
+tests as it did.
+
+### Deleting a blob silences what it covered
+
+A blob removed from the set would leave its material playing as an untouched gap, which is the
+opposite of deleting it. `deleteBlobs` removes the blobs and records their source spans on the
+clip as silenced; the plan's gain is zero across them and the editor draws them unvoiced. Reset
+Range restores the analysed blobs and the silenced material together, because both are the
+segmentation.
+
+### References are heard, never edited
+
+A reference is audio in output time, so it has no analysis, no plan and no warp: the worklet reads
+its channels at the transport position less its own. It is decoded at the project's rate and kept
+in stereo, and its pan is a balance, so a centred reference plays both channels at the strip's
+level. An export leaves it out unless Include References is ticked, which writes the file in stereo
+with every unmuted reference at its desk level and pan beside the vocal. That is the one place the
+desk reaches an export, because a backing track mixed in at unity is rarely the balance anybody
+wanted. References sit on a lane of bands along the foot of the plot, where they are dragged to
+move and right-clicked to delete, and each has a strip on the desk.
+
+### One Import, and the file says what it is when it can
+
+Import takes audio or MIDI. MIDI is only ever the guide, and audio with nothing open only ever
+starts a project as its vocal, so neither is asked about. Audio on an open project could be a take
+to edit or a backing track to hear, which nothing in the file says, so a question asks once for
+everything imported or dropped together: Import Vocal or Import Reference.
+
+Rejected: an Import menu with an entry per kind. It asked the same question before the file was
+chosen, and a drop had no menu to ask it with, so dropped audio was always taken as a vocal.
+
+### A dropped file shows where it lands once it is read
+
+A browser does not let a page read a dragged file until it is dropped: during the drag only its
+kind is known, not its length or its audio. The drag shows a marker at the time the file will land.
+Once dropped and decoded, the clip's waveform is drawn where it lands, against the nearer free edge
+if it would overlap, while it is analysed, and the view moves to show it when it lands out of sight.
+
+### A track per clip on the desk
+
+The processed and original strips were the vocal's; now each clip has the pair, grouped under the
+clip's name as one track, so a clip reads as one source with two faders. A reference has a single
+strip and the metronome keeps its one. A source with no entry on the desk reads as the strips it
+starts with, processed up and original muted, so importing needs no edit to put it there. Solo
+spans the whole desk.
+
+A master strip at the far end scales everything the desk sends out. It has a level and a mute but
+no pan and no solo, and a mute or solo pressed on any other strip leaves it alone. A document
+saved before it existed reads it at unity.
+
+### The fader fill is the meter
+
+Each fader's fill darkens from the bottom as far as its strip is sounding, so a desk of meters
+costs no extra width and a level reads against the fader that sets it. The worklet reports the
+loudest sample each strip sent out, after its fader, with every position report; the panel rises
+to a new peak at once and falls back at a fixed rate, as a peak meter does. The meter never passes
+the fill, because it reads what the fader lets out.
+
+### A reopened project opens with what is there
+
+A project's audio is several files now, and refusing to open until every one was relinked would
+hold the whole project hostage to one missing reference. The project opens with whatever the
+device holds, names the first file it is missing, and matches audio opened or dropped while it
+waits by fingerprint to the clip or reference it belongs to. A clip without audio is silent and
+the export refuses until it is relinked.
+
+### Schema version 2
+
+A version 1 document held one `source`, `analysis` and `track`, and an edit state with `blobs` and
+a desk of processed, original and click. The migration makes that source clip 0 at position 0:
+its media, its lane in both edit states, and its track on the desk, including the desk inside
+recorded `setMixer` operations so an undo in a migrated project replays the desk it had. The web
+side reads project files through the core's `migrateProject`, so the migration lives in one place.
 
 ## Timeline and musical time
 
@@ -906,6 +1027,21 @@ source audio is large and lives in OPFS, keyed by fingerprint. Explicit project 
 write a single `.axys.json` file, so the only recoverable copy of a user's work is never trapped in
 an opaque browser cache. Autosave writes the document, not the media.
 
+### A reload reopens what was open
+
+Every project gets a recovery copy of its own, under an id made when it is created, and a new
+project writes one as soon as it opens. The device records which copy is open, and startup
+reopens that one, or nothing after New Project. The newest eight copies are kept.
+
+Rejected: an id derived from the first clip's fingerprint. Two projects started from the same file
+shared one copy, and one that had not been edited yet had written nothing, so a reload brought the
+older project back over the new one.
+
+Because a reload reopens the recovery copy, leaving the page warns only about what has not reached
+it yet: an import still running, an edit autosave has not written, or audio still being cached.
+Starting the write as the warning shows usually lands it before the answer. Without device storage
+there is no recovery copy, and any unsaved edit warns.
+
 ### Import and persistence implementation
 
 - **`midi.rs` validates the SMF chunk layout itself before calling `midly`**, because `midly` is
@@ -1001,6 +1137,14 @@ touches neither.
 `npm run dev` serves the module graph file by file, so there is no build to precache and no stamp
 to compare against. Registration happens in the production build only, which also keeps a stale
 worker from serving yesterday's bundle over a dev server.
+
+### Everything is loaded before the editor is shown
+
+The analysis and render workers, the span workers and the audio renderer are started as the page
+loads, each loading its core then, rather than on first use. A page that loses its server after
+loading, a stopped dev server or a dropped connection without the service worker, can still import,
+analyse, play and export. The renderer starts at the device's rate; a project at another rate
+rebuilds it, and a rebuild that cannot download keeps the running one, which resamples.
 
 ### New Project is a command of its own
 
@@ -1138,17 +1282,17 @@ from the set, which is what excluding a blob from analysis means.
 
 ### A toggle swaps its glyph, it does not dim one
 
-`STATE_ICONS` pairs a control with the two glyphs it picks between, and the transport, loop,
-follow, inspector fold, mixer fold and channel mute all swap. A dimmed icon reads as disabled
+`STATE_ICONS` pairs a control with the two glyphs it picks between, and the transport, inspector
+fold, mixer fold and channel mute all swap. A dimmed icon reads as disabled
 rather than off. `aria-pressed` carries the state either way, so the swap is decoration and no
 control depends on it.
 
-Where Lucide ships no off variant, the metronome and solo are the two here, the control keeps one
-glyph and carries its state in its pressed styling. A hand-drawn slashed variant beside real Lucide
+Where Lucide ships no off variant, the metronome, solo and follow, the control keeps one glyph and
+carries its state in its pressed styling. Loop keeps one glyph too: the pressed ground already says
+it is on, and a crossed-out repeat said the same thing twice. A hand-drawn slashed variant beside real Lucide
 pairs is immediately visible.
 
-Four pairs in the table have no control yet: loop-one-range, monitoring, blob excluded and
-diagnostics. They are in `STATE_ICONS` so the control that grows them has the pair already settled
+Three pairs in the table have no control yet: monitoring, blob excluded and diagnostics. They are in `STATE_ICONS` so the control that grows them has the pair already settled
 rather than picking a glyph on the day.
 
 ### Bravura, subset by codepoint
@@ -1275,7 +1419,7 @@ ground behind it. `editor/cursors.ts` draws each glyph twice, a heavy dark pass 
 over it, which is what keeps it legible over the waveform, a light surface and a selection fill
 alike. Every custom cursor is 24px with a declared hotspot and a stock fallback, so a host that
 refuses the image still shapes the pointer for what the tool does. The pen's hotspot is the nib, at
-the glyph's bottom left, so the ink lands where the pointer is rather than where the barrel is.
+the glyph's top left, so the ink lands where the pointer is rather than where the barrel is.
 
 A boundary drag is `col-resize` rather than `ew-resize`: it is a divider between two things that
 share a span, which is what `col-resize` means everywhere else.
@@ -1366,9 +1510,23 @@ stays on the inspector fold, where a panel beside a pane is exactly what it show
 the pair swapped so the glyph names what pressing it will do rather than where the panel is.
 
 The pitch tool takes `list-chevrons-up-down`, which is the axis it drags along, and hands its
-spline to the ramp tool, which is what a spline actually draws. Align Guide takes
+spline to the Bezier tool, which is what a spline actually draws. Align Guide takes
 `ruler-dimension-line` rather than the time tool's arrows, and the keyboard cheatsheet takes a
-keyboard.
+keyboard. The slice tool takes `slice`, the time tool `timer` and follow `arrow-right-from-line`.
+
+### The ramp is a Bezier that is shaped before it is kept
+
+The ramp tool drew a straight line, and Alt bent it into one fixed curve. It is now a cubic
+Bezier: the drag draws the line, and on release four handles appear, the two ends and a control
+pulling on each. Enter keeps it, Escape drops it, and switching tool or starting another curve
+keeps it too, which is how a vector editor finishes a path. Shaping it touches nothing in the
+session, so a curve dragged about for a minute is still one undo step when it is kept.
+
+The curve is kept as a stroke like the pen's: sampled at a few pixels of screen length per point,
+then reduced to the fewest anchors within a pixel of it and joined smoothly, so what is kept is
+what was on screen at the zoom it was shaped at. Controls
+are held between the ends in time, and a sample that would step backwards is dropped, because a
+pitch curve cannot fold back on itself.
 
 ### Shortcuts on keys a browser leaves alone
 
@@ -1493,6 +1651,15 @@ once, and a leaving panel takes no pointer events so the page is usable immediat
   test first fires, which may not be where a musician would put the boundary.
 - Blob ids are stable within one segmentation run only, so a re-analysis renumbers them.
 - A project document written by a newer build is refused rather than parsed best-effort.
+- Clips do not overlap on the lane, so two takes cannot be layered on it; a take meant to sound under
+  the vocal is a reference.
+- The first clip of a project is its base, so undo cannot take it back; Delete Clip can.
+- A blob moved past the end of its clip still belongs to it, and one clip's blobs cannot be joined
+  with another's.
+- A reference plays at the project rate as decoded, is never analysed and has no MIDI or pitch
+  display.
+- A dragged file's waveform cannot be shown before it is dropped, because the browser does not
+  expose its contents until then.
 - Format 2 MIDI files are read as if their tracks were parallel, and SMPTE timecode divisions are
   rejected outright.
 - WAV import does not support RF64/BW64, ADPCM, A-law or mu-law; export writes 16-bit, 24-bit and

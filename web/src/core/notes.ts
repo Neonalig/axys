@@ -72,6 +72,19 @@ export function noteName(midi: number, style: AccidentalStyle = 'sharps'): strin
   return `${name}${String(Math.floor(rounded / 12) - 1)}`;
 }
 
+/**
+ * {@link noteNameWithCents} in fixed columns, such as `A3  -12c` or `C#4  +3c`, for a readout
+ * that updates as the pointer or the playhead moves.
+ *
+ * @remarks The name is padded to three characters and the cents to three, so in a monospaced face
+ * a changing reading never moves the text beside it. Octaves below zero take one column more.
+ */
+export function readoutNoteName(midi: number, style: AccidentalStyle = 'sharps'): string {
+  const cents = Math.round((midi - Math.round(midi)) * 100);
+  const signed = `${cents > 0 ? '+' : ''}${String(cents)}`;
+  return `${noteName(midi, style).padEnd(3)} ${signed.padStart(3)}c`;
+}
+
 /** Note name plus the signed cents deviation, such as `A3 -12c`. */
 export function noteNameWithCents(midi: number, style: AccidentalStyle = 'sharps'): string {
   const cents = Math.round((midi - Math.round(midi)) * 100);

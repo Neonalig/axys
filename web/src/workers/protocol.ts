@@ -41,8 +41,18 @@ export interface CancelRequest {
   id: RequestId;
 }
 
+/**
+ * Asks a worker to load everything it will need now, while the server can still be reached.
+ *
+ * @remarks A worker otherwise fetches its core on its first job, which fails once the page has
+ * gone offline. Answered with nothing.
+ */
+export interface WarmRequest {
+  type: 'warm';
+}
+
 /** Everything the analysis worker accepts. */
-export type AnalysisRequest = AnalyseRequest | CancelRequest;
+export type AnalysisRequest = AnalyseRequest | CancelRequest | WarmRequest;
 
 /**
  * Everything one analysis produced.
@@ -125,7 +135,12 @@ export interface ExportWavRequest {
   type: 'exportWav';
   id: RequestId;
   projectJson: string;
-  samples: Float32Array;
+  /** Every clip's mono samples at the project rate, keyed by clip id. */
+  clips: ClipAudio[];
+  /** Every reference's channels at the project rate, used when `withReferences` is set. */
+  references: ReferenceAudio[];
+  /** Whether the file mixes the references in, which makes it stereo. */
+  withReferences: boolean;
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
@@ -133,8 +148,20 @@ export interface ExportWavRequest {
   sampleRate: number;
 }
 
+/** One clip's mono samples, keyed by the clip they belong to. */
+export interface ClipAudio {
+  clip: number;
+  samples: Float32Array;
+}
+
+/** One reference's channels, keyed by the reference they belong to. */
+export interface ReferenceAudio {
+  reference: number;
+  channels: Float32Array[];
+}
+
 /** Everything the render worker accepts. */
-export type RenderRequest = RenderRangeRequest | ExportWavRequest | CancelRequest;
+export type RenderRequest = RenderRangeRequest | ExportWavRequest | CancelRequest | WarmRequest;
 
 /** Rendered output and where it sits in the plan's output timeline. */
 export interface RenderedRange {
@@ -151,8 +178,6 @@ export interface RenderedRange {
 export interface EncodedWav {
   bytes: Uint8Array;
   report: ExportReport;
-  /** The caller's source buffer, transferred back. */
-  source: Float32Array;
 }
 
 /** How far a job has got. */
@@ -244,7 +269,7 @@ export function renderedTransfers(result: RenderedRange): Transferable[] {
 
 /** Buffers to transfer alongside an {@link EncodedWav}. */
 export function encodedTransfers(result: EncodedWav): Transferable[] {
-  return [bufferOf(result.bytes), bufferOf(result.source)];
+  return [bufferOf(result.bytes)];
 }
 
 /**

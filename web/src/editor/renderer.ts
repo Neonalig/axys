@@ -18,8 +18,12 @@ import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
-import { drawWaveform } from './layers/waveform.js';
-import type { EditorPreview } from './tools.js';
+import { clipPeaks, drawWaveform } from './layers/waveform.js';
+import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
+import { clipOf } from '../core/types.js';
+import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
+import { peaksFor } from './peaks.js';
+import type { PeakEnvelope } from './peaks.js';
 import type { Viewport } from './view.js';
 import { RULER_HEIGHT } from './view.js';
 
@@ -45,6 +49,7 @@ export class EditorRenderer {
   #state: AppState | null = null;
   #viewport: Viewport | null = null;
   #preview: EditorPreview | null = null;
+  #pending: PendingClip | null = null;
   #hover: HoverReadout | null = null;
   #themeName: ThemeName | null = null;
   #theme: Theme | null = null;
@@ -82,6 +87,14 @@ export class EditorRenderer {
   setPreview(preview: EditorPreview | null): void {
     if (this.#preview !== preview) {
       this.#preview = preview;
+      this.invalidate();
+    }
+  }
+
+  /** Sets the clip being imported, drawn where it will land until its blobs arrive. */
+  setPending(pending: PendingClip | null): void {
+    if (this.#pending !== pending) {
+      this.#pending = pending;
       this.invalidate();
     }
   }
@@ -126,6 +139,7 @@ export class EditorRenderer {
     this.#state = null;
     this.#viewport = null;
     this.#preview = null;
+    this.#pending = null;
     this.#hover = null;
   }
 
@@ -148,12 +162,17 @@ export class EditorRenderer {
     drawGrid(ctx, state, viewport, theme);
     drawWaveform(ctx, state, viewport, theme);
     drawMidi(ctx, state, viewport, theme);
+    drawReferences(ctx, state, viewport, theme);
     drawBlobs(ctx, state, viewport, theme);
     drawPitch(ctx, state, viewport, theme);
     drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
     drawOverlay(ctx, state, viewport, theme);
     this.#drawHoverGuides(ctx, state, viewport, theme);
+    const pending = this.#pending;
+    if (pending !== null) {
+      drawPending(ctx, viewport, theme, pending);
+    }
     this.#drawPreview(ctx, state, viewport, theme);
     this.#drawHover(ctx, viewport, theme);
     ctx.restore();
@@ -231,6 +250,38 @@ export class EditorRenderer {
       case 'curve':
         drawCurvePreview(ctx, viewport, theme, preview.points);
         labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
+        break;
+      case 'bezier':
+        drawCurvePreview(ctx, viewport, theme, preview.points);
+        drawBezierHandles(ctx, viewport, theme, preview.curve, preview.active);
+        labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
+        break;
+      case 'clipDrag':
+        drawClipDrag(ctx, state, viewport, theme, preview.clip, preview.position);
+        labelAt(ctx, viewport, theme, preview.label, {
+          x: viewport.timeToX(preview.position),
+          y: viewport.plotTop + 24,
+        });
+        break;
+      case 'referenceDrag': {
+        const references = state.edits?.references ?? [];
+        const index = references.findIndex((entry) => entry.id === preview.reference);
+        const reference = references[index];
+        if (reference !== undefined) {
+          drawReferenceBand(ctx, viewport, theme, reference, index, preview.position, GHOST_ALPHA);
+          labelAt(ctx, viewport, theme, preview.label, {
+            x: viewport.timeToX(preview.position),
+            y: viewport.height - (index + 2) * REFERENCE_BAND,
+          });
+        }
+        break;
+      }
+      case 'drop':
+        drawDropMarker(ctx, viewport, theme, preview.time);
+        labelAt(ctx, viewport, theme, preview.label, {
+          x: viewport.timeToX(preview.time) + 6,
+          y: viewport.plotTop + 24,
+        });
         break;
       case 'span':
         drawSpanPreview(ctx, state, viewport, theme, preview.blob, preview.start, preview.end);
@@ -523,6 +574,221 @@ function drawCurvePreview(
     ctx.arc(viewport.timeToX(last.time), viewport.midiToY(last.midi), 4, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
+}
+
+/**
+ * Draws a Bezier's control arms and its four handles.
+ *
+ * @remarks Ends are filled discs and controls hollow squares, the convention vector editors use to
+ * tell a point the curve passes through from one that only pulls on it.
+ */
+function drawBezierHandles(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  curve: BezierCurve,
+  active: BezierHandle | null,
+): void {
+  const at = (point: { time: number; midi: number }): { x: number; y: number } => ({
+    x: viewport.timeToX(point.time),
+    y: viewport.midiToY(point.midi),
+  });
+  const from = at(curve.from);
+  const c1 = at(curve.c1);
+  const c2 = at(curve.c2);
+  const to = at(curve.to);
+  ctx.save();
+  ctx.strokeStyle = theme.handle;
+  ctx.lineWidth = viewport.crispWidth();
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(c1.x, c1.y);
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(c2.x, c2.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  for (const [handle, point] of [
+    ['from', from],
+    ['to', to],
+  ] as const) {
+    ctx.fillStyle = handle === active ? theme.handleActive : theme.pitchTarget;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.lineWidth = 1.5;
+  for (const [handle, point] of [
+    ['c1', c1],
+    ['c2', c2],
+  ] as const) {
+    ctx.fillStyle = theme.bg;
+    ctx.strokeStyle = handle === active ? theme.handleActive : theme.pitchTarget;
+    ctx.fillRect(point.x - 4, point.y - 4, 8, 8);
+    ctx.strokeRect(point.x - 4, point.y - 4, 8, 8);
+  }
+  ctx.restore();
+}
+
+/** Fraction of the plot height the dragged clip's waveform band takes. */
+const CLIP_BAND_FRACTION = 0.24;
+
+/**
+ * Draws a clip being dragged where it would land: its blobs as ghosts, over a band carrying its
+ * whole waveform.
+ *
+ * @remarks The band spans the clip's source, gaps and all, so where the take starts and ends is
+ * read at a glance while the blobs show where its notes fall. The envelope is the one already
+ * cached for the waveform layer, so the preview costs one pass over it per frame.
+ */
+function drawClipDrag(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  clip: number,
+  position: number,
+): void {
+  const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+  if (entry === undefined) {
+    return;
+  }
+  const shift = position - entry.position;
+  const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const blob of blobs) {
+    const extent = blobPitchExtent(blob, state.track);
+    low = Math.min(low, extent.low);
+    high = Math.max(high, extent.high);
+  }
+  const middle =
+    Number.isFinite(low) && Number.isFinite(high)
+      ? viewport.midiToY((low + high) / 2)
+      : viewport.plotTop + viewport.plotHeight / 2;
+  drawWaveBand(
+    ctx,
+    viewport,
+    theme,
+    position,
+    entry.source.duration,
+    clipPeaks(state, clip)?.envelope ?? null,
+    middle,
+  );
+
+  for (const blob of blobs) {
+    drawBlobGhost(ctx, state, viewport, theme, blob, shift, 0);
+  }
+}
+
+/** Draws a clip being imported where it will land: its waveform band, titled. */
+function drawPending(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  pending: PendingClip,
+): void {
+  const middle = viewport.plotTop + viewport.plotHeight / 2;
+  drawWaveBand(
+    ctx,
+    viewport,
+    theme,
+    pending.position,
+    pending.duration,
+    peaksFor(pending.fingerprint),
+    middle,
+  );
+  labelAt(ctx, viewport, theme, `Analysing ${pending.title}`, {
+    x: viewport.timeToX(pending.position) + 6,
+    y: viewport.plotTop + 24,
+  });
+}
+
+/**
+ * Draws a dashed band across a clip's span, carrying its waveform when the envelope is known.
+ *
+ * @remarks `position` and `duration` are project seconds, and the band is centred on `middle`
+ * as far as the plot allows.
+ */
+function drawWaveBand(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  position: number,
+  duration: number,
+  envelope: PeakEnvelope | null,
+  middle: number,
+): void {
+  const bandHeight = viewport.plotHeight * CLIP_BAND_FRACTION;
+  const top = Math.min(
+    Math.max(viewport.plotTop, middle - bandHeight / 2),
+    viewport.height - bandHeight,
+  );
+  const x0 = viewport.timeToX(position);
+  const x1 = viewport.timeToX(position + duration);
+
+  ctx.save();
+  ctx.globalAlpha = GHOST_ALPHA * 0.45;
+  ctx.fillStyle = theme.blobFillSelected;
+  ctx.fillRect(x0, top, Math.max(2, x1 - x0), bandHeight);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = theme.handleActive;
+  ctx.lineWidth = viewport.crispWidth();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(
+    viewport.crisp(x0),
+    viewport.crisp(top),
+    Math.round(Math.max(2, x1 - x0)),
+    Math.round(bandHeight),
+  );
+  ctx.setLineDash([]);
+
+  const left = Math.max(x0, 0);
+  const right = Math.min(x1, viewport.width);
+  if (envelope !== null && right > left) {
+    const columns = Math.max(1, Math.round(right - left));
+    const from = viewport.xToTime(left) - position;
+    const to = viewport.xToTime(right) - position;
+    const span = envelope.sample(from, to, columns);
+    const centre = top + bandHeight / 2;
+    const half = bandHeight / 2 - 2;
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = theme.waveform;
+    for (let column = 0; column < span.count; column += 1) {
+      const lowest = span.min[column] ?? 0;
+      const highest = span.max[column] ?? 0;
+      const columnTop = centre - highest * half;
+      ctx.fillRect(left + column, columnTop, 1, Math.max(1, centre - lowest * half - columnTop));
+    }
+  }
+  ctx.restore();
+}
+
+/** Draws where audio dragged in from outside would land. */
+function drawDropMarker(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  time: number,
+): void {
+  const x = viewport.timeToX(time);
+  ctx.save();
+  ctx.strokeStyle = theme.handleActive;
+  ctx.lineWidth = viewport.crispWidth(2);
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(viewport.crisp(x, 2), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x, 2), viewport.height);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = theme.handleActive;
+  ctx.beginPath();
+  ctx.moveTo(x, RULER_HEIGHT);
+  ctx.lineTo(x - 6, RULER_HEIGHT - 8);
+  ctx.lineTo(x + 6, RULER_HEIGHT - 8);
+  ctx.closePath();
+  ctx.fill();
   ctx.restore();
 }
 

@@ -14,6 +14,9 @@ import type {
   BeatGridPoint,
   Blob,
   BlobSet,
+  Clip,
+  ClipMedia,
+  ClipStrips,
   DriftReport,
   EditOp,
   EditState,
@@ -39,11 +42,14 @@ import type {
   PitchTrack,
   PitchTrackArrays,
   Project,
+  Reference,
+  ReferenceStrip,
   RenderPlan,
   SampledCurve,
   ScaleSettings,
   SegmentParams,
   SourceInfo,
+  Span,
   Subregion,
   TempoEvent,
   TimeMap,
@@ -511,6 +517,13 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   resetRange: (op) => isNumber(op.start) && isNumber(op.end),
   setExcluded: (op) => isNumber(op.blob) && isBoolean(op.excluded),
   setGain: (op) => isNumber(op.blob) && isNumber(op.gainDb),
+  deleteBlobs: (op) => isNumberArray(op.blobs),
+  addClip: (op) => isClip(op.clip),
+  moveClip: (op) => isNumber(op.clip) && isNumber(op.position),
+  removeClip: (op) => isNumber(op.clip),
+  addReference: (op) => isReference(op.reference),
+  moveReference: (op) => isNumber(op.reference) && isNumber(op.position),
+  removeReference: (op) => isNumber(op.reference),
   setMixer: (op) => isMixerSettings(op.mixer),
   setScale: (op) => isScaleSettings(op.scale),
   setTuning: (op) => isTuning(op.tuning),
@@ -604,13 +617,102 @@ function isMixerStrip(value: unknown): value is MixerStrip {
   );
 }
 
+function isClipStrips(value: unknown): value is ClipStrips {
+  return (
+    isRecord(value) &&
+    isNumber(value.clip) &&
+    isMixerStrip(value.processed) &&
+    isMixerStrip(value.original)
+  );
+}
+
+function isReferenceStrip(value: unknown): value is ReferenceStrip {
+  return isRecord(value) && isNumber(value.reference) && isMixerStrip(value.strip);
+}
+
 /** Accepts the monitor desk. */
 export function isMixerSettings(value: unknown): value is MixerSettings {
   return (
     isRecord(value) &&
-    isMixerStrip(value.processed) &&
-    isMixerStrip(value.original) &&
-    isMixerStrip(value.click)
+    Array.isArray(value.clips) &&
+    value.clips.every(isClipStrips) &&
+    Array.isArray(value.references) &&
+    value.references.every(isReferenceStrip) &&
+    isMixerStrip(value.click) &&
+    isMixerStrip(value.master)
+  );
+}
+
+function isSpan(value: unknown): value is Span {
+  return isRecord(value) && isNumber(value.start) && isNumber(value.end);
+}
+
+/** Accepts one clip on the lane. */
+export function isClip(value: unknown): value is Clip {
+  return (
+    isRecord(value) &&
+    isNumber(value.id) &&
+    isSourceInfo(value.source) &&
+    isNumber(value.position) &&
+    isBlobSet(value.blobs) &&
+    Array.isArray(value.silenced) &&
+    value.silenced.every(isSpan)
+  );
+}
+
+/** Accepts one reference. */
+export function isReference(value: unknown): value is Reference {
+  return (
+    isRecord(value) && isNumber(value.id) && isSourceInfo(value.source) && isNumber(value.position)
+  );
+}
+
+function isClipMedia(value: unknown): value is ClipMedia {
+  return (
+    isRecord(value) &&
+    isNumber(value.clip) &&
+    isSourceInfo(value.source) &&
+    isAnalysisInfo(value.analysis) &&
+    (value.track === null || isPitchTrack(value.track)) &&
+    isBlobSet(value.blobs)
+  );
+}
+
+/** One clip's compiled plan and where the clip sits, as the worklet and the export read it. */
+export interface ClipPlan {
+  clip: number;
+  /** Project seconds at which the clip's output second 0 sits. */
+  position: number;
+  plan: RenderPlan;
+}
+
+/** Accepts one clip's placed plan. */
+export function isClipPlan(value: unknown): value is ClipPlan {
+  return (
+    isRecord(value) && isNumber(value.clip) && isNumber(value.position) && isRenderPlan(value.plan)
+  );
+}
+
+/** Audio a project needs from the device, and which clips have theirs. */
+export interface MediaList {
+  clips: { clip: number; source: SourceInfo; attached: boolean }[];
+  references: Reference[];
+}
+
+/** Accepts a session's media list. */
+export function isMediaList(value: unknown): value is MediaList {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.clips) &&
+    value.clips.every(
+      (entry) =>
+        isRecord(entry) &&
+        isNumber(entry.clip) &&
+        isSourceInfo(entry.source) &&
+        isBoolean(entry.attached),
+    ) &&
+    Array.isArray(value.references) &&
+    value.references.every(isReference)
   );
 }
 
@@ -618,9 +720,11 @@ export function isMixerSettings(value: unknown): value is MixerSettings {
 export function isEditState(value: unknown): value is EditState {
   return (
     isRecord(value) &&
-    isBlobSet(value.blobs) &&
-    // Absent in a document written before the mixer, which the core opens with the default desk.
-    (value.mixer === undefined || isMixerSettings(value.mixer)) &&
+    Array.isArray(value.clips) &&
+    value.clips.every(isClip) &&
+    Array.isArray(value.references) &&
+    value.references.every(isReference) &&
+    isMixerSettings(value.mixer) &&
     isScaleSettings(value.scale) &&
     isModulationSettings(value.modulation) &&
     isFormantMode(value.formant) &&
@@ -656,9 +760,10 @@ export function isProject(value: unknown): value is Project {
     isNumber(value.schemaVersion) &&
     isString(value.appVersion) &&
     isString(value.name) &&
-    isSourceInfo(value.source) &&
-    isAnalysisInfo(value.analysis) &&
-    (value.track === null || isPitchTrack(value.track)) &&
+    Array.isArray(value.clips) &&
+    value.clips.every(isClipMedia) &&
+    Array.isArray(value.references) &&
+    value.references.every(isReference) &&
     isEditState(value.edits) &&
     isEditState(value.base) &&
     isNullableString(value.midi) &&

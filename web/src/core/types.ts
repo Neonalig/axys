@@ -390,6 +390,13 @@ export type EditOp =
   | { type: 'resetRange'; start: number; end: number }
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setGain'; blob: BlobId; gainDb: number }
+  | { type: 'deleteBlobs'; blobs: BlobId[] }
+  | { type: 'addClip'; clip: Clip }
+  | { type: 'moveClip'; clip: ClipId; position: number }
+  | { type: 'removeClip'; clip: ClipId }
+  | { type: 'addReference'; reference: Reference }
+  | { type: 'moveReference'; reference: ReferenceId; position: number }
+  | { type: 'removeReference'; reference: ReferenceId }
   | { type: 'setMixer'; mixer: MixerSettings }
   | { type: 'setScale'; scale: ScaleSettings }
   | { type: 'setTuning'; tuning: Tuning }
@@ -453,6 +460,68 @@ export interface SourceInfo {
   mime: string | null;
 }
 
+/** Stable identifier for a clip within one project. */
+export type ClipId = number;
+
+/** Stable identifier for a reference within one project. */
+export type ReferenceId = number;
+
+/** A span of source seconds. */
+export interface Span {
+  start: number;
+  end: number;
+}
+
+/**
+ * One imported vocal placed on the lane.
+ *
+ * @remarks Its blobs and silenced spans are in the clip's own source seconds; project seconds
+ * are those plus `position`. Blobs read from a session are already in project seconds.
+ */
+export interface Clip {
+  id: ClipId;
+  source: SourceInfo;
+  /** Project seconds at which the clip's source second 0 sits. */
+  position: number;
+  blobs: BlobSet;
+  /** Material deleted with its blobs, rendered as silence. */
+  silenced: Span[];
+}
+
+/** Audio heard beside the vocal and never edited or warped. */
+export interface Reference {
+  id: ReferenceId;
+  source: SourceInfo;
+  /** Project seconds at which the reference starts. */
+  position: number;
+}
+
+/** What a project keeps about one clip's audio, whether or not the clip is on the lane now. */
+export interface ClipMedia {
+  clip: ClipId;
+  source: SourceInfo;
+  analysis: AnalysisInfo;
+  /** Stored analysis output; rebuildable from the source and parameters. */
+  track: PitchTrack | null;
+  /** The analysed segmentation, numbered for the clip. */
+  blobs: BlobSet;
+}
+
+/** Low bits of a blob id that number blobs within their clip. */
+export const CLIP_ID_BITS = 20;
+
+/** The clip a blob belongs to. */
+export function clipOf(blob: BlobId): ClipId {
+  return Math.floor(blob / 2 ** CLIP_ID_BITS);
+}
+
+/** What a source is called on the desk and over its blobs: its file name without the extension. */
+export function sourceTitle(fileName: string): string {
+  const trimmed = fileName.trim();
+  const dot = trimmed.lastIndexOf('.');
+  return dot > 0 ? trimmed.slice(0, dot) : trimmed;
+}
+
 /** Parameters and version that produced the stored analysis. */
 export interface AnalysisInfo {
   analyserVersion: number;
@@ -470,7 +539,10 @@ export interface EditState {
    * like any other, undone and redone with the rest of the history.
    */
   name: string;
-  blobs: BlobSet;
+  /** Vocal clips on the lane, in the order they were imported. */
+  clips: Clip[];
+  /** Audio heard beside the vocal. */
+  references: Reference[];
   /** Monitor levels for everything the transport plays. */
   mixer: MixerSettings;
   scale: ScaleSettings;
@@ -494,14 +566,34 @@ export interface MixerStrip {
   solo: boolean;
 }
 
-/** The monitor desk: one strip per audio source the transport plays. */
-export interface MixerSettings {
+/** A vocal clip's track on the desk: the take as edited and as sung. */
+export interface ClipStrips {
+  clip: ClipId;
   /** The take as the edits make it sound. */
   processed: MixerStrip;
   /** The take as it was sung, on the same transport clock. */
   original: MixerStrip;
+}
+
+/** A reference's strip on the desk. */
+export interface ReferenceStrip {
+  reference: ReferenceId;
+  strip: MixerStrip;
+}
+
+/**
+ * The monitor desk.
+ *
+ * @remarks A clip or reference with no entry reads as the strips it starts with; see
+ * `audio/mixer.ts`.
+ */
+export interface MixerSettings {
+  clips: ClipStrips[];
+  references: ReferenceStrip[];
   /** The metronome. */
   click: MixerStrip;
+  /** Everything the desk sends to the output. Only its level and mute apply. */
+  master: MixerStrip;
 }
 
 /** Whether the ruler reads in clock time or in bars and beats. */
@@ -525,10 +617,10 @@ export interface Project {
   schemaVersion: number;
   appVersion: string;
   name: string;
-  source: SourceInfo;
-  analysis: AnalysisInfo;
-  /** Stored analysis output; rebuildable from the source and parameters. */
-  track: PitchTrack | null;
+  /** The audio and analysis of every clip the project or its history can put on the lane. */
+  clips: ClipMedia[];
+  /** Every reference the project or its history can bring in. */
+  references: Reference[];
   edits: EditState;
   /** The state the history replays from: the analysis, plus what no edit recorded. */
   base: EditState;
@@ -545,7 +637,7 @@ export type Quality = 'preview' | 'offline';
 export const MIN_BLOB_SECONDS = 0.01;
 
 /** Project schema version this build reads and writes. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** Quietest a blob or a mixer strip may be set to, in decibels. This far down is silence. */
 export const MIN_GAIN_DB = -60;

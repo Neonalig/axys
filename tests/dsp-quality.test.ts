@@ -17,6 +17,7 @@ import {
   analyseFixture,
   correlation,
   decodeWavBytes,
+  firstClipInputs,
   loadTestCore,
   measureF0,
   medianMidi,
@@ -495,16 +496,17 @@ describe('DSP quality over the generated fixtures', () => {
         '',
       );
       try {
-        const bytes = session.exportWav(0, -1, phrase.sampleRate, 'pcm16');
+        const bytes = session.exportWav(0, -1, phrase.sampleRate, 'pcm16', false);
         const report = JSON.parse(session.lastExportReport()) as ExportReport;
         const decoded = decodeWavBytes(bytes).samples;
         expect(report.frames).toBe(decoded.length);
         expect(report.clippedSamples).toBe(0);
 
+        const inputs = firstClipInputs(session);
         const renderer = core.PlaybackRenderer.create(
-          session.source(),
-          session.trackJson(),
-          session.planJson(),
+          inputs.samples,
+          inputs.trackJson,
+          inputs.planJson,
           true,
         );
         try {
@@ -534,7 +536,7 @@ describe('DSP quality over the generated fixtures', () => {
       const analysis = core.analyse(hot, phrase.sampleRate, '');
       const session = core.Session.create(hot, phrase.sampleRate, 'hot', analysis, '');
       try {
-        const bytes = session.exportWav(0, -1, phrase.sampleRate, 'pcm16');
+        const bytes = session.exportWav(0, -1, phrase.sampleRate, 'pcm16', false);
         const report = JSON.parse(session.lastExportReport()) as ExportReport;
         expect(report.peak).toBeGreaterThan(1);
         expect(report.clippedSamples).toBeGreaterThan(0);

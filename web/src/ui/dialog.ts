@@ -259,6 +259,9 @@ export class Dialog {
       this.#opener.focus();
     }
     this.#onClose?.();
+    // An entry that never finished, because the page stopped painting, would otherwise play on
+    // underneath the exit and hold the panel on screen.
+    this.#element.classList.remove('is-entering');
 
     const backdrop = this.#backdrop;
     if (backdrop !== null) {
@@ -417,6 +420,8 @@ export function confirm(options: {
   /** A second way forward, such as saving first. Omitted when there is only one. */
   alternative?: string;
   icon?: IconName;
+  /** How the confirming action is styled. Danger unless the question discards nothing. */
+  kind?: 'danger' | 'primary';
 }): Promise<Confirmation> {
   return new Promise((resolve) => {
     let answer: Confirmation = 'cancel';
@@ -442,7 +447,7 @@ export function confirm(options: {
     }
     actions.push({
       label: options.confirm,
-      kind: 'danger',
+      kind: options.kind ?? 'danger',
       onSelect: (dialog) => {
         answer = 'confirm';
         dialog.close();

@@ -10,7 +10,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "dev": "npm-run-all --parallel wasm:watch dev:web",
+    "dev": "node scripts/build-wasm.mjs --dev && npm-run-all --parallel wasm:watch dev:web",
     "dev:web": "vite",
     "wasm:build": "node scripts/build-wasm.mjs",
     "icons:build": "node scripts/build-icons.mjs",

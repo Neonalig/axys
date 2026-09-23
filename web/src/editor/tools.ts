@@ -12,7 +12,7 @@ import type {
   TimelineMap,
   TimingConflict,
 } from '../core/types.js';
-import { noteNameWithCents } from '../core/notes.js';
+import { readoutNoteName } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
 import { beatGrid } from '../core/timeline.js';
 
@@ -86,9 +86,9 @@ export const TOOLS: readonly ToolDefinition[] = [
     cursor: PEN_CURSOR,
   },
   {
-    id: 'line',
-    label: 'Draw Ramp',
-    hint: 'Drag a ramp, Alt curves it',
+    id: 'bezier',
+    label: 'Draw Bezier',
+    hint: 'Drag a line, then shape it by its handles',
     key: 'N',
     cursor: 'crosshair',
   },
@@ -108,7 +108,16 @@ export function toolDefinition(id: ToolId): ToolDefinition {
 }
 
 /** What kind of object a pointer position lands on. */
-export type HitKind = 'empty' | 'ruler' | 'loopEdge' | 'blob' | 'blobEdge' | 'anchor' | 'conflict';
+export type HitKind =
+  | 'empty'
+  | 'ruler'
+  | 'loopEdge'
+  | 'blob'
+  | 'blobEdge'
+  | 'anchor'
+  | 'conflict'
+  | 'clipTitle'
+  | 'reference';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -120,6 +129,8 @@ export interface Hit {
   anchor: number | null;
   /** The timing conflict the position falls in, when it is not over a blob. */
   conflict: TimingConflict | null;
+  /** The reference whose band the position is over. */
+  reference: number | null;
   /** Output seconds under the cursor. */
   time: number;
   /** Source seconds under the cursor; equal to `time` outside any blob. */
@@ -137,7 +148,7 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   if (hit.kind === 'conflict') {
     return 'help';
   }
-  if (hit.kind === 'anchor') {
+  if (hit.kind === 'anchor' || hit.kind === 'clipTitle' || hit.kind === 'reference') {
     return 'grab';
   }
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
@@ -162,11 +173,15 @@ export function describeHit(hit: Hit, state: AppState): string {
     case 'loopEdge':
       return hit.edge === 'start' ? 'Loop Start' : 'Loop End';
     case 'anchor':
-      return `Anchor ${noteNameWithCents(hit.midi, accidentals)}`;
+      return `Anchor ${readoutNoteName(hit.midi, accidentals)}`;
     case 'blobEdge':
       return hit.edge === 'start' ? `Blob Start ${clock}` : `Blob End ${clock}`;
     case 'blob':
-      return `Blob ${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
+      return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'clipTitle':
+      return 'Move Clip';
+    case 'reference':
+      return 'Move Reference';
     case 'conflict': {
       const conflict = hit.conflict;
       if (conflict === null) {
@@ -178,7 +193,7 @@ export function describeHit(hit: Hit, state: AppState): string {
         : `Overlap  ${pair.charAt(0).toUpperCase()}${pair.slice(1)} both sound here`;
     }
     default:
-      return `${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
+      return `${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
   }
 }
 
@@ -390,6 +405,154 @@ export function gestureAnchors(points: readonly GesturePoint[], interp: Interp):
   return anchors;
 }
 
+/**
+ * The position nearest `wanted` at which a clip of `duration` overlaps no other clip.
+ *
+ * @remarks Mirrors `axys_core::clip::free_position`, so a dragged clip previews where the core
+ * will put it: where it was asked when it fits, and otherwise against the nearer edge of the
+ * neighbour it would have overlapped. `others` are the other clips' `[start, end]` spans.
+ */
+export function freePosition(
+  others: readonly (readonly [number, number])[],
+  duration: number,
+  wanted: number,
+): number {
+  const asked = Number.isFinite(wanted) ? Math.max(0, wanted) : 0;
+  const length = Math.max(0, duration);
+  const fits = (at: number): boolean =>
+    at >= 0 && others.every(([start, end]) => at + length <= start + 1e-9 || at >= end - 1e-9);
+  if (fits(asked)) {
+    return asked;
+  }
+  let best: number | null = null;
+  for (const candidate of [0, ...others.flatMap(([start, end]) => [end, start - length])]) {
+    if (!fits(candidate)) continue;
+    if (best === null || Math.abs(candidate - asked) < Math.abs(best - asked)) best = candidate;
+  }
+  return best ?? Math.max(0, ...others.map(([, end]) => end));
+}
+
+/** A clip being imported, shown where it will land until the core has its blobs. */
+export interface PendingClip {
+  /** Project seconds the clip starts at. */
+  position: number;
+  /** Seconds of source audio. */
+  duration: number;
+  /** Fingerprint its waveform envelope is cached under. */
+  fingerprint: string;
+  /** What its title tab will read. */
+  title: string;
+}
+
+/** A point of a {@link BezierCurve} that can be dragged. */
+export type BezierHandle = 'from' | 'c1' | 'c2' | 'to';
+
+/**
+ * A cubic Bezier pitch transition, in output seconds and fractional MIDI.
+ *
+ * @remarks `c1` is the control point pulling the curve out of `from` and `c2` the one pulling it
+ * into `to`. `from` is never later than `to`.
+ */
+export interface BezierCurve {
+  from: GesturePoint;
+  c1: GesturePoint;
+  c2: GesturePoint;
+  to: GesturePoint;
+}
+
+/** A straight Bezier between two points, with its controls a third of the way in from each end. */
+export function straightBezier(a: GesturePoint, b: GesturePoint): BezierCurve {
+  const [from, to] = a.time <= b.time ? [a, b] : [b, a];
+  return {
+    from,
+    c1: lerpPoint(from, to, 1 / 3),
+    c2: lerpPoint(from, to, 2 / 3),
+    to,
+  };
+}
+
+/**
+ * The curve with one handle moved.
+ *
+ * @remarks Moving an end carries its control with it, the way a vector editor moves a node with
+ * its handle. Controls are held inside the span between the ends so the curve cannot fold back
+ * in time, and the ends are kept in order.
+ */
+export function moveBezierHandle(
+  curve: BezierCurve,
+  handle: BezierHandle,
+  point: GesturePoint,
+): BezierCurve {
+  const next = { ...curve };
+  switch (handle) {
+    case 'from': {
+      const time = Math.min(point.time, curve.to.time);
+      const dt = time - curve.from.time;
+      const dm = point.midi - curve.from.midi;
+      next.from = { time, midi: point.midi };
+      next.c1 = { time: curve.c1.time + dt, midi: curve.c1.midi + dm };
+      break;
+    }
+    case 'to': {
+      const time = Math.max(point.time, curve.from.time);
+      const dt = time - curve.to.time;
+      const dm = point.midi - curve.to.midi;
+      next.to = { time, midi: point.midi };
+      next.c2 = { time: curve.c2.time + dt, midi: curve.c2.midi + dm };
+      break;
+    }
+    case 'c1':
+      next.c1 = point;
+      break;
+    case 'c2':
+      next.c2 = point;
+      break;
+  }
+  const low = next.from.time;
+  const high = next.to.time;
+  next.c1 = { time: Math.min(Math.max(next.c1.time, low), high), midi: next.c1.midi };
+  next.c2 = { time: Math.min(Math.max(next.c2.time, low), high), midi: next.c2.midi };
+  return next;
+}
+
+/**
+ * Samples a curve into points that advance strictly in time.
+ *
+ * @remarks A sample that would step back in time is dropped, so the points are always usable as
+ * curve anchors even where the controls cross over each other.
+ */
+export function sampleBezier(curve: BezierCurve, count: number): GesturePoint[] {
+  const steps = Math.max(2, Math.floor(count));
+  const points: GesturePoint[] = [];
+  let previous = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i <= steps; i += 1) {
+    const point = bezierAt(curve, i / steps);
+    if (point.time <= previous) {
+      continue;
+    }
+    previous = point.time;
+    points.push(point);
+  }
+  return points;
+}
+
+/** The point a curve passes through at parameter `t`, from 0 at `from` to 1 at `to`. */
+export function bezierAt(curve: BezierCurve, t: number): GesturePoint {
+  const u = 1 - t;
+  const a = u * u * u;
+  const b = 3 * u * u * t;
+  const c = 3 * u * t * t;
+  const d = t * t * t;
+  return {
+    time: a * curve.from.time + b * curve.c1.time + c * curve.c2.time + d * curve.to.time,
+    midi: a * curve.from.midi + b * curve.c1.midi + c * curve.c2.midi + d * curve.to.midi,
+  };
+}
+
+function lerpPoint(a: GesturePoint, b: GesturePoint, t: number): GesturePoint {
+  return { time: a.time + (b.time - a.time) * t, midi: a.midi + (b.midi - a.midi) * t };
+}
+
 /** A gesture in progress, drawn over the committed state until it is released. */
 export type EditorPreview =
   | { kind: 'spanSelect'; x0: number; x1: number }
@@ -398,5 +561,15 @@ export type EditorPreview =
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
   | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
+  | {
+      kind: 'bezier';
+      curve: BezierCurve;
+      points: readonly GesturePoint[];
+      active: BezierHandle | null;
+      label: string;
+    }
   | { kind: 'span'; blob: BlobId | null; start: number; end: number; label: string }
+  | { kind: 'clipDrag'; clip: number; position: number; label: string }
+  | { kind: 'referenceDrag'; reference: number; position: number; label: string }
+  | { kind: 'drop'; time: number; label: string }
   | { kind: 'split'; blob: BlobId; time: number; label: string };

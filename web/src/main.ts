@@ -17,28 +17,36 @@ import { clampInspectorWidth, loadPreferences, savePreferences } from './app/pre
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
 import { AppStore, initialState } from './app/store.js';
-import type { FollowMode, ToolId } from './app/store.js';
-import { decodeAudioFile } from './audio/decode.js';
+import type { AppState, FollowMode, ToolId } from './app/store.js';
+import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
+import { referencePeaksKey } from './editor/layers/references.js';
 import { AudioEngine } from './audio/engine.js';
-import type { EngineReport } from './audio/engine.js';
+import type { EngineReport, MeterReport } from './audio/engine.js';
 import { browserLabel } from './browser.js';
 import { isSupported, probeCapabilities } from './capabilities.js';
 import type { Capability } from './capabilities.js';
-import { isProject, parseJson } from './core/json.js';
+import { isViewState } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, Session } from './core/wasm.js';
+import { sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
+  ClipId,
   EditOp,
+  EditState,
   ExportPreview,
   GuideOverlap,
   MappingProposal,
   MixerSettings,
-  Project,
+  Reference,
+  ReferenceId,
   RenderPlan,
+  SourceInfo,
   ViewState,
 } from './core/types.js';
 import { EditorController } from './editor/interaction.js';
+import { freePosition } from './editor/tools.js';
+import type { PendingClip } from './editor/tools.js';
 import { buildPeaks, clearPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
 import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN } from './editor/view.js';
@@ -47,7 +55,7 @@ import { PersistenceError, ProjectStore } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import {
   EXPORT_KIND,
-  MIDI_KIND,
+  IMPORTABLE,
   openFile,
   OPENABLE,
   PROJECT_KIND,
@@ -55,7 +63,7 @@ import {
   writeFile,
 } from './persistence/file-access.js';
 import type { FileHandle } from './persistence/file-access.js';
-import { importProject, relink } from './persistence/project-io.js';
+import { importProject } from './persistence/project-io.js';
 import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
@@ -73,6 +81,17 @@ import { WorkerCancelled } from './workers/protocol.js';
 
 /** Pitch margin above and below the content the first view frames, in semitones. */
 const FIT_MARGIN = 3;
+
+/**
+ * Local record of which stored project is open, so a reload reopens it.
+ *
+ * @remarks An empty string records that nothing is open, so a reload after New Project stays
+ * empty. With no record at all the newest stored project reopens.
+ */
+const OPEN_PROJECT_KEY = 'axys.project.open';
+
+/** How many projects keep a recovery copy on the device; older ones are deleted. */
+const RECOVERY_COPIES = 8;
 
 /** Local flag recording that the degraded-capability notice has been shown once. */
 const DEGRADED_NOTICE_KEY = 'axys.degraded.notice';
@@ -93,17 +112,49 @@ interface WorkspaceDeps {
   media: MediaStore | null;
 }
 
-/** A project document waiting for its source audio to be relinked. */
-interface PendingProject {
-  json: string;
-  project: Project;
+/**
+ * Media a reopened project still needs from the user.
+ *
+ * @remarks The project opens and edits without them; a clip plays and exports once its audio is
+ * relinked, and a reference once its own is.
+ */
+interface MissingMedia {
+  clips: { clip: ClipId; source: SourceInfo }[];
+  references: Reference[];
+}
+
+/** A fresh id for a project's recovery copy, never shared with another project. */
+function newProjectId(): string {
+  return `project-${crypto.randomUUID()}`;
+}
+
+/** Which stored project was open, `''` when none was, or `null` when nothing is recorded. */
+function openProjectRecord(): string | null {
+  try {
+    return localStorage.getItem(OPEN_PROJECT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function recordOpenProject(id: string): void {
+  try {
+    localStorage.setItem(OPEN_PROJECT_KEY, id);
+  } catch {
+    // A browser that refuses storage reopens the newest project instead, which is close enough.
+  }
+}
+
+/** Key a reference's channels are cached under, apart from any clip made from the same file. */
+function referenceKey(fingerprint: string): string {
+  return `${fingerprint}-reference`;
 }
 
 /**
  * The session-backed half of the application.
  *
  * @remarks Owns the one open {@link Session}. Every edit path ends in {@link AxysWorkspace.apply}
- * or one of the file operations, each of which republishes the compiled plan to the audio engine
+ * or one of the file operations, each of which republishes the compiled plans to the audio engine
  * so playback reflects the edit immediately.
  */
 class AxysWorkspace implements Workspace {
@@ -120,12 +171,17 @@ class AxysWorkspace implements Workspace {
   #plan: RenderPlan | null = null;
   #projectId: string | null = null;
   #autosave: Autosave | null = null;
-  #pending: PendingProject | null = null;
+  #missing: MissingMedia = { clips: [], references: [] };
+  /** Each reference's channels at the project rate, kept so the engine can be handed copies. */
+  readonly #references = new Map<ReferenceId, Float32Array[]>();
   #importing = false;
   /** Whether an open operation has a group applied that Apply keeps and Discard takes back. */
   #previewing = false;
   /** Where Save Project last wrote, so a later save needs no picker. */
   #projectFile: FileHandle | null = null;
+  #onPending: ((clip: PendingClip | null) => void) | null = null;
+  /** Media writes to the device still running. */
+  #writes = 0;
 
   constructor(deps: WorkspaceDeps) {
     this.#core = deps.core;
@@ -161,24 +217,15 @@ class AxysWorkspace implements Workspace {
       return;
     }
     if (!(await this.#mayReplaceProject('Starting a new project', 'Discard and Start'))) return;
-
-    this.#autosave?.dispose();
-    this.#autosave = null;
-    this.#session?.free();
-    this.#session = null;
-    this.#pending = null;
-    this.#plan = null;
+    this.#close();
     this.#projectFile = null;
-    this.#projectId = null;
-    clearPeaks();
-    this.#audio.unloadSource();
+    recordOpenProject('');
 
     const fresh = initialState();
     const view = this.#store.state.view;
     this.#store.update({
       phase: 'empty',
       message: null,
-      source: null,
       projectName: null,
       track: null,
       blobs: [],
@@ -196,6 +243,20 @@ class AxysWorkspace implements Workspace {
       analysis: fresh.analysis,
       dirty: false,
     });
+  }
+
+  /** Lets go of the session, its media and its autosave. */
+  #close(): void {
+    this.#autosave?.dispose();
+    this.#autosave = null;
+    this.#session?.free();
+    this.#session = null;
+    this.#missing = { clips: [], references: [] };
+    this.#references.clear();
+    this.#plan = null;
+    this.#projectId = null;
+    clearPeaks();
+    this.#audio.unloadSource();
   }
 
   /**
@@ -331,9 +392,15 @@ class AxysWorkspace implements Workspace {
     return redone;
   }
 
+  /**
+   * Starts a project from one audio file, replacing whatever is open.
+   *
+   * @remarks A project still waiting for audio it was made from takes the file as a relink
+   * instead, because that is what it asked for.
+   */
   async openAudioFile(file: File, ask = false): Promise<void> {
-    if (this.#pending) {
-      await this.#relinkPending(file);
+    if (this.#hasMissing()) {
+      await this.#relink(file);
       return;
     }
     if (ask && !(await this.#mayReplaceProject())) return;
@@ -347,12 +414,7 @@ class AxysWorkspace implements Workspace {
     this.#importing = true;
     try {
       const decoded = await decodeAudioFile(file);
-      const analysed = await this.#analysis.analyse(
-        { samples: decoded.mono, sampleRate: decoded.sampleRate, name: decoded.name },
-        (stage, progress) => {
-          this.#progress(stage, progress);
-        },
-      );
+      const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name);
       const session = this.#core.openSessionFromAnalysis({
         samples: analysed.samples,
         sampleRate: analysed.sampleRate,
@@ -360,20 +422,273 @@ class AxysWorkspace implements Workspace {
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
       });
-      await this.#install(session, analysed.samples, analysed.name, null);
+      this.#close();
+      await this.#install(session, null, null);
       if (decoded.resampled) {
         this.#toast.warn(`Decoded at ${String(decoded.sampleRate)} Hz, not the file's own rate.`);
       }
     } catch (error) {
-      if (error instanceof WorkerCancelled) {
-        this.#idle();
-        this.#store.update({ phase: this.#session ? 'ready' : 'empty', message: null });
-        this.#toast.info('Import cancelled');
-      } else {
-        this.#fail('Open Audio', error);
-      }
+      this.#importFailed('Open Audio', error);
     } finally {
       this.#importing = false;
+    }
+  }
+
+  /**
+   * Puts another vocal on the lane as one undoable edit, or starts a project with it.
+   *
+   * @remarks `position` is project seconds, and defaults to the end of the lane so a take
+   * stitches onto the one before it. A position that would overlap a clip lands on the nearest
+   * free one. The audio is decoded at the project's rate, because every clip is held at one.
+   * The decoded waveform is shown where the clip lands while it is analysed, and the view moves
+   * to it when it lands out of sight.
+   */
+  async importClipFile(file: File, position?: number): Promise<void> {
+    const session = this.#session;
+    if (!session) {
+      await this.openAudioFile(file);
+      return;
+    }
+    if (this.#importing) {
+      this.#toast.warn('An import is already running');
+      return;
+    }
+    this.#progress('Decode Audio', 0.05);
+    this.#importing = true;
+    try {
+      const rate = session.sampleRate();
+      const decoded = await decodeAudioFile(file, rate);
+      const edits = this.#store.state.edits;
+      const at = freePosition(
+        (edits?.clips ?? []).map((clip): [number, number] => [
+          clip.position,
+          clip.position + clip.source.duration,
+        ]),
+        decoded.duration,
+        position ?? laneEnd(this.#store.state),
+      );
+      buildPeaks(decoded.mono, rate, decoded.fingerprint);
+      this.#onPending?.({
+        position: at,
+        duration: decoded.duration,
+        fingerprint: decoded.fingerprint,
+        title: sourceTitle(file.name),
+      });
+      this.#reveal(at, at + decoded.duration);
+      const analysed = await this.#analyse(decoded.mono, rate, decoded.name);
+      const clip = session.addClip({
+        samples: analysed.samples,
+        name: analysed.name,
+        trackJson: analysed.trackJson,
+        blobsJson: analysed.blobsJson,
+        position: at,
+      });
+      buildPeaks(analysed.samples, rate, fingerprintOf(analysed.samples));
+      this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      this.#idle();
+      this.#publish();
+      const placed = session.state().clips.find((entry) => entry.id === clip);
+      if (placed) this.#reveal(placed.position, placed.position + placed.source.duration);
+      void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
+      this.#toast.info(`Imported ${sourceTitle(file.name)}`);
+    } catch (error) {
+      this.#importFailed('Import Vocal', error);
+    } finally {
+      this.#onPending?.(null);
+      this.#importing = false;
+    }
+  }
+
+  /** Shows a clip being imported where it will land, or takes it away with `null`. */
+  set onPending(listener: ((clip: PendingClip | null) => void) | null) {
+    this.#onPending = listener;
+  }
+
+  /**
+   * Moves the view to frame the whole lane when a span of it is out of sight.
+   *
+   * @remarks `start` and `end` are project seconds. A span already on screen leaves the view
+   * alone, so importing beside what is being worked on does not jump it.
+   */
+  #reveal(start: number, end: number): void {
+    const state = this.#store.state;
+    const view = state.view;
+    if (start >= view.visibleStart && end <= view.visibleEnd) return;
+    const blobs = state.blobs;
+    const framed = fitView(
+      view,
+      0,
+      Math.max(laneEnd(state), end, 1),
+      lowestCentre(blobs) - FIT_MARGIN,
+      highestCentre(blobs) + FIT_MARGIN,
+    );
+    this.#store.update({ view: { ...framed, playhead: view.playhead } });
+  }
+
+  /**
+   * Takes audio dropped on an open project: a relink when the project is waiting for it, and
+   * otherwise a vocal or a reference, whichever the user answers.
+   *
+   * @remarks One question for everything dropped at once. The first file goes at `position`,
+   * and each after it follows the one before.
+   */
+  async dropAudio(files: readonly File[], position: number | null): Promise<void> {
+    if (this.#hasMissing()) {
+      for (const file of files) await this.#relink(file);
+      return;
+    }
+    const role = await this.#askRole(files);
+    if (role === null) return;
+    for (const [index, file] of files.entries()) {
+      const at = index === 0 ? (position ?? undefined) : undefined;
+      if (role === 'vocal') await this.importClipFile(file, at);
+      else await this.importReferenceFile(file, at ?? 0);
+    }
+  }
+
+  /**
+   * Asks for a file and imports it, routed by what it turns out to be.
+   *
+   * @remarks MIDI is always the guide, and audio with nothing open always starts a project as
+   * the vocal. Only audio on an open project is asked about.
+   */
+  async importAny(): Promise<void> {
+    if (this.#importing) {
+      this.#toast.warn('An import is already running');
+      return;
+    }
+    let picked;
+    try {
+      picked = await openFile(IMPORTABLE);
+    } catch (error) {
+      this.#fail('Import', error);
+      return;
+    }
+    if (picked === null) return;
+    const file = picked.file;
+    switch (kindOf(file)) {
+      case 'project':
+        await this.openProjectFile(file, true);
+        return;
+      case 'midi':
+        await this.openMidiFile(file);
+        return;
+      default:
+        if (!this.#session) {
+          await this.openAudioFile(file);
+          return;
+        }
+        await this.dropAudio([file], null);
+    }
+  }
+
+  /** Asks whether audio is a vocal to edit or a reference to hear. `null` when cancelled. */
+  async #askRole(files: readonly File[]): Promise<'vocal' | 'reference' | null> {
+    const first = files[0];
+    if (first === undefined) return null;
+    const what =
+      files.length === 1 ? sourceTitle(first.name) : `${String(files.length)} audio files`;
+    const answer = await confirmAction({
+      title: 'Import Audio',
+      message: `Import ${what} as a vocal to edit, or as a reference to hear beside it.`,
+      confirm: 'Import Vocal',
+      alternative: 'Import Reference',
+      icon: 'import',
+      kind: 'primary',
+    });
+    if (answer === 'cancel') return null;
+    return answer === 'confirm' ? 'vocal' : 'reference';
+  }
+
+  /**
+   * Brings in audio to hear beside the vocal, as one undoable edit.
+   *
+   * @remarks A reference is decoded at the project rate and kept in stereo, and is heard as it
+   * is: never analysed and never warped. An export includes it only when asked to.
+   */
+  async importReferenceFile(file: File, position = 0): Promise<void> {
+    const session = this.#session;
+    if (!session) {
+      this.#toast.warn('Open a vocal before a reference');
+      return;
+    }
+    if (this.#importing) {
+      this.#toast.warn('An import is already running');
+      return;
+    }
+    this.#progress('Decode Audio', 0.1);
+    this.#importing = true;
+    try {
+      const rate = session.sampleRate();
+      const decoded = await decodeAudioFile(file, rate);
+      const channels = stereoOf(decoded.channelData);
+      const source: SourceInfo = {
+        name: decoded.name,
+        sampleRate: decoded.sampleRate,
+        channels: channels.length,
+        frames: decoded.frames,
+        duration: decoded.duration,
+        fingerprint: decoded.fingerprint,
+        mime: decoded.mime,
+      };
+      const reference = session.addReference(source, position);
+      this.#keepReference(reference, source, channels);
+      this.#audio.loadReference(
+        reference,
+        channels.map((channel) => channel.slice()),
+        position,
+      );
+      this.#idle();
+      this.#publish();
+      this.#reveal(position, position + decoded.duration);
+      void this.#cacheReference(source, channels);
+      this.#toast.info(`Imported ${sourceTitle(file.name)} as a reference`);
+    } catch (error) {
+      this.#fail('Import Reference', error);
+    } finally {
+      this.#importing = false;
+    }
+  }
+
+  /**
+   * Keeps a reference's channels for the engine and for an export, and its waveform for the
+   * reference lane.
+   */
+  #keepReference(id: ReferenceId, source: SourceInfo, channels: Float32Array[]): void {
+    this.#references.set(id, channels);
+    this.#session?.attachReference(id, channels);
+    const frames = channels[0]?.length ?? 0;
+    buildPeaks(
+      mixToMono(channels, frames),
+      source.sampleRate,
+      referencePeaksKey(source.fingerprint),
+    );
+  }
+
+  /** Runs the analysis worker over mono audio, reporting its stages as import progress. */
+  async #analyse(
+    samples: Float32Array,
+    sampleRate: number,
+    name: string,
+  ): Promise<{
+    samples: Float32Array;
+    sampleRate: number;
+    name: string;
+    trackJson: string;
+    blobsJson: string;
+  }> {
+    return await this.#analysis.analyse({ samples, sampleRate, name }, (stage, progress) => {
+      this.#progress(stage, progress);
+    });
+  }
+
+  #importFailed(operation: string, error: unknown): void {
+    if (error instanceof WorkerCancelled) {
+      this.#idle();
+      this.#store.update({ phase: this.#session ? 'ready' : 'empty', message: null });
+      this.#toast.info('Import cancelled');
+    } else {
+      this.#fail(operation, error);
     }
   }
 
@@ -410,23 +725,6 @@ class AxysWorkspace implements Workspace {
     return true;
   }
 
-  /** Asks for a MIDI file and imports it into the open project. */
-  async importMidi(): Promise<void> {
-    if (!this.#session) {
-      this.#toast.warn('Open a vocal before a MIDI guide');
-      return;
-    }
-    let picked;
-    try {
-      picked = await openFile(MIDI_KIND);
-    } catch (error) {
-      this.#fail('Open MIDI', error);
-      return;
-    }
-    if (picked === null) return;
-    await this.openMidiFile(picked.file);
-  }
-
   async openMidiFile(file: File): Promise<void> {
     const session = this.#session;
     if (!session) {
@@ -449,8 +747,8 @@ class AxysWorkspace implements Workspace {
   async openProjectFile(file: File, ask = false): Promise<void> {
     if (ask && !(await this.#mayReplaceProject())) return;
     try {
-      const imported = await importProject(file);
-      await this.#openProject(imported.json, imported.project);
+      const imported = await importProject(file, (json) => this.#core.readProject(json));
+      await this.#openProject(imported.json, null);
     } catch (error) {
       this.#fail('Open Project', error);
     }
@@ -459,8 +757,7 @@ class AxysWorkspace implements Workspace {
   /** Opens a project document already held on this device. */
   async openProjectJson(json: string): Promise<void> {
     try {
-      const project = parseJson(json, isProject, 'project');
-      await this.#openProject(json, project);
+      await this.#openProject(this.#core.readProject(json).json, null);
     } catch (error) {
       this.#fail('Open Project', error);
     }
@@ -471,13 +768,18 @@ class AxysWorkspace implements Workspace {
    *
    * @remarks Startup restore is not an action the user took, so a copy written by a build whose
    * project contract has since changed leaves the editor empty rather than showing a failure over
-   * an empty canvas. The caller decides what becomes of the copy.
+   * an empty canvas. The caller decides what becomes of the copy. `id` is the copy's own, which
+   * the project goes on saving to.
+   *
+   * Only a document the core refuses answers `false`, since the caller deletes that copy. A copy
+   * that reads but fails to open for another reason, such as the audio engine going away while
+   * it opened, answers `true` and stays stored for the next launch.
    */
-  async restoreProjectJson(json: string): Promise<boolean> {
+  async restoreProjectJson(json: string, id: string): Promise<boolean> {
+    let migrated: string;
     try {
-      const project = parseJson(json, isProject, 'project');
-      await this.#openProject(json, project);
-      return true;
+      migrated = this.#core.readProject(json).json;
+      this.#core.openSession(migrated).free();
     } catch {
       this.#store.update({
         phase: 'empty',
@@ -486,6 +788,16 @@ class AxysWorkspace implements Workspace {
       });
       return false;
     }
+    try {
+      await this.#openProject(migrated, id);
+    } catch {
+      this.#store.update({
+        phase: this.#session ? 'ready' : 'empty',
+        message: null,
+        analysis: { running: false, progress: 0, stage: '' },
+      });
+    }
+    return true;
   }
 
   /**
@@ -538,11 +850,11 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  exportPreview(range: ExportRange): ExportPreview | null {
+  exportPreview(range: ExportRange, withReferences: boolean): ExportPreview | null {
     const session = this.#session;
     if (!session) return null;
     try {
-      return session.exportPreview(range);
+      return session.exportPreview(range, withReferences);
     } catch {
       return null;
     }
@@ -555,12 +867,29 @@ class AxysWorkspace implements Workspace {
       this.#toast.error('Nothing to export');
       return;
     }
+    const unlinked = choice.withReferences ? this.#missing.references[0] : undefined;
+    if (unlinked !== undefined) {
+      this.#toast.error(`Relink ${unlinked.source.name} to export it with the vocal.`);
+      return;
+    }
     this.#progress('Export WAV', 0.02);
     try {
+      const clips = session
+        .media()
+        .clips.filter((entry) => entry.attached)
+        .map((entry) => ({ clip: entry.clip, samples: session.clipSamples(entry.clip) }));
+      const references = choice.withReferences
+        ? [...this.#references].map(([reference, channels]) => ({
+            reference,
+            channels: channels.map((channel) => channel.slice()),
+          }))
+        : [];
       const encoded = await this.#render.exportWav(
         {
           projectJson: json,
-          samples: session.source(),
+          clips,
+          references,
+          withReferences: choice.withReferences,
           range: choice.range,
           depth: choice.depth,
           sampleRate: choice.sampleRate,
@@ -627,6 +956,17 @@ class AxysWorkspace implements Workspace {
     return mapTime(this.#plan, outputSeconds, 0, 1);
   }
 
+  /**
+   * Starts the analysis and render workers and has them load their core now.
+   *
+   * @remarks A page that loses its server after loading, a stopped dev server or a dropped
+   * connection, can then still import, analyse and export.
+   */
+  warmWorkers(): void {
+    this.#analysis.warm();
+    this.#render.warm();
+  }
+
   /** Releases the session, the workers and the autosave timer. */
   dispose(): void {
     this.#autosave?.dispose();
@@ -636,71 +976,168 @@ class AxysWorkspace implements Workspace {
     this.#session = null;
   }
 
-  async #openProject(json: string, project: Project): Promise<void> {
-    const media = this.#media;
-    let samples: Float32Array | null = null;
-    if (media) {
+  /**
+   * Opens a project document, attaching whatever audio this device already holds for it.
+   *
+   * @remarks A project whose audio is not all here still opens and edits. What is missing is
+   * named, and the next audio file opened is checked against it. `id` is the recovery copy it
+   * was restored from, or `null` for a project that gets a copy of its own.
+   */
+  async #openProject(json: string, id: string | null): Promise<void> {
+    this.#progress('Open Project', 0.3);
+    const session = this.#core.openSession(json);
+    const references = new Map<ReferenceId, Float32Array[]>();
+    const missing: MissingMedia = { clips: [], references: [] };
+    const media = session.media();
+    for (const entry of media.clips) {
+      const samples = await this.#readMedia(entry.source.fingerprint);
+      if (samples === null) {
+        missing.clips.push({ clip: entry.clip, source: entry.source });
+        continue;
+      }
       try {
-        samples = await media.read(project.source.fingerprint);
+        session.attachClip(entry.clip, samples);
       } catch {
-        samples = null;
+        missing.clips.push({ clip: entry.clip, source: entry.source });
       }
     }
-    if (!samples) {
-      this.#pending = { json, project };
-      this.#store.update({
-        phase: 'error',
-        message: `Relink "${project.source.name}" to open this project.`,
-      });
-      this.#toast.warn(`Relink ${project.source.name} to open this project.`);
-      return;
+    for (const reference of media.references) {
+      const stored = await this.#readMedia(referenceKey(reference.source.fingerprint));
+      if (stored === null) {
+        missing.references.push(reference);
+        continue;
+      }
+      references.set(reference.id, splitChannels(stored, reference.source.channels));
     }
-    this.#progress('Open Project', 0.4);
-    const session = this.#core.openSession(json, samples);
-    await this.#install(session, samples, project.name, project.view);
+    this.#close();
+    for (const [id, channels] of references) this.#references.set(id, channels);
+    this.#missing = missing;
+    await this.#install(session, parseView(json), id);
+    this.#askForMissing();
   }
 
-  async #relinkPending(file: File): Promise<void> {
-    const pending = this.#pending;
-    if (!pending) return;
-    this.#progress('Open Project', 0.2);
+  async #readMedia(key: string): Promise<Float32Array | null> {
+    const media = this.#media;
+    if (!media) return null;
     try {
-      const relinked = await relink(file, pending.project.source);
-      const session = this.#core.openSession(pending.json, relinked.samples);
-      this.#pending = null;
-      await this.#install(session, relinked.samples, pending.project.name, pending.project.view);
-      this.#toast.info('Audio relinked');
-    } catch (error) {
-      this.#fail('Open Project', error);
+      return await media.read(key);
+    } catch {
+      return null;
     }
   }
 
-  /** Adopts a new session as the open project and hands its audio to the engine. */
-  async #install(
-    session: Session,
-    mono: Float32Array,
-    name: string,
-    view: ViewState | null,
-  ): Promise<void> {
-    this.#session?.free();
-    this.#autosave?.dispose();
+  #hasMissing(): boolean {
+    return this.#missing.clips.length > 0 || this.#missing.references.length > 0;
+  }
+
+  /** Names the first piece of audio the open project is still waiting for. */
+  #askForMissing(): void {
+    const first = this.#missing.clips[0]?.source ?? this.#missing.references[0]?.source;
+    if (first === undefined) return;
+    const count = this.#missing.clips.length + this.#missing.references.length;
+    this.#toast.warn(
+      count === 1
+        ? `Open ${first.name} to relink it.`
+        : `Open ${first.name} to relink it. ${String(count)} files are missing.`,
+    );
+  }
+
+  /**
+   * Accepts a file as audio the open project is waiting for, when it is.
+   *
+   * @remarks Matched by fingerprint rather than by name, so a different file with the same name
+   * is refused and a renamed copy of the right one is taken.
+   */
+  async #relink(file: File): Promise<void> {
+    const session = this.#session;
+    if (!session) return;
+    this.#progress('Relink Audio', 0.2);
+    try {
+      const rate = session.sampleRate();
+      const decoded = await decodeAudioFile(file, rate);
+      const clip = this.#missing.clips.find(
+        (entry) => entry.source.fingerprint === decoded.fingerprint,
+      );
+      const reference = this.#missing.references.find(
+        (entry) => entry.source.fingerprint === decoded.fingerprint,
+      );
+      if (clip) {
+        session.attachClip(clip.clip, decoded.mono);
+        this.#missing.clips = this.#missing.clips.filter((entry) => entry !== clip);
+        buildPeaks(decoded.mono, rate, decoded.fingerprint);
+        this.#audio.loadClip(
+          clip.clip,
+          session.clipSamples(clip.clip),
+          session.clipTrackJson(clip.clip),
+          null,
+        );
+        void this.#cacheMedia(decoded.fingerprint, decoded.mono);
+      } else if (reference) {
+        const channels = stereoOf(decoded.channelData);
+        this.#keepReference(reference.id, reference.source, channels);
+        this.#missing.references = this.#missing.references.filter((entry) => entry !== reference);
+        this.#audio.loadReference(
+          reference.id,
+          channels.map((channel) => channel.slice()),
+          reference.position,
+        );
+        void this.#cacheReference(reference.source, channels);
+      } else {
+        throw new PersistenceError(
+          'corrupt',
+          `${file.name} is not audio this project is waiting for.`,
+        );
+      }
+      this.#idle();
+      this.#publish();
+      this.#toast.info('Audio relinked');
+      this.#askForMissing();
+    } catch (error) {
+      this.#fail('Relink Audio', error);
+    }
+  }
+
+  /**
+   * Adopts a new session as the open project and hands its audio to the engine.
+   *
+   * @remarks `id` is the recovery copy the project was restored from. Any other project gets a
+   * fresh copy written straight away, so a reload reopens it rather than an older project.
+   */
+  async #install(session: Session, view: ViewState | null, id: string | null): Promise<void> {
     this.#session = session;
     // A fresh import has no file of its own yet, so the next Save asks where it goes.
     if (view === null) this.#projectFile = null;
 
-    const source = session.sourceInfo();
     const blobs = session.blobs();
     const track = session.track();
     const plan = session.plan();
-    this.#plan = plan;
-    this.#projectId = `project-${source.fingerprint}`;
-
-    clearPeaks();
-    buildPeaks(mono, source.sampleRate, source.fingerprint);
-
     const edits = session.state();
-    await this.#audio.loadSource(session.source(), source.sampleRate, session.trackJson());
-    this.#audio.setPlan(plan);
+    this.#plan = plan;
+    this.#projectId = id ?? newProjectId();
+
+    const rate = session.sampleRate();
+    await this.#audio.loadProject(rate);
+    const plans = session.clipPlans();
+    for (const entry of session.media().clips) {
+      if (!entry.attached) continue;
+      const samples = session.clipSamples(entry.clip);
+      buildPeaks(samples, rate, entry.source.fingerprint);
+      const placed = plans.find((candidate) => candidate.clip === entry.clip) ?? null;
+      this.#audio.loadClip(entry.clip, samples, session.clipTrackJson(entry.clip), placed);
+      void this.#cacheMedia(entry.source.fingerprint, session.clipSamples(entry.clip));
+    }
+    for (const reference of edits.references) {
+      const channels = this.#references.get(reference.id);
+      if (!channels) continue;
+      this.#keepReference(reference.id, reference.source, channels);
+      this.#audio.loadReference(
+        reference.id,
+        channels.map((channel) => channel.slice()),
+        reference.position,
+      );
+    }
+    this.#audio.setPlans(plans, plan);
+    this.#audio.placeReferences(edits.references);
     this.#audio.setMixer(edits.mixer);
     this.#audio.setLoop(null);
 
@@ -709,7 +1146,7 @@ class AxysWorkspace implements Workspace {
       fitView(
         this.#store.state.view,
         0,
-        source.duration,
+        Math.max(laneEndOf(edits), 1),
         lowestCentre(blobs) - FIT_MARGIN,
         highestCentre(blobs) + FIT_MARGIN,
       );
@@ -717,7 +1154,6 @@ class AxysWorkspace implements Workspace {
     this.#store.update({
       phase: 'ready',
       message: null,
-      source,
       projectName: edits.name,
       track,
       blobs,
@@ -736,13 +1172,22 @@ class AxysWorkspace implements Workspace {
     });
 
     this.#startAutosave();
-    void this.#cacheMedia(source.fingerprint, mono);
+    if (id === null && this.#autosave) {
+      this.#autosave.markDirty();
+      void this.#autosave
+        .flush()
+        .then(() => this.#projects?.prune(RECOVERY_COPIES))
+        .catch(() => {
+          // An old copy that will not delete is only space, and the next import tries again.
+        });
+    }
   }
 
   #startAutosave(): void {
     const projects = this.#projects;
     const id = this.#projectId;
     if (!projects || id === null) return;
+    recordOpenProject(id);
     this.#autosave = new Autosave({
       store: projects,
       id,
@@ -756,11 +1201,49 @@ class AxysWorkspace implements Workspace {
   async #cacheMedia(fingerprint: string, mono: Float32Array): Promise<void> {
     const media = this.#media;
     if (!media) return;
+    this.#writes += 1;
     try {
       if (await media.has(fingerprint)) return;
       await media.write(fingerprint, mono);
     } catch {
       this.#toast.warn('Audio not cached. Reopening will decode again');
+    } finally {
+      this.#writes -= 1;
+    }
+  }
+
+  /**
+   * Whether leaving now would lose something a reload cannot bring back.
+   *
+   * @remarks A project already in its recovery copy reopens on reload, so only an import still
+   * running, an edit not yet written there, or audio still being cached counts. Without device
+   * storage there is no recovery copy, so any unsaved edit counts.
+   */
+  get unflushed(): boolean {
+    if (this.#importing || this.#writes > 0) return true;
+    if (!this.#session) return false;
+    if (!this.#autosave) return this.#store.state.dirty;
+    return this.#autosave.dirty;
+  }
+
+  /** Writes the recovery copy now if an edit is waiting for it. */
+  flush(): void {
+    void this.#autosave?.flush();
+  }
+
+  /** Keeps a reference's channels on the device, one after the other in one buffer. */
+  async #cacheReference(source: SourceInfo, channels: readonly Float32Array[]): Promise<void> {
+    const media = this.#media;
+    if (!media) return;
+    const key = referenceKey(source.fingerprint);
+    this.#writes += 1;
+    try {
+      if (await media.has(key)) return;
+      await media.write(key, joinChannels(channels));
+    } catch {
+      this.#toast.warn('Audio not cached. Reopening will decode again');
+    } finally {
+      this.#writes -= 1;
     }
   }
 
@@ -805,14 +1288,17 @@ class AxysWorkspace implements Workspace {
     try {
       const plan = session.plan();
       this.#plan = plan;
-      this.#audio.setPlan(plan);
       const edits = session.state();
+      this.#audio.setPlans(session.clipPlans(), plan);
+      this.#audio.placeReferences(edits.references);
       // The desk is monitoring rather than a plan input, so it reaches the worklet on its own
       // path. It still travels with the project, which is why it is read back from the session.
       this.#audio.setMixer(edits.mixer);
       const blobs = session.blobs();
       this.#store.update({
         blobs,
+        // The track moves with the clips, so it is read again whenever a clip may have moved.
+        track: session.track(),
         // The plan is what correction, guidance and modulation actually amount to, and the
         // editor draws the pitch target from it. Leaving it out drew the blob edits alone, so
         // an operation the plan carried moved nothing on screen.
@@ -862,6 +1348,55 @@ class AxysWorkspace implements Workspace {
       analysis: { running: false, progress: 0, stage: '' },
     });
   }
+}
+
+/** Project seconds at which the last clip on the lane ends, which is where the next one goes. */
+function laneEndOf(edits: EditState): number {
+  let end = 0;
+  for (const clip of edits.clips) end = Math.max(end, clip.position + clip.source.duration);
+  return end;
+}
+
+function laneEnd(state: AppState): number {
+  return state.edits === null ? 0 : laneEndOf(state.edits);
+}
+
+/** The first two channels of decoded audio, or the one there is. */
+function stereoOf(channels: readonly Float32Array[]): Float32Array[] {
+  return channels.slice(0, 2).map((channel) => channel.slice());
+}
+
+/** Channels one after the other in one buffer, which is how the media store keeps them. */
+function joinChannels(channels: readonly Float32Array[]): Float32Array {
+  const frames = channels[0]?.length ?? 0;
+  const joined = new Float32Array(frames * channels.length);
+  channels.forEach((channel, index) => {
+    joined.set(channel.subarray(0, frames), index * frames);
+  });
+  return joined;
+}
+
+/** Undoes {@link joinChannels}. */
+function splitChannels(joined: Float32Array, count: number): Float32Array[] {
+  const channels = Math.max(1, Math.min(2, count));
+  const frames = Math.floor(joined.length / channels);
+  return Array.from({ length: channels }, (_, index) =>
+    joined.slice(index * frames, (index + 1) * frames),
+  );
+}
+
+/** The saved view in a project document, or `null` when it has none worth restoring. */
+function parseView(json: string): ViewState | null {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (typeof value === 'object' && value !== null && 'view' in value) {
+      const view = (value as { view: unknown }).view;
+      return isViewState(view) ? view : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function lowestCentre(blobs: readonly { detectedCenter: number }[]): number {
@@ -948,8 +1483,24 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
     { separator: true },
     item('edit.excludeBlob', 'Exclude Blob', 'exclude'),
     { separator: true },
+    item('edit.deleteBlobs', 'Delete Blobs', 'delete'),
+    item('edit.deleteClip', 'Delete Clip', 'delete'),
+    { separator: true },
     item('transport.loopSelection', 'Loop Selection', 'loop', false),
     item('file.exportWav', 'Export Audio', 'export', false),
+  ];
+}
+
+/** The menu shown over a reference's band. */
+function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
+  return [
+    {
+      label: 'Delete Reference',
+      icon: 'delete',
+      run: () => {
+        hooks.applyEdit({ type: 'removeReference', reference });
+      },
+    },
   ];
 }
 
@@ -967,13 +1518,20 @@ function bindDragAndDrop(
   workspace: AxysWorkspace,
   toast: ToastHost,
   shell: AppShell,
+  editor: EditorController,
 ): () => void {
   // Counted rather than toggled: dragging across a child element fires a leave before the
   // matching enter, so a boolean flickers the marker off under the cursor.
   let depth = 0;
   const show = (event: DragEvent): void => {
     const item = event.dataTransfer?.items[0];
-    shell.setDropTarget(item?.kind === 'file' ? 'Audio, MIDI Or Project' : 'File');
+    shell.setDropTarget(
+      item?.kind !== 'file'
+        ? 'Drop To Open File'
+        : workspace.ready
+          ? 'Drop To Import'
+          : 'Drop To Open Audio Or Project',
+    );
   };
   const onDragEnter = (event: DragEvent): void => {
     if (!event.dataTransfer) return;
@@ -984,18 +1542,26 @@ function bindDragAndDrop(
     if (!event.dataTransfer) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
+    // Over the canvas of an open project, a vocal lands where it is let go, so the lane shows
+    // where that is before it happens.
+    if (workspace.ready) editor.previewDrop(event.clientX, event.clientY);
   };
   const onDragLeave = (): void => {
     depth = Math.max(0, depth - 1);
-    if (depth === 0) shell.setDropTarget(null);
+    if (depth === 0) {
+      shell.setDropTarget(null);
+      editor.endDrop();
+    }
   };
   const onDrop = (event: DragEvent): void => {
     depth = 0;
     shell.setDropTarget(null);
+    const at = workspace.ready ? editor.previewDrop(event.clientX, event.clientY) : null;
+    editor.endDrop();
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
     event.preventDefault();
-    void openDropped([...files], workspace, toast);
+    void openDropped([...files], workspace, toast, at);
   };
   target.addEventListener('dragenter', onDragEnter);
   target.addEventListener('dragover', onDragOver);
@@ -1009,19 +1575,36 @@ function bindDragAndDrop(
   };
 }
 
+/**
+ * Opens or imports what was dropped.
+ *
+ * @remarks A project replaces what is open and asks first, as Open does. Audio dropped on an open
+ * project is a vocal or a reference, whichever the user answers, at `at` for the first file and
+ * after it for the rest, which is how takes are stitched. With nothing open the first audio file
+ * starts a project and the rest join it as vocals.
+ */
 async function openDropped(
   files: File[],
   workspace: AxysWorkspace,
   toast: ToastHost,
+  at: number | null,
 ): Promise<void> {
   const project = files.find((file) => kindOf(file) === 'project');
-  const audio = files.find((file) => kindOf(file) === 'audio');
+  const audio = files.filter((file) => kindOf(file) === 'audio');
   const midi = files.find((file) => kindOf(file) === 'midi');
-  // A drop replaces the project as surely as Open does, so it asks the same question.
-  if (project) await workspace.openProjectFile(project, true);
-  else if (audio) await workspace.openAudioFile(audio, true);
+  if (project) {
+    await workspace.openProjectFile(project, true);
+  } else if (audio.length > 0) {
+    const [first, ...rest] = audio;
+    if (first && !workspace.ready) {
+      await workspace.openAudioFile(first, true);
+      for (const file of rest) await workspace.importClipFile(file);
+    } else {
+      await workspace.dropAudio(audio, at);
+    }
+  }
   if (midi) {
-    if (!project && !audio && !workspace.ready) {
+    if (!workspace.ready) {
       toast.warn('Open a vocal before a MIDI guide');
       return;
     }
@@ -1071,17 +1654,51 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
   mount.append(section);
 }
 
-/** Replaces the page when the core itself will not load, which leaves nothing to run. */
-function showFailure(mount: HTMLElement, message: string): void {
+/**
+ * Replaces the page when the core itself will not load, which leaves nothing to run.
+ *
+ * @remarks Drawn with the splash's own inline styles, since a failed load may have fetched no
+ * stylesheet. A failed fetch is named as the connection it is, with the browser's text under it.
+ */
+function showFailure(mount: HTMLElement, error: unknown, part = 'audio core'): void {
   mount.textContent = '';
   const section = document.createElement('section');
-  section.className = 'axys-unsupported';
+  section.className = 'axys-failure';
+  section.setAttribute('role', 'alert');
+  const mark = document.createElement('div');
+  mark.className = 'axys-splash-mark';
+  mark.textContent = 'AXYS';
   const heading = document.createElement('h1');
   heading.textContent = 'Load Failed';
+  const lead = document.createElement('p');
+  lead.textContent =
+    lostConnection(error) || (error instanceof Error && lostConnection(error.cause))
+      ? `Axys could not download its ${part}. Check the connection, then reload.`
+      : `Axys could not start its ${part}.`;
   const detail = document.createElement('p');
-  detail.textContent = message;
-  section.append(heading, detail);
+  detail.className = 'axys-failure-detail';
+  detail.textContent = describe(error);
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.textContent = 'Reload';
+  retry.addEventListener('click', () => {
+    location.reload();
+  });
+  section.append(mark, heading, lead, detail, retry);
   mount.append(section);
+}
+
+/**
+ * Whether an error is a download that never arrived.
+ *
+ * @remarks A failed `fetch` is a `TypeError`, and a worklet module that would not load is an
+ * `AbortError` or `NetworkError` `DOMException`.
+ */
+function lostConnection(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  return (
+    error instanceof DOMException && (error.name === 'AbortError' || error.name === 'NetworkError')
+  );
 }
 
 /** Tells the user once, on first run, which optional capabilities are missing here. */
@@ -1116,8 +1733,9 @@ async function openStore<T>(opening: Promise<T>): Promise<T | null> {
 /**
  * Reopens the newest stored project this build can still read.
  *
- * @remarks A copy that cannot be read is discarded by {@link restoreNewest}, so the one report
- * the user gets is this one, and only when something was actually thrown away.
+ * @remarks The project that was open when the page closed comes back first, and after New
+ * Project nothing does. A copy that cannot be read is discarded by {@link restoreNewest}, so the
+ * one report the user gets is this one, and only when something was actually thrown away.
  */
 async function restoreLastProject(
   workspace: AxysWorkspace,
@@ -1125,7 +1743,13 @@ async function restoreLastProject(
   toast: ToastHost,
 ): Promise<void> {
   if (!projects) return;
-  const { discarded } = await restoreNewest(projects, (json) => workspace.restoreProjectJson(json));
+  const open = openProjectRecord();
+  if (open === '') return;
+  const { discarded } = await restoreNewest(
+    projects,
+    (json, id) => workspace.restoreProjectJson(json, id),
+    open,
+  );
   if (discarded > 0) {
     toast.info(
       discarded === 1
@@ -1152,8 +1776,9 @@ function startPlayheadLoop(
       Math.abs(output - state.transport.position) > PLAYHEAD_EPSILON ||
       audio.playing !== state.transport.playing;
     const view = movedPlayhead ? { ...state.view, playhead } : state.view;
+    // The playing playhead is drawn at the output position, so that is what the view follows.
     const followed =
-      state.follow && audio.playing ? followView(view, playhead, state.followMode) : null;
+      state.follow && audio.playing ? followView(view, output, state.followMode) : null;
     if (movedPlayhead || movedTransport || followed !== null) {
       store.update({
         ...(movedPlayhead || followed !== null ? { view: followed ?? view } : {}),
@@ -1283,6 +1908,9 @@ function buildHooks(
     previewMixer(mixer: MixerSettings): void {
       audio.setMixer(mixer);
     },
+    meters(): MeterReport | null {
+      return audio.playing ? audio.meters : null;
+    },
     setTuning(a4Hz: number): void {
       workspace()?.setTuning(a4Hz);
     },
@@ -1337,7 +1965,7 @@ async function start(): Promise<void> {
     core = await loadCore();
   } catch (error) {
     dismissSplash();
-    showFailure(mount, describe(error));
+    showFailure(mount, error);
     return;
   }
 
@@ -1357,6 +1985,14 @@ async function start(): Promise<void> {
   let context: CommandContext | null = null;
 
   const audio = await AudioEngine.create(store);
+  // Nothing plays without the core and the renderer, so a download lost during the first load is
+  // the failure screen rather than an editor that cannot play.
+  if (audio.loadError !== null) {
+    audio.dispose();
+    dismissSplash();
+    showFailure(mount, audio.loadError, 'audio engine');
+    return;
+  }
   const projectsPromise = openStore(ProjectStore.open());
   const mediaPromise = openStore(MediaStore.open());
 
@@ -1400,6 +2036,7 @@ async function start(): Promise<void> {
   }
 
   workspace = new AxysWorkspace({ core, store, audio, toast, projects, media });
+  workspace.warmWorkers();
   renderer = new EditorRenderer(shell.canvas);
   const editor = new EditorController({
     canvas: shell.canvas,
@@ -1421,7 +2058,13 @@ async function start(): Promise<void> {
       shell.announce(message);
     },
     contextMenu: (hit, at) => {
-      showContextMenu(blobMenu(hit.blob !== null, commands, hooks), at);
+      const reference = hit.reference;
+      showContextMenu(
+        reference === null
+          ? blobMenu(hit.blob !== null, commands, hooks)
+          : referenceMenu(reference, hooks),
+        at,
+      );
     },
   });
   context = { store, editor, audio, toast, workspace, chrome: shell };
@@ -1439,34 +2082,54 @@ async function start(): Promise<void> {
   shell.update(store.state);
 
   const releaseShortcuts = bindShortcuts(window, commands, context);
-  const releaseDrop = bindDragAndDrop(window, workspace, toast, shell);
+  const releaseDrop = bindDragAndDrop(window, workspace, toast, shell, editor);
   const stopPlayhead = startPlayheadLoop(store, audio, workspace);
 
+  // A reload reopens the recovery copy, so only work that has not reached it yet is worth a
+  // warning. Starting the write here usually lands it while the warning is still up.
   const onUnload = (event: BeforeUnloadEvent): void => {
-    if (store.state.dirty) event.preventDefault();
+    if (!workspace.unflushed) return;
+    workspace.flush();
+    event.preventDefault();
   };
   window.addEventListener('beforeunload', onUnload);
 
   const open = workspace;
-  window.addEventListener(
-    'pagehide',
-    () => {
-      window.removeEventListener('beforeunload', onUnload);
-      releaseShortcuts();
-      releaseDrop();
-      releaseStore();
-      releaseEngine();
-      releaseOffline();
-      releaseSystemTheme();
-      stopPlayhead();
-      open.dispose();
-      editor.dispose();
-      renderer?.dispose();
-      audio.dispose();
-      shell.dispose();
-    },
-    { once: true },
-  );
+  workspace.onPending = (clip) => {
+    editor.showPending(clip);
+  };
+  let tornDown = false;
+  let releaseLoadWatch = (): void => {};
+  const teardown = (): void => {
+    if (tornDown) return;
+    tornDown = true;
+    window.removeEventListener('beforeunload', onUnload);
+    releaseLoadWatch();
+    releaseShortcuts();
+    releaseDrop();
+    releaseStore();
+    releaseEngine();
+    releaseOffline();
+    releaseSystemTheme();
+    stopPlayhead();
+    open.dispose();
+    editor.dispose();
+    renderer?.dispose();
+    audio.dispose();
+    shell.dispose();
+  };
+  window.addEventListener('pagehide', teardown, { once: true });
+  // The renderer module is added when the first project opens, so a download lost then ends the
+  // session the same way. The project is written to its recovery copy first, so a reload keeps it.
+  releaseLoadWatch = audio.subscribe(() => {
+    const error = audio.loadError;
+    if (error === null || tornDown) return;
+    open.flush();
+    queueMicrotask(() => {
+      teardown();
+      showFailure(mount, error, 'audio engine');
+    });
+  });
 
   await restoreLastProject(workspace, projects, toast);
   noteDegradedCapabilities(caps, toast);

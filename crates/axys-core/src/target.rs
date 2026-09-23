@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::PitchTrack;
 use crate::blob::{Blob, BlobSet};
+use crate::clip::Span;
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideMode, GuideSelection, MidiNote, NoteMapping};
 use crate::timeline::TimelineMap;
@@ -396,6 +397,8 @@ pub struct PlanInputs<'a> {
     pub track: &'a PitchTrack,
     /// The editable segmentation and its per-blob edits.
     pub blobs: &'a BlobSet,
+    /// Source spans whose blobs were deleted, rendered as silence.
+    pub silenced: &'a [Span],
     /// Render sample rate, in Hz.
     pub sample_rate: f64,
     /// Source duration, in seconds.
@@ -607,6 +610,15 @@ fn apply_blob_pitch(
 fn build_gain(inputs: &PlanInputs<'_>, hop: f64, count: usize) -> SampledCurve {
     let mut gains = vec![1.0f32; count];
     let mut moved = false;
+    for span in inputs.silenced {
+        let Some((lo, hi)) = index_range(span.start, span.end, hop, count) else {
+            continue;
+        };
+        for slot in gains.iter_mut().take(hi + 1).skip(lo) {
+            *slot = 0.0;
+        }
+        moved = true;
+    }
     for blob in inputs.blobs.blobs() {
         if blob.gain_db == 0.0 || !blob.gain_db.is_finite() {
             continue;
@@ -616,7 +628,10 @@ fn build_gain(inputs: &PlanInputs<'_>, hop: f64, count: usize) -> SampledCurve {
         };
         let gain = crate::units::decibels_to_amplitude(blob.gain_db) as f32;
         for slot in gains.iter_mut().take(hi + 1).skip(lo) {
-            *slot = gain;
+            // Silenced material stays silent under a blob that overlaps it.
+            if *slot != 0.0 {
+                *slot = gain;
+            }
         }
         moved = true;
     }
@@ -923,6 +938,7 @@ mod tests {
         PlanInputs {
             track,
             blobs,
+            silenced: &[],
             sample_rate: 48_000.0,
             duration,
             scale,
@@ -1410,5 +1426,25 @@ mod tests {
         let json = serde_json::to_string(&plan).expect("serialise");
         let back: RenderPlan = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(plan, back);
+    }
+
+    #[test]
+    fn silenced_material_compiles_to_zero_gain() {
+        let track = PitchTrack::default();
+        let blobs = BlobSet::new();
+        let scale = ScaleSettings::default();
+        let modulation = ModulationSettings::default();
+        let silenced = [Span {
+            start: 0.5,
+            end: 1.0,
+        }];
+        let plan = compile_plan(&PlanInputs {
+            silenced: &silenced,
+            ..inputs(&track, &blobs, &scale, &modulation, 2.0)
+        })
+        .expect("plan");
+        assert_eq!(plan.gain.at(0.75), 0.0);
+        assert_eq!(plan.gain.at(1.5), 1.0);
+        assert!(plan.moves_level());
     }
 }

@@ -12,6 +12,7 @@ import initWasm, {
   coreVersion,
   hzToMidi as rawHzToMidi,
   midiToHz as rawMidiToHz,
+  migrateProject as rawMigrateProject,
   parseMidi as rawParseMidi,
   Session as RawSession,
   start as installPanicHook,
@@ -19,6 +20,7 @@ import initWasm, {
 import {
   arrayOf,
   isBlob,
+  isClipPlan,
   isDriftReport,
   isEditState,
   isExportPreview,
@@ -27,21 +29,22 @@ import {
   isHistoryLabels,
   isMappingProposal,
   isMappingReport,
+  isMediaList,
   isMidiFile,
   isPitchTrack,
   isProject,
   isRenderPlan,
-  isSourceInfo,
   isTimingConflict,
   nullable,
   parseJson,
   pitchTrackToArrays,
 } from './json';
-import type { Guard, HistoryLabels } from './json';
+import type { ClipPlan, Guard, HistoryLabels, MediaList } from './json';
 import { wasmModuleUrl } from './wasm-url';
 import type {
   BitDepth,
   Blob,
+  ClipId,
   DriftReport,
   EditOp,
   EditState,
@@ -53,6 +56,8 @@ import type {
   MappingReport,
   MidiFile,
   PitchTrackArrays,
+  Project,
+  ReferenceId,
   RenderPlan,
   SegmentParams,
   SourceInfo,
@@ -60,7 +65,7 @@ import type {
   ViewState,
 } from './types';
 
-export type { HistoryLabels } from './json';
+export type { ClipPlan, HistoryLabels, MediaList } from './json';
 
 /** A failure raised by the WebAssembly core, carrying the message the core reported. */
 export class AxysError extends Error {
@@ -115,13 +120,25 @@ export interface AnalysedSessionInput {
   segment?: SegmentParams;
 }
 
+/** A further analysed vocal to put on the lane of an open session. */
+export interface ClipInput extends Omit<AnalysedSessionInput, 'sampleRate'> {
+  /** Project seconds the clip is wanted at; an overlapping position lands on the nearest free one. */
+  position: number;
+}
+
 /** Typed facade over the wasm-bindgen exports. */
 export interface AxysCore {
   version: string;
   createSession(input: SessionInput): Session;
   /** Builds a session from an analysis produced elsewhere, without re-analysing the audio. */
   openSessionFromAnalysis(input: AnalysedSessionInput): Session;
-  openSession(projectJson: string, samples: Float32Array): Session;
+  /**
+   * Reopens a saved project. Each clip plays and exports once its audio is attached with
+   * {@link Session.attachClip}.
+   */
+  openSession(projectJson: string): Session;
+  /** Parses a project document of any supported schema version, in the current one. */
+  readProject(json: string): { json: string; project: Project };
   parseMidi(bytes: Uint8Array): MidiFile;
   hzToMidi(hz: number, a4: number): number;
   midiToHz(midi: number, a4: number): number;
@@ -244,12 +261,13 @@ function makeCore(version: string): AxysCore {
       );
       return new Session(raw);
     },
-    openSession(projectJson: string, samples: Float32Array): Session {
-      const project = decode('Open Project', projectJson, isProject, 'project');
-      const raw = call('Open Project', () =>
-        RawSession.openProject(projectJson, samples, project.source.sampleRate),
-      );
+    openSession(projectJson: string): Session {
+      const raw = call('Open Project', () => RawSession.openProject(projectJson));
       return new Session(raw);
+    },
+    readProject(json: string): { json: string; project: Project } {
+      const migrated = call('Open Project', () => rawMigrateProject(json));
+      return { json: migrated, project: decode('Open Project', migrated, isProject, 'project') };
     },
     parseMidi(bytes: Uint8Array): MidiFile {
       const json = call('Open MIDI', () => rawParseMidi(bytes));
@@ -300,15 +318,92 @@ export class Session {
     return this.#read('Read State', () => this.#alive().stateJson(), isEditState, 'edit state');
   }
 
-  /** The detected pitch track as parallel arrays, unvoiced frames carrying `NaN` pitch. */
+  /**
+   * Detected pitch across the lane in project seconds, as parallel arrays.
+   *
+   * @remarks Unvoiced frames carry `NaN` pitch, and one sits between clips so a line never joins
+   * two takes.
+   */
   track(): PitchTrackArrays {
-    const track = decode('Read Track', this.trackJson(), isPitchTrack, 'pitch track');
-    return pitchTrackToArrays(track);
+    const json = call('Read Track', () => this.#alive().trackJson());
+    return pitchTrackToArrays(decode('Read Track', json, isPitchTrack, 'pitch track'));
   }
 
-  /** The detected pitch track as the core's JSON, for handing to the worklet. */
-  trackJson(): string {
-    return call('Read Track', () => this.#alive().trackJson());
+  /** One clip's detected pitch in its own source seconds, as the core's JSON, for its renderer. */
+  clipTrackJson(clip: ClipId): string {
+    return call('Read Track', () => this.#alive().clipTrackJson(clip));
+  }
+
+  /** One clip's mono source samples at the project rate. A fresh copy each call. */
+  clipSamples(clip: ClipId): Float32Array {
+    return call('Read Source', () => this.#alive().clipSamples(clip));
+  }
+
+  /** Each clip on the lane's own compiled plan and position, in lane order. */
+  clipPlans(): ClipPlan[] {
+    return this.#read(
+      'Read Plan',
+      () => this.#alive().clipPlansJson(),
+      arrayOf(isClipPlan),
+      'clip plans',
+    );
+  }
+
+  /** Every clip and reference the project can need, and which clips have audio attached. */
+  media(): MediaList {
+    return this.#read('Read Media', () => this.#alive().mediaJson(), isMediaList, 'media');
+  }
+
+  /**
+   * Gives a reopened project one clip's audio.
+   *
+   * @remarks Throws when the audio is not the file the clip was made from.
+   */
+  attachClip(clip: ClipId, samples: Float32Array): void {
+    call('Relink Audio', () => {
+      this.#alive().attachClip(clip, samples);
+    });
+  }
+
+  /**
+   * Hands the session a reference's channels at the project rate, so an export can include it.
+   *
+   * @remarks Copies the channels; the caller keeps its own.
+   */
+  attachReference(reference: ReferenceId, channels: readonly Float32Array[]): void {
+    const frames = channels[0]?.length ?? 0;
+    const joined = new Float32Array(frames * channels.length);
+    channels.forEach((channel, index) => {
+      joined.set(channel.subarray(0, frames), index * frames);
+    });
+    call('Export WAV', () => {
+      this.#alive().attachReference(reference, joined, channels.length);
+    });
+  }
+
+  /**
+   * Puts another analysed vocal on the lane as one undoable edit, returning its clip id.
+   *
+   * @remarks The samples must be mono at the project rate.
+   */
+  addClip(input: ClipInput): ClipId {
+    const params = paramsJson(input.f0, input.segment);
+    return call('Import Clip', () =>
+      this.#alive().addClip(
+        input.samples,
+        input.name,
+        input.trackJson,
+        input.blobsJson,
+        params,
+        input.position,
+      ),
+    );
+  }
+
+  /** Brings in a reference as one undoable edit, returning its id. */
+  addReference(source: SourceInfo, position: number): ReferenceId {
+    const json = JSON.stringify(source);
+    return call('Import Reference', () => this.#alive().addReference(json, position));
   }
 
   /** The current blobs in time order. */
@@ -316,14 +411,14 @@ export class Session {
     return this.#read('Read Blobs', () => this.#alive().blobsJson(), arrayOf(isBlob), 'blobs');
   }
 
-  /** The compiled render plan. */
+  /**
+   * One plan for the whole lane in project seconds, for the editor to draw from.
+   *
+   * @remarks Its time map and target pitch join every clip's; playback reads
+   * {@link Session.clipPlans} instead.
+   */
   plan(): RenderPlan {
     return this.#read('Read Plan', () => this.#alive().planJson(), isRenderPlan, 'render plan');
-  }
-
-  /** The compiled render plan as the core's JSON, for handing to the worklet. */
-  planJson(): string {
-    return call('Read Plan', () => this.#alive().planJson());
   }
 
   /** Overlaps and gaps produced by timing edits. */
@@ -361,14 +456,18 @@ export class Session {
    * Describes what exporting an output range would produce, without encoding a file.
    *
    * @remarks `range` is in output seconds and `null` covers the whole output. The figures are
-   * measured at the source sample rate.
+   * measured at the source sample rate. `withReferences` measures the export with every attached,
+   * unmuted reference mixed in.
    */
-  exportPreview(range: { start: number; end: number } | null): ExportPreview {
+  exportPreview(
+    range: { start: number; end: number } | null,
+    withReferences = false,
+  ): ExportPreview {
     const start = range ? Math.max(0, range.start) : 0;
     const end = range ? range.end : -1;
     return this.#read(
       'Export WAV',
-      () => this.#alive().exportPreview(start, end),
+      () => this.#alive().exportPreview(start, end, withReferences),
       isExportPreview,
       'export preview',
     );
@@ -379,16 +478,21 @@ export class Session {
    *
    * @remarks `range` is in output seconds and `null` exports the whole output. The file keeps the
    * source sample rate unless `sampleRate` asks for another, which the core resamples to.
+   * `withReferences` writes stereo with every attached, unmuted reference at its desk level and
+   * pan.
    */
   exportWav(
     range: { start: number; end: number } | null,
     depth: BitDepth,
     sampleRate?: number,
+    withReferences = false,
   ): ExportResult {
     const start = range ? Math.max(0, range.start) : 0;
     const end = range ? range.end : -1;
     const rate = sampleRate ?? this.sampleRate();
-    const bytes = call('Export WAV', () => this.#alive().exportWav(start, end, rate, depth));
+    const bytes = call('Export WAV', () =>
+      this.#alive().exportWav(start, end, rate, depth, withReferences),
+    );
     const report = this.lastExportReport();
     if (!report) {
       throw new AxysError('Export WAV', 'the core encoded a file but reported no peak figures');
@@ -406,17 +510,7 @@ export class Session {
     );
   }
 
-  /** Immutable facts about the imported source audio. */
-  sourceInfo(): SourceInfo {
-    return this.#read('Read Source', () => this.#alive().sourceJson(), isSourceInfo, 'source');
-  }
-
-  /** Mono source samples, for handing to the worklet. */
-  source(): Float32Array {
-    return call('Read Source', () => this.#alive().source());
-  }
-
-  /** Output length of the current plan, in samples. */
+  /** Output length of the lane, in samples. */
   outputFrames(): number {
     return call('Read Plan', () => this.#alive().outputFrames());
   }
@@ -491,9 +585,9 @@ export class Session {
     return call('Align Guide', () => this.#alive().anchorOffset(noteTick, targetSeconds));
   }
 
-  /** Source sample rate recorded at import. */
+  /** The project sample rate every clip is held at. */
   sampleRate(): number {
-    this.#sampleRate ??= this.sourceInfo().sampleRate;
+    this.#sampleRate ??= call('Read Source', () => this.#alive().sampleRate());
     return this.#sampleRate;
   }
 

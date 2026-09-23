@@ -16,7 +16,9 @@ House rules that apply to every file:
 - Enforce the bounds in `crate::limits` on anything derived from imported data.
 - No `unsafe`, no panics on untrusted input, no `unwrap()` outside tests.
 - Every module ends with a `#[cfg(test)] mod tests` covering the behaviour it owns.
-- All times are **source seconds** as `f64` unless a name says otherwise.
+- All times are **source seconds** as `f64` unless a name says otherwise. Source seconds belong
+  to one clip; **project seconds** are a clip's source seconds plus its position on the lane.
+  An `EditOp` carries project seconds, and the applier moves each into the owning clip's.
 - Serde types use `#[serde(rename_all = "camelCase")]`.
 
 ## `analysis/f0.rs`
@@ -261,6 +263,62 @@ pub enum ConflictKind { Overlap, Gap }
 /// Shortest blob a boundary edit may produce, in seconds.
 pub const MIN_BLOB_SECONDS: f64 = 0.01;
 ```
+
+## `clip.rs`
+
+```rust
+/// Low bits of a blob id that number blobs within their clip.
+pub const CLIP_ID_BITS: u32 = 20;
+pub const MAX_CLIPS: usize = 64;
+pub const MAX_REFERENCES: usize = 32;
+
+/// Stable identifier for a clip within one project.
+pub struct ClipId(pub u32);
+impl ClipId { pub fn first_blob(self) -> BlobId; }
+/// The clip a blob belongs to.
+pub fn clip_of(blob: BlobId) -> ClipId;
+
+/// Stable identifier for a reference within one project.
+pub struct ReferenceId(pub u32);
+
+/// A span of source seconds.
+pub struct Span { pub start: f64, pub end: f64 }
+
+/// One imported vocal placed on the lane.
+pub struct Clip {
+    pub id: ClipId,
+    pub source: SourceInfo,
+    /// Project seconds at which the clip's source second 0 sits. Never negative.
+    pub position: f64,
+    /// In clip source seconds.
+    pub blobs: BlobSet,
+    /// Material deleted with its blobs, rendered as silence. Ordered, never overlapping.
+    pub silenced: Vec<Span>,
+}
+
+impl Clip {
+    pub fn new(id: ClipId, source: SourceInfo, position: f64, blobs: BlobSet) -> Self;
+    pub fn end(&self) -> f64;
+    pub fn project_blobs(&self) -> Vec<Blob>;
+    pub fn silence(&mut self, span: Span);
+    pub fn unsilence(&mut self, start: f64, end: f64);
+}
+
+/// Renumbers an analysed blob set into a clip's id range, keeping time order.
+pub fn renumber(blobs: &BlobSet, clip: ClipId) -> Result<BlobSet>;
+pub fn numbered_for(blobs: &BlobSet, clip: ClipId) -> bool;
+
+/// The position nearest `wanted` at which a span of `duration` overlaps no other clip.
+pub fn free_position(others: &[(f64, f64)], duration: f64, wanted: f64) -> f64;
+
+/// Audio heard beside the vocal and never edited or warped.
+pub struct Reference { pub id: ReferenceId, pub source: SourceInfo, pub position: f64 }
+```
+
+Clips never overlap on the lane. A clip added or moved over another lands against the nearer edge
+of the one it would have covered, so the lane's blobs, taken together in project seconds, are
+always one valid `BlobSet`. `Blob::shifted` and `PitchCurve::shifted` move a blob and its anchors
+between the two time domains.
 
 ## `analysis/segment.rs`
 
@@ -777,6 +835,8 @@ impl RenderPlan {
 pub struct PlanInputs<'a> {
     pub track: &'a PitchTrack,
     pub blobs: &'a BlobSet,
+    /// Source spans whose blobs were deleted; the plan's gain is zero across them.
+    pub silenced: &'a [Span],
     pub sample_rate: f64,
     pub duration: f64,
     pub scale: &'a ScaleSettings,
@@ -835,6 +895,13 @@ pub enum EditOp {
     ResetRange { start: f64, end: f64 },
     SetExcluded { blob: BlobId, excluded: bool },
     SetGain { blob: BlobId, gain_db: f64 },
+    DeleteBlobs { blobs: Vec<BlobId> },
+    AddClip { clip: Clip },
+    MoveClip { clip: ClipId, position: f64 },
+    RemoveClip { clip: ClipId },
+    AddReference { reference: Reference },
+    MoveReference { reference: ReferenceId, position: f64 },
+    RemoveReference { reference: ReferenceId },
     SetMixer { mixer: MixerSettings },
     SetScale { scale: ScaleSettings },
     SetModulation { modulation: ModulationSettings },
@@ -876,12 +943,26 @@ impl History {
 `edit.rs` also hosts the applier, which lives in `project.rs`'s owner module but is declared here:
 
 ```rust
-/// Applies one operation to the mutable parts of a project.
-///
-/// Analysis results are never modified, so any op can be recomputed from the source.
-pub fn apply(state: &mut crate::project::EditState, track: Option<&PitchTrack>, op: &EditOp)
-    -> Result<()>;
+/// The per-clip evidence an operation may read.
+pub trait ClipSources {
+    fn track(&self, clip: ClipId) -> Option<&PitchTrack>;
+    /// The analysed segmentation a range reset restores.
+    fn baseline(&self, clip: ClipId) -> Option<&BlobSet>;
+}
+
+/// Applies one operation, reading each clip's own evidence.
+pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -> Result<()>;
+
+/// The same, with one track and one baseline read for every clip.
+pub fn apply(state: &mut EditState, track: Option<&PitchTrack>, op: &EditOp) -> Result<()>;
+pub fn apply_with_baseline(state: &mut EditState, track: Option<&PitchTrack>,
+    baseline: Option<&BlobSet>, op: &EditOp) -> Result<()>;
 ```
+
+`DeleteBlobs` removes the blobs and silences the source spans they covered; `ResetRange` restores
+both the analysed blobs and the silenced material across its span. `AddClip` refuses a clip whose
+blobs are not numbered for it. Importing a second vocal or a reference is an edit like any other,
+so undo takes it back; the first clip is the base state the history replays over.
 
 ## `audio/wav.rs`
 
@@ -936,7 +1017,7 @@ pub struct ExportReport {
 
 ```rust
 /// Current project schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Immutable facts about the imported source audio.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -965,7 +1046,10 @@ pub struct AnalysisInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditState {
-    pub blobs: BlobSet,
+    pub name: String,
+    /// Vocal clips on the lane, in the order they were imported.
+    pub clips: Vec<Clip>,
+    pub references: Vec<Reference>,
     pub scale: ScaleSettings,
     pub modulation: ModulationSettings,
     pub formant: FormantMode,
@@ -974,20 +1058,32 @@ pub struct EditState {
     pub mappings: Vec<NoteMapping>,
     pub tuning: Tuning,
     pub accidentals: AccidentalStyle,
-    /// Monitor levels for everything the transport plays. Never read by the plan compiler, so
-    /// an export is unchanged by it.
+    /// Monitor levels for everything the transport plays. Never read by the plan compiler; an
+    /// export reads only the reference strips, and only when it includes references.
     #[serde(default)]
     pub mixer: MixerSettings,
 }
 
-/// The monitor desk, in `mixer.rs`: one strip per audio source the transport plays.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// The monitor desk, in `mixer.rs`: a track per clip, a strip per reference, one click and a
+/// master.
+///
+/// A clip or reference with no entry reads as the strips it starts with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MixerSettings {
-    pub processed: MixerStrip,
-    pub original: MixerStrip,
+    pub clips: Vec<ClipStrips>,
+    pub references: Vec<ReferenceStrip>,
     pub click: MixerStrip,
+    /// Level and mute only; never panned or soloed. Unity when a document has none.
+    #[serde(default)]
+    pub master: MixerStrip,
 }
+
+/// A clip's track: the take as edited and as sung.
+pub struct ClipStrips { pub clip: ClipId, pub processed: MixerStrip, pub original: MixerStrip }
+
+/// A reference's strip.
+pub struct ReferenceStrip { pub reference: ReferenceId, pub strip: MixerStrip }
 
 /// One audio source on the desk.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1003,7 +1099,10 @@ pub struct MixerStrip {
 }
 
 impl MixerSettings {
-    pub fn strips(&self) -> [&MixerStrip; 3];
+    /// A clip's track, or the one it starts with: processed up, original muted.
+    pub fn clip(&self, clip: ClipId) -> ClipStrips;
+    pub fn reference(&self, reference: ReferenceId) -> MixerStrip;
+    pub fn strips(&self) -> Vec<&MixerStrip>;
     pub fn soloed(&self) -> bool;
     /// The same settings with every figure brought inside its bounds. A level out of range is
     /// clamped; a figure that is not a number is refused.
@@ -1038,10 +1137,10 @@ pub struct Project {
     pub schema_version: u32,
     pub app_version: String,
     pub name: String,
-    pub source: SourceInfo,
-    pub analysis: AnalysisInfo,
-    /// Stored analysis output. Discardable: it can be rebuilt from the source and params.
-    pub track: Option<PitchTrack>,
+    /// The audio and analysis of every clip the project or its history can put on the lane.
+    pub clips: Vec<ClipMedia>,
+    /// Every reference the project or its history can bring in, for relinking.
+    pub references: Vec<Reference>,
     pub edits: EditState,
     /// The state the history replays from: the analysis, plus everything no edit recorded, such
     /// as the timeline a MIDI import adopted. An undo rebuilds `edits` from this and `history`,
@@ -1053,14 +1152,35 @@ pub struct Project {
     pub history: History,
 }
 
+/// What a project keeps about one clip's audio, whether or not the clip is on the lane now.
+pub struct ClipMedia {
+    pub clip: ClipId,
+    pub source: SourceInfo,
+    pub analysis: AnalysisInfo,
+    /// Discardable: it can be rebuilt from the source and params.
+    pub track: Option<PitchTrack>,
+    /// The analysed segmentation, numbered for the clip.
+    pub blobs: BlobSet,
+}
+
 impl Project {
+    /// A project with one clip at the start of the lane.
     pub fn new(name: String, source: SourceInfo, analysis: AnalysisInfo) -> Self;
     pub fn to_json(&self) -> Result<String>;
     /// Parses and migrates a project document of any supported schema version.
     pub fn from_json(json: &str) -> Result<Project>;
-    /// True when `source` describes the same media as `other`.
+    /// True when `other` describes the same media as one of the project's clips.
     pub fn matches_source(&self, other: &SourceInfo) -> bool;
+    pub fn clip_media(&self, clip: ClipId) -> Option<&ClipMedia>;
 }
+```
+
+Schema version 1 held one source. `migrate` rewrites it as a project with that source as clip 0 at
+position 0: `source`, `analysis` and `track` become clip 0's media, each edit state's `blobs`
+become clip 0 on its lane, and the desk, wherever it appears including inside recorded
+operations, becomes clip 0's track.
+
+```rust
 
 /// FNV-1a 64-bit digest of PCM, rendered as 16 lowercase hex characters.
 pub fn fingerprint(samples: &[f32]) -> String;

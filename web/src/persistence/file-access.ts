@@ -205,6 +205,19 @@ export const MIDI_KIND: readonly FileKind[] = [
   { description: 'MIDI', accept: { 'audio/midi': ['.mid', '.midi'] } },
 ];
 
+/** The audio kinds a vocal or a reference is imported from. */
+const AUDIO_KIND: readonly FileKind[] = [
+  {
+    description: 'Audio',
+    accept: {
+      'audio/*': ['.wav', '.flac', '.mp3', '.m4a', '.aac', '.ogg', '.opus'],
+    },
+  },
+];
+
+/** What Import offers: audio for a vocal or a reference, or a MIDI guide. */
+export const IMPORTABLE: readonly FileKind[] = [...AUDIO_KIND, ...MIDI_KIND];
+
 /** The project document kind, for saving. */
 export const PROJECT_KIND: readonly FileKind[] = [
   { description: 'Axys Project', accept: { 'application/json': ['.axys.json'] } },

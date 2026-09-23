@@ -61,6 +61,43 @@ export async function loadTestCore(): Promise<TestCore> {
 }
 
 /**
+ * Reopens a saved single-clip project with its audio attached, the way the app does in two
+ * calls.
+ *
+ * @throws When the samples are not the audio the project's first clip was made from.
+ */
+export function reopenProject(
+  bindings: TestCore,
+  document: string,
+  samples: Float32Array,
+): core.Session {
+  const session = bindings.Session.openProject(document);
+  try {
+    session.attachClip(0, samples);
+  } catch (thrown) {
+    session.free();
+    throw thrown;
+  }
+  return session;
+}
+
+/** What a renderer for a session's first clip is built from: its audio, track and own plan. */
+export function firstClipInputs(session: core.Session): {
+  samples: Float32Array;
+  trackJson: string;
+  planJson: string;
+} {
+  const plans = JSON.parse(session.clipPlansJson()) as { clip: number; plan: unknown }[];
+  const first = plans[0];
+  if (!first) throw new Error('the session has no clip on its lane');
+  return {
+    samples: session.clipSamples(first.clip),
+    trackJson: session.clipTrackJson(first.clip),
+    planJson: JSON.stringify(first.plan),
+  };
+}
+
+/**
  * Decodes a fixture WAV from `fixtures/audio/`.
  *
  * Handles PCM WAV with 8, 16, 24 or 32-bit integer samples and 32-bit float, walking the

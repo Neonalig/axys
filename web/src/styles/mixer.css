@@ -1,18 +1,24 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
-/* The mixer: a bottom panel of desk strips, opened from the footer. */
-
 /* The mixer: a bottom panel of desk strips, opened from the footer */
 
+/*
+ * Three groups across the desk: the lane's sources pinned left, the references centred, and the
+ * metronome and master pinned right. Each side column is at least as wide as its strips, so a desk
+ * too wide for the panel scrolls rather than overlapping.
+ */
+
 .axys-mixer {
+  --axys-meter-fill: color-mix(in srgb, var(--axys-accent) 45%, black);
+
   grid-area: mixer;
-  display: flex;
-  gap: var(--axys-space-2);
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+  column-gap: var(--axys-space-4);
   height: 100%;
   min-height: 0;
   padding: var(--axys-space-2) var(--axys-space-3);
-  overflow: hidden auto;
+  overflow: auto;
   border-top: 1px solid var(--axys-border);
   background: var(--axys-veil);
   backdrop-filter: var(--axys-blur);
@@ -20,9 +26,69 @@
 
 /* Folded to nothing by its row, so the border and the padding go with it */
 
+.axys-mixer-group {
+  display: flex;
+  gap: var(--axys-space-2);
+  align-items: stretch;
+  min-height: 0;
+}
+
+.axys-mixer-group.is-references {
+  justify-self: center;
+}
+
+.axys-mixer-group.is-outputs {
+  justify-self: end;
+}
+
 .axys-mixer.is-collapsed {
   padding-block: 0;
   border-top-width: 0;
+}
+
+/*
+ * Every source on the desk is one outlined box: a clip's track holds its two strips under the
+ * clip's name, and a reference or the metronome is a box of one.
+ */
+
+.axys-mixer-track,
+.axys-mixer-strip.is-standalone {
+  flex: 0 0 auto;
+  border: 1px solid var(--axys-border);
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-sunken);
+}
+
+.axys-mixer-track {
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-1);
+  min-height: 0;
+  padding: 6px 0 0;
+}
+
+.axys-mixer-track-name {
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 0 var(--axys-space-2);
+  font-size: var(--axys-size-sm);
+  font-weight: var(--axys-weight-strong);
+  color: var(--axys-text);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-mixer-track-strips {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The two strips of a track are divided by a hairline rather than boxed apart */
+
+.axys-mixer-track-strips > .axys-mixer-strip + .axys-mixer-strip {
+  border-left: 1px solid var(--axys-border);
 }
 
 .axys-mixer-strip {
@@ -33,9 +99,6 @@
   align-items: center;
   width: 92px;
   padding: 6px;
-  border: 1px solid var(--axys-border);
-  border-radius: var(--axys-radius);
-  background: var(--axys-surface-sunken);
 }
 
 /* Only the fader grows; everything else keeps the height it asks for */
@@ -72,13 +135,66 @@
   min-height: 0;
 }
 
-.axys-mixer-fader {
+/*
+ * The fader draws its own track: the fill up to the level it is set at, darkened as far as the
+ * strip is sounding. The meter never passes the fill, because it reads what the fader lets out.
+ */
+
+.axys-mixer .axys-mixer-fader {
+  --axys-fader-fill: 0;
+  --axys-meter-level: 0;
+  --axys-fader-track: linear-gradient(
+    to top,
+    var(--axys-meter-fill) 0 calc(min(var(--axys-meter-level), var(--axys-fader-fill)) * 100%),
+    var(--axys-accent) 0 calc(var(--axys-fader-fill) * 100%),
+    var(--axys-border) 0
+  );
+
   width: 24px;
   height: 100%;
-  /* The modern spelling, and the one older WebKit and Blink answer to */
+  margin: 0;
   writing-mode: vertical-lr;
   direction: rtl;
-  appearance: slider-vertical;
+  appearance: none;
+  background: transparent;
+  cursor: ns-resize;
+}
+
+.axys-mixer-fader::-webkit-slider-runnable-track {
+  inline-size: 100%;
+  block-size: 6px;
+  border-radius: 3px;
+  background: var(--axys-fader-track);
+}
+
+.axys-mixer-fader::-moz-range-track {
+  inline-size: 100%;
+  block-size: 6px;
+  border-radius: 3px;
+  background: var(--axys-fader-track);
+}
+
+.axys-mixer-fader::-webkit-slider-thumb {
+  inline-size: 10px;
+  block-size: 22px;
+  margin-block-start: -8px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: 3px;
+  background: var(--axys-text);
+  appearance: none;
+}
+
+.axys-mixer-fader::-moz-range-thumb {
+  inline-size: 10px;
+  block-size: 22px;
+  border: 1px solid var(--axys-border-strong);
+  border-radius: 3px;
+  background: var(--axys-text);
+}
+
+.axys-mixer-fader:focus-visible {
+  outline: 2px solid var(--axys-accent);
+  outline-offset: 2px;
 }
 
 .axys-mixer-switches {

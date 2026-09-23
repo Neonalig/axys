@@ -2,13 +2,17 @@
 
 //! Monitor levels for everything the transport plays.
 //!
-//! One strip per audio source, with the controls a desk has: level, pan, mute and solo. The
-//! mixer is monitoring rather than an edit to the take, so it never reaches the render plan and
-//! an export is unchanged by it. It lives in the project document because how a take is listened
-//! to is part of the work, and it is set by an edit operation like anything else, so it undoes.
+//! The desk has a track per vocal clip carrying two strips, the take as edited and the take as
+//! sung, a strip per reference, one for the click, and a master over all of them. Each strip has
+//! the controls a desk has: level, pan, mute and solo. The mixer is monitoring rather than an edit
+//! to the take, so it never reaches the render plan, and an export reads only the strips of the
+//! references it includes. It lives in the project document
+//! because how a take is listened to is part of the work, and it is set by an edit operation like
+//! anything else, so it undoes.
 
 use serde::{Deserialize, Serialize};
 
+use crate::clip::{ClipId, ReferenceId, MAX_CLIPS, MAX_REFERENCES};
 use crate::units::decibels_to_amplitude;
 use crate::{limits, AxysError, Result};
 
@@ -44,6 +48,17 @@ impl MixerStrip {
     pub fn amplitude(&self) -> f64 {
         decibels_to_amplitude(self.gain_db)
     }
+
+    fn validated(&self) -> Result<Self> {
+        if !self.gain_db.is_finite() || !self.pan.is_finite() {
+            return Err(AxysError::Invalid("mixer setting is not finite".into()));
+        }
+        Ok(Self {
+            gain_db: self.gain_db.clamp(limits::MIN_GAIN_DB, limits::MAX_GAIN_DB),
+            pan: self.pan.clamp(-1.0, 1.0),
+            ..*self
+        })
+    }
 }
 
 impl Default for MixerStrip {
@@ -52,34 +67,103 @@ impl Default for MixerStrip {
     }
 }
 
-/// The monitor desk: one strip per audio source the transport plays.
+/// A vocal clip's track on the desk: the take as edited and as sung, side by side.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MixerSettings {
+pub struct ClipStrips {
+    /// The clip the track belongs to.
+    pub clip: ClipId,
     /// The take as the edits make it sound.
     pub processed: MixerStrip,
     /// The take as it was sung, on the same transport clock.
     pub original: MixerStrip,
+}
+
+impl ClipStrips {
+    /// The track a clip starts with: the edited take up, the original muted.
+    pub fn new(clip: ClipId) -> Self {
+        Self {
+            clip,
+            processed: MixerStrip::default(),
+            // The edited take is what the editor is for, so the original starts muted and is
+            // brought in to compare against it.
+            original: MixerStrip::new(0.0, true),
+        }
+    }
+}
+
+/// A reference's strip on the desk.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceStrip {
+    /// The reference the strip belongs to.
+    pub reference: ReferenceId,
+    /// Its level, pan, mute and solo.
+    pub strip: MixerStrip,
+}
+
+/// The monitor desk.
+///
+/// A clip or reference with no entry reads as the strips it starts with, so a source is on the
+/// desk from the moment it is imported without an edit to put it there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MixerSettings {
+    /// One track per vocal clip.
+    #[serde(default)]
+    pub clips: Vec<ClipStrips>,
+    /// One strip per reference.
+    #[serde(default)]
+    pub references: Vec<ReferenceStrip>,
     /// The metronome.
     pub click: MixerStrip,
+    /// Everything the desk sends to the output. Only its level and mute apply: it is never
+    /// panned and never soloed.
+    #[serde(default)]
+    pub master: MixerStrip,
 }
 
 impl Default for MixerSettings {
     fn default() -> Self {
         Self {
-            processed: MixerStrip::default(),
-            // The edited take is what the editor is for, so the original starts muted and is
-            // brought in to compare against it.
-            original: MixerStrip::new(0.0, true),
+            clips: Vec::new(),
+            references: Vec::new(),
             click: MixerStrip::new(DEFAULT_CLICK_DB, false),
+            master: MixerStrip::default(),
         }
     }
 }
 
 impl MixerSettings {
-    /// Every strip, in the order the desk draws them.
-    pub fn strips(&self) -> [&MixerStrip; 3] {
-        [&self.processed, &self.original, &self.click]
+    /// A clip's track, or the one it starts with when the desk has no entry for it.
+    pub fn clip(&self, clip: ClipId) -> ClipStrips {
+        self.clips
+            .iter()
+            .find(|entry| entry.clip == clip)
+            .copied()
+            .unwrap_or_else(|| ClipStrips::new(clip))
+    }
+
+    /// A reference's strip, or the one it starts with when the desk has no entry for it.
+    pub fn reference(&self, reference: ReferenceId) -> MixerStrip {
+        self.references
+            .iter()
+            .find(|entry| entry.reference == reference)
+            .map_or_else(MixerStrip::default, |entry| entry.strip)
+    }
+
+    /// Every strip the desk has an entry for, the click last.
+    pub fn strips(&self) -> Vec<&MixerStrip> {
+        let mut strips: Vec<&MixerStrip> = Vec::new();
+        for entry in &self.clips {
+            strips.push(&entry.processed);
+            strips.push(&entry.original);
+        }
+        for entry in &self.references {
+            strips.push(&entry.strip);
+        }
+        strips.push(&self.click);
+        strips
     }
 
     /// Whether any strip is soloed, which is what silences the ones that are not.
@@ -90,23 +174,46 @@ impl MixerSettings {
     /// The same settings with every figure brought inside its bounds.
     ///
     /// A level out of range is clamped rather than refused, because a fader is dragged to its
-    /// end rather than typed; a figure that is not a number is refused, because it is a bug.
+    /// end rather than typed; a figure that is not a number is refused, because it is a bug. A
+    /// source listed twice keeps its first entry.
     pub fn validated(&self) -> Result<Self> {
-        let mut settings = *self;
-        for strip in [
-            &mut settings.processed,
-            &mut settings.original,
-            &mut settings.click,
-        ] {
-            if !strip.gain_db.is_finite() || !strip.pan.is_finite() {
-                return Err(AxysError::Invalid("mixer setting is not finite".into()));
-            }
-            strip.gain_db = strip
-                .gain_db
-                .clamp(limits::MIN_GAIN_DB, limits::MAX_GAIN_DB);
-            strip.pan = strip.pan.clamp(-1.0, 1.0);
+        if self.clips.len() > MAX_CLIPS || self.references.len() > MAX_REFERENCES {
+            return Err(AxysError::Invalid("the desk has too many strips".into()));
         }
-        Ok(settings)
+        let mut clips: Vec<ClipStrips> = Vec::with_capacity(self.clips.len());
+        for entry in &self.clips {
+            if clips.iter().any(|kept| kept.clip == entry.clip) {
+                continue;
+            }
+            clips.push(ClipStrips {
+                clip: entry.clip,
+                processed: entry.processed.validated()?,
+                original: entry.original.validated()?,
+            });
+        }
+        let mut references: Vec<ReferenceStrip> = Vec::with_capacity(self.references.len());
+        for entry in &self.references {
+            if references
+                .iter()
+                .any(|kept| kept.reference == entry.reference)
+            {
+                continue;
+            }
+            references.push(ReferenceStrip {
+                reference: entry.reference,
+                strip: entry.strip.validated()?,
+            });
+        }
+        Ok(Self {
+            clips,
+            references,
+            click: self.click.validated()?,
+            master: MixerStrip {
+                pan: 0.0,
+                solo: false,
+                ..self.master.validated()?
+            },
+        })
     }
 }
 
@@ -115,22 +222,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_desk_starts_on_the_edited_take_with_the_click_below_it() {
+    fn a_clip_starts_on_the_edited_take_with_the_click_below_it() {
         let mixer = MixerSettings::default();
-        assert!(!mixer.processed.mute);
-        assert!(mixer.original.mute);
+        let track = mixer.clip(ClipId(0));
+        assert!(!track.processed.mute);
+        assert!(track.original.mute);
         assert!(!mixer.soloed());
-        assert!(mixer.click.amplitude() < mixer.processed.amplitude());
+        assert!(mixer.click.amplitude() < track.processed.amplitude());
+    }
+
+    #[test]
+    fn a_reference_starts_at_unity() {
+        let mixer = MixerSettings::default();
+        assert_eq!(mixer.reference(ReferenceId(4)), MixerStrip::default());
     }
 
     #[test]
     fn levels_and_pans_are_clamped_rather_than_refused() {
         let mut mixer = MixerSettings::default();
-        mixer.processed.gain_db = 1000.0;
-        mixer.original.pan = -4.0;
+        let mut track = ClipStrips::new(ClipId(0));
+        track.processed.gain_db = 1000.0;
+        track.original.pan = -4.0;
+        mixer.clips.push(track);
         let checked = mixer.validated().expect("clamped");
-        assert_eq!(checked.processed.gain_db, limits::MAX_GAIN_DB);
-        assert_eq!(checked.original.pan, -1.0);
+        assert_eq!(
+            checked.clip(ClipId(0)).processed.gain_db,
+            limits::MAX_GAIN_DB
+        );
+        assert_eq!(checked.clip(ClipId(0)).original.pan, -1.0);
     }
 
     #[test]
@@ -138,5 +257,57 @@ mod tests {
         let mut mixer = MixerSettings::default();
         mixer.click.gain_db = f64::NAN;
         assert!(mixer.validated().is_err());
+    }
+
+    #[test]
+    fn a_source_listed_twice_keeps_its_first_entry() {
+        let mut mixer = MixerSettings::default();
+        let mut first = ClipStrips::new(ClipId(1));
+        first.processed.gain_db = -6.0;
+        mixer.clips.push(first);
+        mixer.clips.push(ClipStrips::new(ClipId(1)));
+        let checked = mixer.validated().expect("valid");
+        assert_eq!(checked.clips.len(), 1);
+        assert_eq!(checked.clip(ClipId(1)).processed.gain_db, -6.0);
+    }
+
+    #[test]
+    fn the_master_is_never_panned_or_soloed() {
+        let mixer = MixerSettings {
+            master: MixerStrip {
+                gain_db: -3.0,
+                pan: 0.5,
+                mute: false,
+                solo: true,
+            },
+            ..MixerSettings::default()
+        };
+        let checked = mixer.validated().expect("valid");
+        assert_eq!(checked.master.gain_db, -3.0);
+        assert_eq!(checked.master.pan, 0.0);
+        assert!(!checked.master.solo);
+        assert!(!checked.soloed());
+    }
+
+    #[test]
+    fn a_desk_saved_without_a_master_reads_it_at_unity() {
+        let mixer: MixerSettings = serde_json::from_str(
+            r#"{"click":{"gainDb":-11.0,"pan":0.0,"mute":false,"solo":false}}"#,
+        )
+        .expect("parses");
+        assert_eq!(mixer.master, MixerStrip::default());
+    }
+
+    #[test]
+    fn a_soloed_reference_counts_as_a_solo() {
+        let mut mixer = MixerSettings::default();
+        mixer.references.push(ReferenceStrip {
+            reference: ReferenceId(0),
+            strip: MixerStrip {
+                solo: true,
+                ..MixerStrip::default()
+            },
+        });
+        assert!(mixer.soloed());
     }
 }

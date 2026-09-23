@@ -59,9 +59,11 @@ const FALLBACK_CONTEXT_RATE = 48000;
  * Decodes one imported file, keeping the source rate and channel count where the browser allows.
  *
  * @remarks Rejects with an {@link AudioDecodeError} naming the reason, never with a bare decoder
- * error. Decoding runs on an `OfflineAudioContext`, so it needs no user gesture.
+ * error. Decoding runs on an `OfflineAudioContext`, so it needs no user gesture. `sampleRate`
+ * decodes at that rate instead of the file's own, which is how a second source joins a project
+ * whose every source is held at one rate.
  */
-export async function decodeAudioFile(file: File): Promise<DecodedSource> {
+export async function decodeAudioFile(file: File, sampleRate?: number): Promise<DecodedSource> {
   if (file.size === 0) {
     throw new AudioDecodeError('empty', `"${file.name}" holds no audio.`);
   }
@@ -74,7 +76,7 @@ export async function decodeAudioFile(file: File): Promise<DecodedSource> {
 
   const declared = await sniffSampleRate(file);
   const bytes = await readBytes(file);
-  const context = openDecodeContext(declared);
+  const context = openDecodeContext(sampleRate ?? declared);
 
   let buffer: AudioBuffer;
   try {
@@ -108,7 +110,7 @@ export async function decodeAudioFile(file: File): Promise<DecodedSource> {
     mime: file.type === '' ? null : file.type,
     sampleRate: buffer.sampleRate,
     declaredSampleRate: declared,
-    resampled: declared !== null && declared !== buffer.sampleRate,
+    resampled: declared !== null && declared !== buffer.sampleRate && sampleRate === undefined,
     channels: buffer.numberOfChannels,
     frames: buffer.length,
     duration: buffer.duration,

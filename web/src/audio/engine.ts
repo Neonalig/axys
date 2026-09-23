@@ -10,10 +10,25 @@
 
 import workletUrl from './worklet/renderer-worklet.ts?worker&url';
 import type { AppStore } from '../app/store.js';
-import type { MixerSettings, RenderPlan, TimelineMap } from '../core/types.js';
+import type { ClipPlan } from '../core/json.js';
+import type { ClipId, MixerSettings, ReferenceId, RenderPlan, TimelineMap } from '../core/types.js';
 import { meterAt, ppqOf, tickToSeconds } from '../core/timeline.js';
 import { wasmModuleUrl } from '../core/wasm-url.js';
-import type { EngineMessage, OutputRange, RendererMessage } from './worklet/renderer-worklet.js';
+import type {
+  ClipPlacement,
+  EngineMessage,
+  MeterReport,
+  OutputRange,
+  RendererMessage,
+} from './worklet/renderer-worklet.js';
+
+export type { MeterReport } from './worklet/renderer-worklet.js';
+
+/** A playhead this far from the reported position, in seconds, jumps to it rather than easing. */
+const POSITION_SNAP = 0.05;
+
+/** Share of the gap to the reported position closed on each read while playing. */
+const POSITION_EASE = 0.08;
 
 /** Whether the engine can play, and why not when it cannot. */
 export type EngineStatus = 'idle' | 'blocked' | 'running' | 'failed';
@@ -58,11 +73,13 @@ export class AudioEngine {
   #status: EngineStatus = 'idle';
   #message: string | null = null;
   #underruns = 0;
+  #meters: MeterReport | null = null;
+  #loadError: unknown = null;
   #listeners = new Set<(report: EngineReport) => void>();
 
   #encoder = new TextEncoder();
+  /** The lane-wide plan the editor draws from, which places the clicks in output time. */
   #plan: RenderPlan | null = null;
-  #planBytes: Uint8Array | null = null;
   #timeline: TimelineMap | null = null;
   #metronome = false;
 
@@ -71,6 +88,9 @@ export class AudioEngine {
   #playing = false;
   #reported = 0;
   #reportedAt = 0;
+  /** The position last handed out while playing, and when, so it moves at a steady rate. */
+  #shown = 0;
+  #shownAt = 0;
 
   /**
    * Transport commands issued so far, and the stamp the renderer echoes back.
@@ -85,48 +105,95 @@ export class AudioEngine {
     this.#store = store;
   }
 
-  /** Compiles the core module and returns an engine ready to take a source. */
+  /**
+   * Compiles the core module and starts the renderer, and returns an engine ready to take a
+   * source.
+   *
+   * @remarks The renderer starts here, at the device's rate, rather than with the first project,
+   * so a page that loses its server after loading still has one to play through.
+   */
   static async create(store: AppStore): Promise<AudioEngine> {
     const engine = new AudioEngine(store);
     await engine.#compile();
+    if (engine.#loadError === null) await engine.#ensureNode(null);
     return engine;
   }
 
   /**
-   * Hands the worklet its source audio. Transfers the buffer.
+   * Starts a project over at a sample rate, dropping whatever the worklet held.
    *
-   * @remarks `samples` is mono at `sampleRate` and belongs to the worklet afterwards. The
-   * context is opened at the source rate where the host allows it, so no resampling is needed.
+   * @remarks The context is opened at the project rate where the host allows it, so no
+   * resampling is needed.
    */
-  async loadSource(samples: Float32Array, sampleRate: number, trackJson: string): Promise<void> {
-    const buffer = samples.buffer;
-    if (!(buffer instanceof ArrayBuffer)) {
-      throw new TypeError('source audio must be backed by a transferable ArrayBuffer');
-    }
+  async loadProject(sampleRate: number): Promise<void> {
     this.#sourceRate = sampleRate;
-    this.#duration = samples.length / sampleRate;
+    this.#duration = 0;
     this.#reported = 0;
     this.#reportedAt = now();
     this.#playing = false;
     this.#underruns = 0;
-
     const node = await this.#ensureNode(sampleRate);
     if (!node) return;
+    this.#send({ type: 'project', sampleRate });
+  }
 
-    this.#planBytes ??= this.#encoder.encode(
-      JSON.stringify(passthroughPlan(sampleRate, this.#duration)),
-    );
+  /**
+   * Hands the worklet one clip's audio. Transfers the buffer.
+   *
+   * @remarks `samples` is mono at the project rate and belongs to the worklet afterwards.
+   * Loading a clip the worklet already holds replaces it.
+   */
+  loadClip(clip: ClipId, samples: Float32Array, trackJson: string, placed: ClipPlan | null): void {
+    const buffer = samples.buffer;
+    if (!(buffer instanceof ArrayBuffer)) {
+      throw new TypeError('source audio must be backed by a transferable ArrayBuffer');
+    }
+    const rate = this.#sourceRate ?? 48_000;
+    const plan = placed?.plan ?? passthroughPlan(rate, samples.length / rate);
     this.#send(
       {
-        type: 'source',
+        type: 'clip',
+        id: clip,
         samples: buffer,
-        sampleRate,
         track: this.#encoder.encode(trackJson),
-        plan: this.#planBytes,
+        plan: this.#encoder.encode(JSON.stringify(plan)),
+        position: placed?.position ?? 0,
       },
       [buffer],
     );
     this.#watchForReady();
+  }
+
+  /**
+   * Hands the worklet one reference's channels. Transfers the buffers.
+   *
+   * @remarks Each channel is at the project rate. A reference is heard as it is, never through a
+   * plan.
+   */
+  loadReference(reference: ReferenceId, channels: readonly Float32Array[], position: number): void {
+    const [left, right] = channels;
+    if (!left) return;
+    const buffers = [left.buffer, right?.buffer].filter(
+      (buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer,
+    );
+    this.#send(
+      {
+        type: 'reference',
+        id: reference,
+        left: left.buffer as ArrayBuffer,
+        right: right ? (right.buffer as ArrayBuffer) : null,
+        position,
+      },
+      [...new Set(buffers)],
+    );
+  }
+
+  /** Places every reference in the project; one left out is silent. */
+  placeReferences(references: readonly { id: ReferenceId; position: number }[]): void {
+    this.#send({
+      type: 'placements',
+      references: references.map(({ id, position }) => ({ id, position })),
+    });
   }
 
   /**
@@ -149,11 +216,21 @@ export class AudioEngine {
     }, READY_TIMEOUT_MS);
   }
 
-  /** Pushes a compiled plan to the worklet. Cheap, safe to call on every edit. */
-  setPlan(plan: RenderPlan): void {
-    this.#plan = plan;
-    this.#planBytes = this.#encoder.encode(JSON.stringify(plan));
-    this.#send({ type: 'plan', plan: this.#planBytes });
+  /**
+   * Pushes every clip's compiled plan and position to the worklet. Cheap, safe to call on every
+   * edit.
+   *
+   * @remarks `lane` is the lane-wide plan the editor draws from, which carries the clicks through
+   * the timing edits. A loaded clip missing from `plans` is off the lane and silent.
+   */
+  setPlans(plans: readonly ClipPlan[], lane: RenderPlan): void {
+    this.#plan = lane;
+    const placements: ClipPlacement[] = plans.map((placed) => ({
+      clip: placed.clip,
+      position: placed.position,
+      plan: this.#encoder.encode(JSON.stringify(placed.plan)),
+    }));
+    this.#send({ type: 'plans', plans: placements });
     if (this.#metronome) this.#sendClicks();
   }
 
@@ -170,7 +247,6 @@ export class AudioEngine {
     }
     this.#ready = false;
     this.#plan = null;
-    this.#planBytes = null;
     this.#timeline = null;
     this.#metronome = false;
     this.#sourceRate = null;
@@ -285,16 +361,51 @@ export class AudioEngine {
     this.#send({ type: 'audition', start, end, seq: this.#issued });
   }
 
-  /** Playhead position in output seconds, interpolated between the worklet's reports. */
+  /**
+   * Playhead position in output seconds, interpolated between the worklet's reports.
+   *
+   * @remarks While playing it advances with the clock and eases towards each report rather than
+   * jumping to it, because the audio clock and the page clock drift apart a little between
+   * reports and a playhead corrected in steps shakes under Keep Centred. A gap larger than
+   * {@link POSITION_SNAP} seconds, from a seek or a loop, is taken at once.
+   */
   get position(): number {
     if (!this.#playing) return this.#reported;
-    const elapsed = (now() - this.#reportedAt) / 1000;
-    return Math.min(this.#reported + elapsed, this.#duration);
+    const at = now();
+    const target = Math.min(this.#reported + (at - this.#reportedAt) / 1000, this.#duration);
+    const predicted = this.#shown + (at - this.#shownAt) / 1000;
+    const error = target - predicted;
+    const shown =
+      this.#shownAt === 0 || Math.abs(error) > POSITION_SNAP
+        ? target
+        : Math.min(predicted + error * POSITION_EASE, this.#duration);
+    this.#shown = shown;
+    this.#shownAt = at;
+    return shown;
   }
 
   /** True while the transport is running, including during a count-in. */
   get playing(): boolean {
     return this.#playing;
+  }
+
+  /**
+   * Why the core or the renderer module could not be fetched, or `null` when both arrived.
+   *
+   * @remarks Set when a download fails, which on a static host is a dropped connection rather
+   * than a fault a reload would repeat.
+   */
+  get loadError(): unknown {
+    return this.#loadError;
+  }
+
+  /**
+   * Each strip's loudest recent sample after its fader, or `null` before the renderer reports.
+   *
+   * @remarks Refreshed about twenty times a second while the transport runs.
+   */
+  get meters(): MeterReport | null {
+    return this.#meters;
   }
 
   /** Output length of the current plan, in seconds. */
@@ -343,13 +454,20 @@ export class AudioEngine {
       if (!response.ok) throw new Error(`${String(response.status)} ${response.statusText}`);
       this.#coreBytes = await response.arrayBuffer();
     } catch (thrown) {
+      this.#loadError = thrown;
       this.#publish('failed', `Playback is unavailable: ${messageOf(thrown)}`);
     }
   }
 
-  async #ensureNode(rate: number): Promise<AudioWorkletNode | null> {
-    if (this.#node && this.#desiredRate === rate) return this.#node;
-    this.#teardown();
+  /**
+   * The renderer, rebuilt at `rate` when it runs at another, or at the device's rate for `null`.
+   *
+   * @remarks The new renderer is built before the old one is let go. One that cannot be built
+   * because its module did not download leaves the running one in place, which resamples; only
+   * with nothing running is that a load failure.
+   */
+  async #ensureNode(rate: number | null): Promise<AudioWorkletNode | null> {
+    if (this.#node && (rate === null || this.#desiredRate === rate)) return this.#node;
 
     const bytes = this.#coreBytes;
     if (!bytes) {
@@ -359,6 +477,7 @@ export class AudioEngine {
 
     const context = openContext(rate);
     if (!context) {
+      if (this.#node) return this.#node;
       this.#publish('failed', 'This browser has no Web Audio support');
       return null;
     }
@@ -367,9 +486,12 @@ export class AudioEngine {
       await context.audioWorklet.addModule(workletUrl);
     } catch (thrown) {
       void context.close();
+      if (this.#node) return this.#node;
+      this.#loadError = thrown;
       this.#publish('failed', `The audio renderer did not load: ${messageOf(thrown)}`);
       return null;
     }
+    this.#teardown();
 
     const node = new AudioWorkletNode(context, PROCESSOR_NAME, {
       numberOfInputs: 0,
@@ -435,13 +557,16 @@ export class AudioEngine {
           clearTimeout(this.#readyTimer);
           this.#readyTimer = null;
         }
-        this.#duration = message.outputSeconds;
         this.#sourceRate = message.sourceRate;
-        if (this.#metronome) this.#sendClicks();
         this.#notify();
+        break;
+      case 'length':
+        this.#duration = message.outputSeconds;
+        if (this.#metronome) this.#sendClicks();
         break;
       case 'status':
         this.#underruns = message.underruns;
+        this.#meters = message.meters;
         if (message.failure !== null && message.failure !== this.#message) {
           this.#publish(this.#status, `Playback fell back to silence: ${message.failure}`);
         }
@@ -491,6 +616,10 @@ export class AudioEngine {
 
   #syncTransport(): void {
     const transport = this.#store.state.transport;
+    if (!this.#playing) this.#shownAt = 0;
+    // While playing, the playhead loop writes the interpolated position every frame. Writing
+    // the raw report here as well would pull the playhead back to it between two frames.
+    if (this.#playing && transport.playing) return;
     if (transport.playing === this.#playing && transport.position === this.#reported) return;
     this.#store.update({
       transport: { ...transport, playing: this.#playing, position: this.#reported },
@@ -607,12 +736,14 @@ function toOutputSeconds(plan: RenderPlan | null, source: number): number {
   return first[0] + ((source - first[1]) / span) * (second[0] - first[0]);
 }
 
-function openContext(rate: number): AudioContext | null {
+function openContext(rate: number | null): AudioContext | null {
   if (typeof AudioContext !== 'function') return null;
-  try {
-    return new AudioContext({ sampleRate: rate, latencyHint: 'interactive' });
-  } catch {
-    // A host that refuses the source rate runs at its own; the worklet resamples.
+  if (rate !== null) {
+    try {
+      return new AudioContext({ sampleRate: rate, latencyHint: 'interactive' });
+    } catch {
+      // A host that refuses the source rate runs at its own; the worklet resamples.
+    }
   }
   try {
     return new AudioContext({ latencyHint: 'interactive' });
@@ -624,7 +755,7 @@ function openContext(rate: number): AudioContext | null {
 function asRendererMessage(value: unknown): RendererMessage | null {
   if (typeof value !== 'object' || value === null) return null;
   const type: unknown = (value as { type?: unknown }).type;
-  if (type === 'ready' || type === 'status' || type === 'ended') {
+  if (type === 'ready' || type === 'length' || type === 'status' || type === 'ended') {
     return value as RendererMessage;
   }
   return null;

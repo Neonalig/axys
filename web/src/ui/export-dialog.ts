@@ -8,7 +8,7 @@
  * discovered in the file.
  */
 
-import { selectInput } from './controls/index.js';
+import { checkboxInput, selectInput } from './controls/index.js';
 import { Dialog } from './dialog.js';
 import type { BitDepth, ExportPreview } from '../core/types.js';
 
@@ -21,6 +21,8 @@ export interface ExportChoice {
   range: ExportRange;
   sampleRate: number;
   depth: BitDepth;
+  /** Whether the references are mixed in, which writes the file in stereo. */
+  withReferences: boolean;
 }
 
 /** What the modal needs in order to offer an export and describe it. */
@@ -29,8 +31,10 @@ export interface ExportDialogOptions {
   selection: ExportRange;
   /** Source sample rate, offered as the default. */
   sourceRate: number;
-  /** Measures a range before anything is written. `null` when the core could not report. */
-  preview(range: ExportRange): ExportPreview | null;
+  /** Whether the project has references, which is when the dialog offers to include them. */
+  references: boolean;
+  /** Measures an export before anything is written. `null` when the core could not report. */
+  preview(range: ExportRange, withReferences: boolean): ExportPreview | null;
   /** Runs the export the user committed to. */
   onExport(choice: ExportChoice): void;
 }
@@ -86,10 +90,16 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
   depths.value = 'pcm24';
   settings.append(labelled('Bit Depth', depths));
 
+  // Off by default: the export is the vocal, and a backing track is added on purpose.
+  const references = checkboxInput();
+  references.checked = false;
+  if (options.references) settings.append(labelled('Include References', references));
+
   const chosen = (): ExportChoice => ({
     range: selected.input.checked ? options.selection : null,
     sampleRate: Number(rates.value),
     depth: depthOf(depths.value),
+    withReferences: options.references && references.checked,
   });
 
   // Measuring a range renders it, which is the same work the export itself does, so nothing is
@@ -99,7 +109,7 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
   measure.textContent = 'Measure Range';
   measure.addEventListener('click', () => {
     const choice = chosen();
-    describe(figures, options.preview(choice.range), choice);
+    describe(figures, options.preview(choice.range, choice.withReferences), choice);
   });
 
   const invite = (): void => {
@@ -113,7 +123,7 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
   };
   invite();
 
-  for (const control of [whole.input, selected.input, rates, depths]) {
+  for (const control of [whole.input, selected.input, rates, depths, references]) {
     control.addEventListener('change', invite);
   }
 
@@ -146,7 +156,8 @@ function describeChoice(choice: ExportChoice): string {
     choice.range === null
       ? 'The whole project'
       : `${seconds(choice.range.start)} to ${seconds(choice.range.end)}`;
-  return `${range}, at ${String(choice.sampleRate)} Hz, ${depthLabel(choice.depth)}. Measure it for peak level, clipping and timing conflicts.`;
+  const layout = choice.withReferences ? 'stereo with references' : 'mono';
+  return `${range}, ${layout}, at ${String(choice.sampleRate)} Hz, ${depthLabel(choice.depth)}. Measure it for peak level, clipping and timing conflicts.`;
 }
 
 /** How a bit depth names itself. */
