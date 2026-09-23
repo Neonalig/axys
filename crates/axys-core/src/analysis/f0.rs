@@ -83,6 +83,12 @@ pub struct F0Params {
     pub threshold: f64,
     /// Frame RMS below which a frame can only be unvoiced.
     pub voiced_rms_floor: f32,
+    /// Raises `threshold` to suit the clip, for material whose pitch dips less deeply than a dry
+    /// vocal's: reverb, compression, lossy encoding or doubled parts.
+    ///
+    /// Off for analyses stored before it existed, so they decode as they did.
+    #[serde(default)]
+    pub auto_threshold: bool,
 }
 
 impl Default for F0Params {
@@ -94,6 +100,7 @@ impl Default for F0Params {
             hop_seconds: 0.005,
             threshold: 0.15,
             voiced_rms_floor: 0.0015,
+            auto_threshold: true,
         }
     }
 }
@@ -468,13 +475,57 @@ pub fn decode_f0(
             layout.count
         )));
     }
-    let states = decode(candidates, params.threshold);
+    let threshold = if params.auto_threshold {
+        clip_threshold(candidates, params)
+    } else {
+        params.threshold
+    };
+    let states = decode(candidates, threshold);
     let hop_seconds = layout.hop_seconds();
     Ok(PitchTrack {
         sample_rate: layout.sample_rate,
         hop_seconds,
         frames: candidates.to_frames(&states, hop_seconds),
     })
+}
+
+/// Fraction of the clip's 95th percentile frame RMS above which a frame counts as sung.
+const AUTO_LOUD_FRACTION: f32 = 0.15;
+
+/// Quantile of the sung frames' best dip that the automatic threshold lets through.
+const AUTO_QUANTILE: f64 = 0.6;
+
+/// Highest threshold the automatic threshold reaches, past which noise starts to read as pitch.
+const AUTO_CEILING: f64 = 0.35;
+
+/// The voicing threshold that suits a clip: the depth most of its sung frames dip to.
+///
+/// Sung frames are those well above the clip's own level floor. Their best dips' quantile
+/// becomes the threshold, never below `params.threshold` and never above [`AUTO_CEILING`], so a
+/// clean take decodes exactly as with the fixed threshold.
+fn clip_threshold(candidates: &F0Candidates, params: &F0Params) -> f64 {
+    let rms = candidates.rms();
+    let mut levels: Vec<f32> = rms.to_vec();
+    levels.sort_by(f32::total_cmp);
+    let Some(loud) = levels.get(levels.len() * 95 / 100).copied() else {
+        return params.threshold;
+    };
+    let floor = (loud * AUTO_LOUD_FRACTION).max(params.voiced_rms_floor);
+    let mut best: Vec<f64> = (0..candidates.len())
+        .filter(|frame| rms[*frame] > floor)
+        .map(|frame| {
+            candidates.dprime[candidates.range(frame)]
+                .iter()
+                .copied()
+                .fold(1.0, f64::min)
+        })
+        .collect();
+    if best.is_empty() {
+        return params.threshold;
+    }
+    best.sort_by(f64::total_cmp);
+    let at = ((best.len() as f64 * AUTO_QUANTILE) as usize).min(best.len() - 1);
+    best[at].clamp(params.threshold, AUTO_CEILING.max(params.threshold))
 }
 
 fn validate(len: usize, sample_rate: f64, params: &F0Params) -> Result<()> {
@@ -1083,6 +1134,47 @@ mod tests {
         .unwrap();
         assert_eq!(rebuilt, candidates);
         assert!(F0Candidates::from_parts(vec![220.0], vec![], vec![], &[1], vec![0.1]).is_err());
+    }
+
+    /// Fraction of frames a track marks voiced.
+    fn voiced_share(track: &PitchTrack) -> f64 {
+        let voiced = track.frames.iter().filter(|frame| frame.voiced).count();
+        voiced as f64 / track.frames.len().max(1) as f64
+    }
+
+    #[test]
+    fn the_automatic_threshold_leaves_a_clean_tone_alone() {
+        let audio = sine(220.0, 1.0, 0.5);
+        let fixed = F0Params {
+            auto_threshold: false,
+            ..F0Params::default()
+        };
+        let clean = detect_f0(&audio, SR, &fixed).unwrap();
+        let auto = detect_f0(&audio, SR, &F0Params::default()).unwrap();
+        assert_eq!(clean.frames, auto.frames);
+    }
+
+    #[test]
+    fn the_automatic_threshold_voices_a_noisy_tone() {
+        // A tone under enough noise that its dips sit above the fixed threshold.
+        let mut state = 0x2545_f491_u32;
+        let audio: Vec<f32> = sine(220.0, 1.0, 0.5)
+            .into_iter()
+            .map(|sample| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                sample + (state as f32 / u32::MAX as f32 - 0.5) * 0.9
+            })
+            .collect();
+        let fixed = F0Params {
+            auto_threshold: false,
+            ..F0Params::default()
+        };
+        let before = voiced_share(&detect_f0(&audio, SR, &fixed).unwrap());
+        let after = voiced_share(&detect_f0(&audio, SR, &F0Params::default()).unwrap());
+        assert!(
+            after > before + 0.2,
+            "voiced {before:.2} fixed, {after:.2} automatic"
+        );
     }
 
     fn sine(freq: f64, seconds: f64, amp: f32) -> Vec<f32> {

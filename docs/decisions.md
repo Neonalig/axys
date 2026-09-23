@@ -167,6 +167,15 @@ controls rather than one blunt amount.
   silence. Viterbi costs are 0.08 per semitone of transition, 0.15 per voicing switch and an
   unvoiced observation cost of twice the YIN threshold; these are tuned against the fixture battery,
   not taken from the paper.
+- **The voicing threshold suits the clip.** A dry vocal dips below YIN's 0.15 on nearly every sung
+  frame; a reverberant, compressed, doubled or lossy one sits between 0.15 and 0.6, and with a fixed
+  threshold most of it decoded unvoiced and got no blobs. A commercial acapella MP3 voiced 36% of
+  its sung frames. With `auto_threshold`, the threshold is the 60th percentile of the best dip over
+  frames above 15% of the clip's 95th percentile level, clamped between the fixed threshold and
+  0.35. A clean take stays at 0.15 and decodes exactly as before; that acapella voices 82%. Only the
+  Viterbi pass reads it; the first-below-threshold bonus that settles octaves keeps the fixed value.
+  Rejected: raising the fixed threshold, which turns consonants and breath into pitch on clean
+  takes.
 - **NaN crosses JSON as null.** `serde_json` cannot represent NaN, and an unvoiced frame's MIDI
   value is NaN. `PitchFrame` and `PitchTrackArrays` carry serde shims mapping it to and from `null`,
   so a project containing any unvoiced frame reopens. Without this the round trip silently failed.

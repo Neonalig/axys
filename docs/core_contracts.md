@@ -34,6 +34,8 @@ pub struct F0Params {
     pub hop_seconds: f64,   // default 0.005  (5 ms frames)
     pub threshold: f64,     // default 0.15, YIN absolute threshold
     pub voiced_rms_floor: f32, // default 0.0015
+    /// Raises `threshold` to suit the clip. Default true; false for analyses stored before it.
+    pub auto_threshold: bool,
 }
 impl Default for F0Params { /* the values above */ }
 
