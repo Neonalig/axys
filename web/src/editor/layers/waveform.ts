@@ -3,6 +3,7 @@
 import type { AppState } from '../../app/store.js';
 import { clipOf } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
+import { sourceTheme } from '../../ui/theme.js';
 import type { PeakEnvelope, PeakSpan } from '../peaks.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
@@ -50,7 +51,6 @@ export function drawWaveform(
   );
   ctx.clip();
   ctx.globalAlpha = BAND_ALPHA;
-  ctx.fillStyle = theme.waveform;
 
   for (const blob of state.blobs) {
     const x0 = viewport.timeToX(blobOutputStart(blob));
@@ -62,6 +62,8 @@ export function drawWaveform(
     if (source === null) {
       continue;
     }
+    // In its clip's own colour, so the audio reads as that source's on any blob fill.
+    ctx.fillStyle = sourceTheme(theme, clipOf(blob.id)).blobBounds;
     const columns = Math.max(1, Math.round(x1 - x0));
     const span = source.envelope.sample(
       blob.start - source.position,
@@ -73,7 +75,8 @@ export function drawWaveform(
     const bottom = viewport.midiToY(extent.low);
     const centre = (top + bottom) / 2;
     const half = Math.max(MIN_HALF, ((bottom - top) / 2) * FILL_FRACTION);
-    fillEnvelope(ctx, span, x0, centre, half);
+    // Drawn from a device pixel, so the columns do not smear across a moving sub-pixel offset.
+    fillEnvelope(ctx, span, Math.round(x0 * viewport.ratio) / viewport.ratio, centre, half);
   }
 
   ctx.globalAlpha = 1;

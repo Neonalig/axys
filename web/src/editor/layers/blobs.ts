@@ -428,11 +428,14 @@ function drawBlob(
   if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
+  // Each edge on the device grid on its own, so neither jitters a pixel as the view slides.
+  const left = viewport.crisp(x0, bound);
+  const upper = viewport.crisp(top, bound);
   ctx.strokeRect(
-    viewport.crisp(x0, bound),
-    viewport.crisp(top, bound),
-    Math.round(width),
-    Math.round(height),
+    left,
+    upper,
+    viewport.crisp(x0 + width, bound) - left,
+    viewport.crisp(top + height, bound) - upper,
   );
   ctx.setLineDash([]);
 
@@ -492,7 +495,11 @@ function drawTitle(
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = isSelected ? theme.selection : theme.blobBounds;
-  ctx.fillRect(Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), rect.height);
+  // Out to the outer edges of the blob's outline, which is drawn centred on the device grid.
+  const bound = viewport.crispWidth(isSelected ? 2 : 1);
+  const left = viewport.crisp(rect.x, bound) - bound / 2;
+  const right = viewport.crisp(rect.x + Math.max(2, rect.width), bound) + bound / 2;
+  ctx.fillRect(left, Math.round(rect.y), right - left, rect.height);
   ctx.font = TITLE_FONT;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';

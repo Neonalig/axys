@@ -1101,7 +1101,7 @@ function drawWaveBand(
     const to = viewport.xToTime(right) - position;
     const span = envelope.sample(from, to, columns);
     ctx.globalAlpha = 0.8;
-    ctx.fillStyle = theme.waveform;
+    ctx.fillStyle = theme.blobBounds;
     fillEnvelope(ctx, span, left, top + bandHeight / 2, bandHeight / 2 - 2);
   }
   ctx.restore();

@@ -100,9 +100,12 @@ export function drawReferenceBand(
     const from = viewport.xToTime(left) - position;
     const to = viewport.xToTime(left + columns) - position;
     const span = envelope.sample(from, to, columns);
+    // The reference's own colour at full strength over its faint band, whatever that colour is.
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = theme.waveform;
-    fillEnvelope(ctx, span, left, rect.y + rect.height / 2, rect.height / 2 - 1);
+    ctx.fillStyle = colour;
+    // Drawn from a device pixel, so the columns do not smear across a moving sub-pixel offset.
+    const x = Math.round(left * viewport.ratio) / viewport.ratio;
+    fillEnvelope(ctx, span, x, rect.y + rect.height / 2, rect.height / 2 - 1);
   }
 
   ctx.globalAlpha = alpha;
