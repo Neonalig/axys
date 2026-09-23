@@ -191,6 +191,12 @@
   box-shadow: var(--axys-elevation-3);
 }
 
+/* Help is a long report read top to bottom, so it takes more of the window before it scrolls */
+
+.axys-dialog:has(> .axys-dialog-body > .axys-diagnostics) {
+  max-height: 90dvh;
+}
+
 /*
  * The entry runs from its own class, removed once it has played, so nothing else the panel does
  * can restart it. Growing from the panel's own centre, which is where it appears, rather than
