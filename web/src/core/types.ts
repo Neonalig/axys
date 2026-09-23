@@ -474,6 +474,8 @@ export interface Stroke {
   id: number;
   points: StrokePoint[];
   bezier?: [StrokePoint, StrokePoint, StrokePoint, StrokePoint];
+  /** The clip whose pitch track it is part of; absent belongs to every clip. */
+  clip?: number;
 }
 
 /** Undo and redo stacks over a project's edit history. */

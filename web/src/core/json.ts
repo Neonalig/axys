@@ -795,7 +795,8 @@ function isStroke(value: unknown): value is Stroke {
     (value.bezier === undefined ||
       (Array.isArray(value.bezier) &&
         value.bezier.length === 4 &&
-        value.bezier.every(isStrokePoint)))
+        value.bezier.every(isStrokePoint))) &&
+    (value.clip === undefined || isNumber(value.clip))
   );
 }
 

@@ -19,6 +19,7 @@ import {
   shiftLines,
   stretchOps,
   strokeSpan,
+  strokesOf,
   strokeValue,
 } from '../app/clipboard.js';
 import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
@@ -2157,7 +2158,7 @@ export class EditorController {
 
   /** The kept curve within grabbing distance of a canvas position, the newest first. */
   #strokeAt(viewport: Viewport, x: number, y: number): Stroke | null {
-    const strokes = this.#store.state.edits?.strokes ?? [];
+    const strokes = strokesOf(this.#store.state);
     for (let s = strokes.length - 1; s >= 0; s -= 1) {
       const stroke = strokes[s];
       if (stroke === undefined) continue;

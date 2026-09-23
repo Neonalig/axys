@@ -78,6 +78,9 @@ pub struct Stroke {
     /// The start, two control points and end of the Bezier it was drawn as, when it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bezier: Option<[StrokePoint; 4]>,
+    /// The clip it was drawn for, whose pitch track it is part of; `None` belongs to every clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<u32>,
 }
 
 impl Stroke {

@@ -284,9 +284,22 @@ export function copyPitch(state: AppState): ClipboardContent | null {
   return { kind: 'pitch', lines, strokes, start, end };
 }
 
-/** The kept curves, oldest first. */
+/**
+ * The kept curves of the clips the editor is editing, oldest first.
+ *
+ * @remarks A curve belongs to the pitch track of the clip it was drawn for, so a curve of a clip
+ * behind the layer is neither drawn nor read nor trimmed from it. One with no clip belongs to all.
+ */
 export function strokesOf(state: AppState): Stroke[] {
-  return state.edits?.strokes ?? [];
+  const layer = new Set(state.layer);
+  return (state.edits?.strokes ?? []).filter(
+    (stroke) => stroke.clip === undefined || layer.has(stroke.clip),
+  );
+}
+
+/** The clip a curve drawn now belongs to: the one in front, or none with nothing open. */
+function frontClip(state: AppState): number | undefined {
+  return state.layer[0];
 }
 
 /** The output span a kept curve covers. */
@@ -323,9 +336,18 @@ export function strokesInside(state: AppState, ranges: readonly TimeRange[]): St
   });
 }
 
-/** An id no kept curve has yet. */
-function nextStrokeId(state: AppState, taken: readonly number[] = []): number {
-  return Math.max(-1, ...strokesOf(state).map((stroke) => stroke.id), ...taken) + 1;
+/**
+ * An id no kept curve has.
+ *
+ * @remarks Drawn at random rather than counted, so the several a single edit makes, a paste
+ * splitting two curves say, never land on the same one without having to be told of each other.
+ */
+function freshStrokeId(state: AppState): number {
+  const used = new Set((state.edits?.strokes ?? []).map((stroke) => stroke.id));
+  for (;;) {
+    const id = Math.floor(Math.random() * 0x7fffffff);
+    if (!used.has(id)) return id;
+  }
 }
 
 /** A stroke moved through time and pitch by `map`, with a new id. */
@@ -335,7 +357,117 @@ function mapStroke(stroke: Stroke, id: number, map: (point: StrokePoint) => Stro
     const [a, b, c, d] = stroke.bezier;
     moved.bezier = [map(a), map(b), map(c), map(d)];
   }
+  if (stroke.clip !== undefined) moved.clip = stroke.clip;
   return moved;
+}
+
+type Bezier = NonNullable<Stroke['bezier']>;
+
+/** A point partway along a segment. */
+function lerp(a: StrokePoint, b: StrokePoint, u: number): StrokePoint {
+  return { time: a.time + (b.time - a.time) * u, midi: a.midi + (b.midi - a.midi) * u };
+}
+
+/** A Bezier cut in two at parameter `u`, by de Casteljau's construction. */
+function splitBezier(curve: Bezier, u: number): [Bezier, Bezier] {
+  const [p0, p1, p2, p3] = curve;
+  const a = lerp(p0, p1, u);
+  const b = lerp(p1, p2, u);
+  const c = lerp(p2, p3, u);
+  const d = lerp(a, b, u);
+  const e = lerp(b, c, u);
+  const f = lerp(d, e, u);
+  return [
+    [p0, a, d, f],
+    [f, e, c, p3],
+  ];
+}
+
+/**
+ * The parameter at which a Bezier reaches a time, or `null` when its time does not rise steadily
+ * from start to end, since then a time is not one place on the curve.
+ */
+function parameterAt(curve: Bezier, time: number): number | null {
+  const [p0, p1, p2, p3] = curve;
+  if (!(p0.time <= p1.time && p1.time <= p3.time && p0.time <= p2.time && p2.time <= p3.time)) {
+    return null;
+  }
+  // Its own ends exactly, so a piece that keeps an end keeps that end's point unmoved.
+  if (time <= p0.time + EPS) return 0;
+  if (time >= p3.time - EPS) return 1;
+  let low = 0;
+  let high = 1;
+  for (let step = 0; step < 48; step += 1) {
+    const middle = (low + high) / 2;
+    const [, right] = splitBezier(curve, middle);
+    if (right[0].time < time) low = middle;
+    else high = middle;
+  }
+  return (low + high) / 2;
+}
+
+/** The part of a Bezier between two times, still a Bezier, or `undefined` where it cannot be. */
+function subBezier(curve: Bezier, from: number, to: number): Bezier | undefined {
+  const end = parameterAt(curve, to);
+  const start = parameterAt(curve, from);
+  if (end === null || start === null || end <= start) return undefined;
+  const [left] = end === 1 ? [curve] : splitBezier(curve, end);
+  if (start === 0) return left;
+  const [, part] = splitBezier(left, start / end);
+  return part;
+}
+
+/** The part of a kept curve between two times, under an id, or `null` when too little is left. */
+function strokePart(stroke: Stroke, id: number, from: number, to: number): Stroke | null {
+  const points = lineWithin(stroke.points, from, to);
+  if (points.length < 2 || to - from < MIN_BLOB_SECONDS) return null;
+  const part: Stroke = { id, points };
+  if (stroke.bezier !== undefined) {
+    const shape = subBezier(stroke.bezier, from, to);
+    if (shape !== undefined) part.bezier = shape;
+  }
+  if (stroke.clip !== undefined) part.clip = stroke.clip;
+  return part;
+}
+
+/**
+ * Takes some spans out of the kept curves of the front clip's pitch track, as edits.
+ *
+ * @remarks A clip has one pitch track, so a line laid over part of a curve replaces that part: the
+ * curve keeps what lies either side, as curves of their own, a Bezier as a Bezier of its own. The
+ * curves in `keep` are the ones the same edit sets again, and are left to it.
+ */
+function trimStrokesOps(
+  state: AppState,
+  spans: readonly TimeRange[],
+  keep: ReadonlySet<number> = new Set(),
+): EditOp[] {
+  const clip = frontClip(state);
+  const ops: EditOp[] = [];
+  for (const stroke of strokesOf(state)) {
+    if (keep.has(stroke.id)) continue;
+    if (stroke.clip !== undefined && clip !== undefined && stroke.clip !== clip) continue;
+    const own = strokeSpan(stroke);
+    const cuts = spans
+      .filter((span) => span.end > own.start + EPS && span.start < own.end - EPS)
+      .sort((a, b) => a.start - b.start);
+    if (cuts.length === 0) continue;
+    const pieces: TimeRange[] = [];
+    let from = own.start;
+    for (const cut of cuts) {
+      if (cut.start > from + EPS) pieces.push({ start: from, end: cut.start });
+      from = Math.max(from, cut.end);
+    }
+    if (own.end > from + EPS) pieces.push({ start: from, end: own.end });
+    const parts = pieces
+      .map((piece, index) =>
+        strokePart(stroke, index === 0 ? stroke.id : freshStrokeId(state), piece.start, piece.end),
+      )
+      .filter((part): part is Stroke => part !== null);
+    if (parts[0]?.id !== stroke.id) ops.push({ type: 'removeStroke', stroke: stroke.id });
+    for (const part of parts) ops.push({ type: 'setStroke', stroke: part });
+  }
+  return ops;
 }
 
 /**
@@ -354,12 +486,15 @@ export function drawStrokeOps(
   if (points.length < 2) return [];
   const ops: EditOp[] = replacing === null ? [] : releasePitchOps(state, [strokeSpan(replacing)]);
   const stroke: Stroke = {
-    id: replacing?.id ?? nextStrokeId(state),
+    id: replacing?.id ?? freshStrokeId(state),
     points: [...points].sort((a, b) => a.time - b.time),
   };
   if (bezier !== null && bezier !== undefined) stroke.bezier = bezier;
+  const clip = replacing?.clip ?? frontClip(state);
+  if (clip !== undefined) stroke.clip = clip;
+  // Laid first, so the curves it lands on are cut back before it is kept in their place.
+  ops.push(...pastePitchOps(state, [stroke.points], new Set([stroke.id])));
   ops.push({ type: 'setStroke', stroke });
-  ops.push(...pastePitchOps(state, [stroke.points]));
   return ops;
 }
 
@@ -385,11 +520,13 @@ export function placeStrokes(
 ): EditOp[] {
   if (content.kind !== 'pitch') return [];
   const place = placement(content, target, playhead);
-  const ids: number[] = [];
+  const clip = frontClip(state);
   return content.strokes.map((stroke): EditOp => {
-    const id = nextStrokeId(state, ids);
-    ids.push(id);
-    return { type: 'setStroke', stroke: mapStroke(stroke, id, place) };
+    const placed = mapStroke(stroke, freshStrokeId(state), place);
+    // Pasted into the clip in front, whichever one it was copied from.
+    if (clip === undefined) delete placed.clip;
+    else placed.clip = clip;
+    return { type: 'setStroke', stroke: placed };
   });
 }
 
@@ -501,8 +638,13 @@ function anchorsOf(points: readonly PitchPoint[], time: (seconds: number) => num
 export function pastePitchOps(
   state: AppState,
   lines: readonly (readonly PitchPoint[])[],
+  keep: ReadonlySet<number> = new Set(),
 ): EditOp[] {
-  const ops: EditOp[] = [];
+  // The line replaces whatever the pitch track held under it, kept curves included.
+  const spans = lines
+    .filter((line) => line.length >= 2)
+    .map((line) => ({ start: line[0]?.time ?? 0, end: line[line.length - 1]?.time ?? 0 }));
+  const ops: EditOp[] = trimStrokesOps(state, spans, keep);
   const added: Blob[] = [];
   for (const run of lines) {
     const first = run[0];
@@ -635,7 +777,8 @@ export function movePitchOps(
       midi: point.midi + semitones,
     })),
   }));
-  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones)), ...kept];
+  const moving = new Set(strokesInside(state, ranges).map((stroke) => stroke.id));
+  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones), moving), ...kept];
 }
 
 /**
@@ -689,7 +832,11 @@ export function stretchOps(
       }));
       ops.push(
         ...cutPitchOps(state, state.selection.ranges, fill),
-        ...pastePitchOps(state, stretched),
+        ...pastePitchOps(
+          state,
+          stretched,
+          new Set(strokesInside(state, state.selection.ranges).map((stroke) => stroke.id)),
+        ),
         ...kept,
       );
       return { ops, ranges };

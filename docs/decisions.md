@@ -861,6 +861,19 @@ A freehand stroke is kept as the points left once it has been reduced to within 
 was drawn, and a Bezier as its samples reduced to within one, so both come back as drawn at the
 zoom they were drawn at.
 
+### One pitch track per clip
+
+Kept curves were independent of each other, so a Bezier pasted over a freehand line drew two lines
+where one was heard, the new one over the old. A clip now has one pitch track: a curve belongs to the
+clip in front when it is drawn or pasted, the one `W` steps to, and curves of one clip never overlap.
+Laying a line over part of a curve, by drawing, pasting or moving pitch, replaces that part: the
+curve keeps what lies either side as curves of their own, and a Bezier split this way stays a Bezier,
+cut exactly by de Casteljau's construction so its handles still shape what is left. Only the curves
+of the clips being edited are drawn, picked up, copied or cut; a clip behind the layer keeps its own.
+
+New curves take random ids rather than the next number, so the several one edit makes, a paste
+splitting two curves say, can never be given the same one.
+
 ### Outside pitch has no switch
 
 Outside Pitch was a toolbar toggle that drew and opened for editing the detected pitch outside every

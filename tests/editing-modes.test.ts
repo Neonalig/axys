@@ -279,6 +279,99 @@ describe('editing modes', () => {
     }
   });
 
+  it('replaces the part of a curve a pasted curve lands on and keeps the rest either side', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped);
+      const blobs = state.blobs;
+      const line = (from: number, to: number, midi: (t: number) => number) =>
+        Array.from({ length: 41 }, (_, i) => {
+          const time = from + ((to - from) * i) / 40;
+          return { time, midi: midi(time) };
+        });
+      // A freehand line across the first three blobs, and a Bezier over the last.
+      const hand = line(blobs[0]!.start, blobs[2]!.end, (t) => 60 + Math.sin(t * 20));
+      apply(scoped, drawStrokeOps(stateOf(scoped), hand, null, null));
+      const last = blobs[blobs.length - 1]!;
+      const a = { time: last.start, midi: 64 };
+      const d = { time: last.end, midi: 67 };
+      const c1 = { time: a.time + (d.time - a.time) / 3, midi: 70 };
+      const c2 = { time: a.time + ((d.time - a.time) * 2) / 3, midi: 61 };
+      const ramp = line(a.time, d.time, (t) => 64 + ((t - a.time) / (d.time - a.time)) * 3);
+      apply(scoped, drawStrokeOps(stateOf(scoped), ramp, [a, c1, c2, d], null));
+      expect(stateOf(scoped).edits?.strokes).toHaveLength(2);
+
+      // Copy the Bezier and paste it into the middle of the freehand line.
+      const drawn = stateOf(scoped);
+      const copied = copyPitch({
+        ...drawn,
+        selection: { blobs: [], anchors: [], ranges: [{ start: a.time, end: d.time }] },
+      });
+      if (copied?.kind !== 'pitch') throw new Error('nothing copied');
+      const at = blobs[1]!.start;
+      const length = d.time - a.time;
+      apply(scoped, [
+        ...pastePitchOps(drawn, placePitch(copied, null, at)),
+        ...placeStrokes(drawn, copied, null, at),
+      ]);
+      const strokes = stateOf(scoped).edits!.strokes!;
+      // The freehand line is now two, around the pasted Bezier, and nothing overlaps.
+      expect(strokes).toHaveLength(4);
+      const spans = strokes
+        .map((stroke) => [stroke.points[0]!.time, stroke.points[stroke.points.length - 1]!.time])
+        .sort((x, y) => x[0]! - y[0]!);
+      for (let i = 1; i < spans.length; i += 1) {
+        expect(spans[i]![0]!).toBeGreaterThanOrEqual(spans[i - 1]![1]! - 1e-6);
+      }
+      const pasted = strokes.find((stroke) => Math.abs(stroke.points[0]!.time - at) < 1e-6)!;
+      expect(pasted.bezier).toBeDefined();
+      expect(pasted.points[pasted.points.length - 1]!.time).toBeCloseTo(at + length, 6);
+      expect(scoped.undo()).toBe(true);
+      expect(stateOf(scoped).edits?.strokes).toHaveLength(2);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('cuts a Bezier into Beziers that keep its shape', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped);
+      const [first, last] = [state.blobs[0]!, state.blobs[state.blobs.length - 1]!];
+      const a = { time: first.start, midi: 60 };
+      const d = { time: last.end, midi: 66 };
+      const c1 = { time: a.time + (d.time - a.time) / 3, midi: 72 };
+      const c2 = { time: a.time + ((d.time - a.time) * 2) / 3, midi: 54 };
+      const curve = Array.from({ length: 81 }, (_, i) => {
+        const u = i / 80;
+        const w = [(1 - u) ** 3, 3 * u * (1 - u) ** 2, 3 * u * u * (1 - u), u ** 3];
+        const mix = (key: 'time' | 'midi') =>
+          w[0]! * a[key] + w[1]! * c1[key] + w[2]! * c2[key] + w[3]! * d[key];
+        return { time: mix('time'), midi: mix('midi') };
+      });
+      apply(scoped, drawStrokeOps(state, curve, [a, c1, c2, d], null));
+      // A flat line across the middle third leaves a Bezier either side of it.
+      const from = a.time + (d.time - a.time) / 3;
+      const to = a.time + ((d.time - a.time) * 2) / 3;
+      const flat = [
+        { time: from, midi: 60 },
+        { time: to, midi: 60 },
+      ];
+      apply(scoped, drawStrokeOps(stateOf(scoped), flat, null, null));
+      const pieces = stateOf(scoped).edits!.strokes!.filter((stroke) => stroke.bezier);
+      expect(pieces).toHaveLength(2);
+      // Each piece's own Bezier still passes through the original curve where it was cut.
+      const left = pieces.find((stroke) => stroke.bezier![0].time === a.time)!;
+      expect(left.bezier![3].time).toBeCloseTo(from, 6);
+      const onCurve = curve.reduce((best, point) =>
+        Math.abs(point.time - from) < Math.abs(best.time - from) ? point : best,
+      );
+      expect(Math.abs(left.bezier![3].midi - onCurve.midi)).toBeLessThan(0.2);
+    } finally {
+      scoped.free();
+    }
+  });
+
   it('cuts pitch back to its sung pitch or to a flat line', () => {
     const scoped = session();
     try {

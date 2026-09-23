@@ -990,7 +990,13 @@ pub enum PitchFill {
 
 /// A curve kept whole as it was drawn, in project output seconds and heard MIDI. Not rendered:
 /// what is heard is what it wrote into the blobs it crossed.
-pub struct Stroke { pub id: u32, pub points: Vec<StrokePoint>, pub bezier: Option<[StrokePoint; 4]> }
+pub struct Stroke {
+    pub id: u32,
+    pub points: Vec<StrokePoint>,
+    pub bezier: Option<[StrokePoint; 4]>,
+    /// The clip whose pitch track it is part of; `None` belongs to every clip.
+    pub clip: Option<u32>,
+}
 
 /// Undo and redo stacks over a project's edit history.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

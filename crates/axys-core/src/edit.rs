@@ -1740,6 +1740,7 @@ mod tests {
             id: 4,
             points: vec![point(0.2, 60.0), point(1.8, midi)],
             bezier: None,
+            clip: None,
         };
         apply(
             &mut s,
@@ -1763,6 +1764,7 @@ mod tests {
             id: 5,
             points: vec![point(1.0, 60.0), point(0.5, 60.0)],
             bezier: None,
+            clip: None,
         };
         assert!(apply(&mut s, None, &EditOp::SetStroke { stroke: backwards }).is_err());
         apply(&mut s, None, &EditOp::RemoveStroke { stroke: 4 }).unwrap();

@@ -625,7 +625,11 @@ function drawStrokes(
   viewport: Viewport,
   theme: Theme,
 ): void {
-  const strokes = state.edits?.strokes ?? [];
+  // Only the curves of the clips being edited: a clip behind the layer keeps its own track.
+  const layer = new Set(state.layer);
+  const strokes = (state.edits?.strokes ?? []).filter(
+    (stroke) => stroke.clip === undefined || layer.has(stroke.clip),
+  );
   if (strokes.length === 0) return;
   const covered = (time: number): boolean =>
     state.blobs.some((blob) => time >= blobOutputStart(blob) && time <= blobOutputEnd(blob));
