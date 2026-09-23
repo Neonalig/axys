@@ -221,12 +221,16 @@
   text-align: right;
 }
 
-/* The footer's controls are shorter than the toolbar's, but they take their names the same way */
+/* The footer's buttons are the Mixer button's size, and the zoom is set off from it by the rule
+   the toolbar puts between its groups */
 
 .axys-zoom .axys-icon {
   width: var(--axys-control-height);
-  height: 22px;
-  min-height: 0;
+}
+
+#app > footer .axys-zoom {
+  padding-left: var(--axys-space-2);
+  border-left: 1px solid var(--axys-border);
 }
 
 #app > aside,

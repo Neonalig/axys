@@ -5,6 +5,7 @@ import type { Blob, PitchTrackArrays, RenderPlan } from '../../core/types.js';
 import { clipEnd, clipStart } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
+import { REFERENCE_BAND } from './references.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -176,7 +177,7 @@ export function drawPitch(
   // spanning both.
   for (const track of warpedTracks(state.track, state.blobs)) {
     const columns = collect(track, viewport);
-    drawUnvoiced(ctx, columns, viewport, theme);
+    drawUnvoiced(ctx, columns, viewport, theme, state.edits?.references.length ?? 0);
     drawUncertainty(ctx, columns, viewport, theme);
     drawDetected(ctx, columns, viewport, theme);
   }
@@ -334,13 +335,20 @@ const WARPED = new WeakMap<
   { blobs: readonly Blob[]; warped: PitchTrackArrays[] }
 >();
 
+/**
+ * Draws how loud the unpitched frames are, consonants and breaths, as a strip along the foot of
+ * the plot.
+ *
+ * @remarks Stands on the reference bands where there are any, which take the foot of the plot.
+ */
 function drawUnvoiced(
   ctx: CanvasRenderingContext2D,
   columns: Columns,
   viewport: Viewport,
   theme: Theme,
+  references: number,
 ): void {
-  const base = viewport.plotTop + viewport.plotHeight - 1;
+  const base = viewport.plotTop + viewport.plotHeight - 1 - references * REFERENCE_BAND;
   ctx.save();
   ctx.fillStyle = theme.unvoiced;
   for (let column = 0; column < columns.count; column += 1) {
