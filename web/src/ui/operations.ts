@@ -284,7 +284,7 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   content.append(
     row('Pitch Drift', drift, driftReadout, 'How much slow pitch drift survives correction'),
     row('Vibrato Depth', vibrato, vibratoReadout, 'Scales detected vibrato; 100% keeps it'),
-    field('Vibrato Split', split, 'Boundary in Hz between drift and vibrato'),
+    field('Vibrato Split', split, 'Boundary in Hz between drift and vibrato', 'Hz'),
     field('Formant Mode', mode, 'How the vocal tract is treated while pitch moves'),
     row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones'),
     // Drift, vibrato and formants are properties of the voice rather than of a span, and the

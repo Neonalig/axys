@@ -336,6 +336,21 @@ export class AudioEngine {
     });
   }
 
+  /**
+   * Sets how long the transport plays past the last source before it stops.
+   *
+   * @remarks Seconds. The engine's duration includes it, so the playhead can be put there too.
+   */
+  setTail(seconds: number): void {
+    this.#send({ type: 'tail', seconds });
+  }
+
+  /** Takes the project's tempo and meter maps again, re-clicking the metronome if it is on. */
+  setTimeline(timeline: TimelineMap): void {
+    this.#timeline = timeline;
+    if (this.#metronome) this.#sendClicks();
+  }
+
   /** Turns the metronome on or off and clicks it from the project's tempo and meter maps. */
   setMetronome(on: boolean, timeline: TimelineMap): void {
     this.#metronome = on;

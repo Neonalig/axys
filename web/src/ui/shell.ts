@@ -40,6 +40,7 @@ import { ProgressBar } from './progress.js';
 import { Scrollbar } from './scrollbar.js';
 import { setTooltip, TooltipHost } from './tooltip.js';
 import { ZoomControl } from './zoom-control.js';
+import type { ProjectSummary } from '../persistence/db.js';
 
 /** Toolbar section a command belongs to. */
 export type CommandGroup = 'File' | 'Edit' | 'Transport' | 'Tools' | 'View' | 'MIDI' | 'Help';
@@ -92,6 +93,12 @@ export interface ShellHooks {
   setAccent(accent: AccentName): void;
   /** Renames the project. One undo step, like any other edit. */
   setProjectName(name: string): void;
+  /** Projects to offer under Open, most recently saved first. */
+  recentProjects(): Promise<ProjectSummary[]>;
+  /** Reopens a project from the recent list. */
+  openRecent(id: string): void;
+  /** Takes a project off the recent list. */
+  forgetRecent(id: string): void;
   /** Shows or hides the names beside the toolbar icons, and remembers the choice. */
   setToolbarLabels(on: boolean): void;
   /** Folds the inspector away to its rail, or opens it again, and remembers the choice. */
@@ -171,7 +178,19 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
 interface ButtonMenu {
   /** Second tooltip line saying the menu is there. */
   hint: string;
-  entries(shell: AppShell): MenuEntry[];
+  /** Whether a click opens the menu rather than running the command. */
+  onClick?: boolean;
+  entries(shell: AppShell): MenuEntry[] | Promise<MenuEntry[]>;
+}
+
+/** How long ago an epoch-millisecond time was, as a recent-list detail such as `3h ago`. */
+function ago(time: number): string {
+  const minutes = Math.floor((Date.now() - time) / 60_000);
+  if (minutes < 1) return 'Just Now';
+  if (minutes < 60) return `${String(minutes)}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)}h ago`;
+  return `${String(Math.floor(hours / 24))}d ago`;
 }
 
 /**
@@ -181,6 +200,40 @@ interface ButtonMenu {
  * and a variation belongs under the button rather than beside it.
  */
 const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
+  'file.open': {
+    hint: 'Recent projects in the menu',
+    onClick: true,
+    entries: async (shell) => {
+      const recent = await shell.recentProjects();
+      return [
+        {
+          label: 'Open Project...',
+          icon: 'openProject',
+          key: 'Ctrl+O',
+          enabled: shell.can('file.open'),
+          run: () => {
+            shell.run('file.open');
+          },
+        },
+        { separator: true },
+        ...(recent.length === 0
+          ? [{ label: 'No Recent Projects', enabled: false, run: () => {} }]
+          : recent.map((project) => ({
+              label: project.name,
+              detail: ago(project.updated),
+              run: () => {
+                shell.openRecent(project.id);
+              },
+              remove: {
+                label: 'Remove From Recent',
+                run: () => {
+                  shell.forgetRecent(project.id);
+                },
+              },
+            }))),
+      ];
+    },
+  },
   'file.saveProject': {
     hint: 'Save As (Ctrl+Shift+S). Right-click for both',
     entries: (shell) => [
@@ -691,12 +744,12 @@ export class AppShell {
     for (const id of EMPTY_COMMANDS) {
       const command = options.commands.find((entry) => entry.id === id);
       if (command === undefined) continue;
-      const action = control({
+      const action: HTMLButtonElement = control({
         icon: iconFor(command),
         label: command.label,
         tooltip: tooltipFor(command),
         onPress: () => {
-          this.#hooks.runCommand(id);
+          this.#press(id, action);
         },
       });
       action.classList.add('is-labelled');
@@ -1157,7 +1210,7 @@ export class AppShell {
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
     const menu = BUTTON_MENUS[command.id];
     button.addEventListener('click', () => {
-      this.#hooks.runCommand(command.id);
+      this.#press(command.id, button);
     });
     if (menu !== undefined) {
       setTooltip(button, `${tooltipFor(command)}\n${menu.hint}`);
@@ -1178,9 +1231,38 @@ export class AppShell {
   }
 
   /** Opens a button's own menu directly under it, or closes the one it has open. */
-  #openButtonMenu(button: HTMLButtonElement, entries: (shell: AppShell) => MenuEntry[]): void {
+  async #openButtonMenu(
+    button: HTMLButtonElement,
+    entries: (shell: AppShell) => MenuEntry[] | Promise<MenuEntry[]>,
+  ): Promise<void> {
+    const list = await entries(this);
     const bounds = button.getBoundingClientRect();
-    showContextMenu(entries(this), { x: bounds.left, y: bounds.bottom + 4 }, button);
+    showContextMenu(list, { x: bounds.left, y: bounds.bottom + 4 }, button);
+  }
+
+  /** Runs a command from its button, or opens the menu the button carries in its place. */
+  #press(id: string, button: HTMLButtonElement): void {
+    const menu = BUTTON_MENUS[id];
+    if (menu?.onClick === true) {
+      void this.#openButtonMenu(button, menu.entries);
+      return;
+    }
+    this.#hooks.runCommand(id);
+  }
+
+  /** Projects the Open menu offers. */
+  recentProjects(): Promise<ProjectSummary[]> {
+    return this.#hooks.recentProjects();
+  }
+
+  /** Reopens a project from the recent list. */
+  openRecent(id: string): void {
+    this.#hooks.openRecent(id);
+  }
+
+  /** Takes a project off the recent list. */
+  forgetRecent(id: string): void {
+    this.#hooks.forgetRecent(id);
   }
 
   /** Runs a command from a button menu. */

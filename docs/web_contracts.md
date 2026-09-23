@@ -36,9 +36,10 @@ Hand-written TypeScript mirrors of the serde contracts in `docs/core_contracts.m
 
 A project holds several vocal clips on one lane and any number of references. Blobs read from a
 session are in project seconds, and a blob id names its clip: `clipOf(id)` in `core/types.ts` reads
-it, and `sourceTitle(name)` is the one spelling of a source's name on the desk and over its blobs.
-New operations: `deleteBlobs`, `addClip`, `moveClip`, `removeClip`, `addReference`,
-`moveReference` and `removeReference`.
+it, and `displayTitle(source)` is the one spelling of a clip's or reference's name on the desk and
+over its blobs: the name it was given, or its file's name through `sourceTitle`. New operations:
+`deleteBlobs`, `addClip`, `moveClip`, `removeClip`, `renameClip`, `addReference`, `moveReference`,
+`renameReference` and `removeReference`.
 
 `EditOp` is a discriminated union on `type`, matching serde's `#[serde(tag = "type")]` with
 `camelCase` variant names, so `{ type: 'splitBlob', blob: 3, time: 1.25 }`.
@@ -426,9 +427,11 @@ range, hover readout, drag preview).
   dragged along the lane, previewing as a band with the clip's waveform and its blobs as ghosts
   where it would land. A click on the tab selects the clip. A clip dropped over another lands on
   the nearest free position, by `freePosition` in `editor/tools.ts`, which mirrors the core.
+  Ctrl puts a dragged clip or reference at the start and Shift at the playhead.
 - References are bands along the foot of the plot, dragged to move and right-clicked to delete.
-- `previewDrop(clientX, clientY)` marks where audio dragged in from outside would land and
-  returns that time; `endDrop()` takes the marker away.
+- `previewDrop(clientX, clientY, modifiers)` marks where audio dragged in from outside would land
+  and returns that time, with the same Ctrl and Shift placements; `endDrop()` takes the marker
+  away. A vocal dropped there is inserted with `ripple`, which `rippleInsert` mirrors.
 - The Bezier tool draws a line and then offers its two ends and two controls to shape. Enter keeps
   it, Escape drops it, and a tool change or the next curve keeps it.
 

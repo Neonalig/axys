@@ -116,8 +116,15 @@ input.is-adjustable {
 }
 
 .axys-label:hover > .axys-info,
-.axys-label:focus-visible > .axys-info {
+.axys-label:focus-visible > .axys-info,
+.axys-has-info:hover > .axys-info {
   opacity: 1;
+}
+
+.axys-has-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .axys-info {

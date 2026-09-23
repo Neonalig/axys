@@ -8,6 +8,7 @@
  */
 
 import { noteName } from '../core/notes.js';
+import { meterAt, originForStartBeat, startBeat } from '../core/timeline.js';
 import {
   bindDragAdjust,
   checkboxInput,
@@ -253,6 +254,7 @@ export class Inspector {
   readonly #blobHeading: HTMLElement;
 
   readonly #tuning: HTMLInputElement;
+  readonly #startBeat: HTMLInputElement;
   readonly #projectName: HTMLInputElement;
   readonly #accidentals: SelectElement;
   readonly #snap: SelectElement;
@@ -341,10 +343,10 @@ export class Inspector {
     this.#excluded = checkboxInput();
 
     blobPanel.append(
-      field('Start', this.#start, 'Start of the blob in source seconds'),
-      field('End', this.#end, 'End of the blob in source seconds'),
-      field('Duration', this.#duration, 'Output duration of the blob in seconds'),
-      field('Time Offset', this.#timeOffset, 'Seconds the blob is moved along the timeline'),
+      field('Start', this.#start, 'Start of the blob in source seconds', 's'),
+      field('End', this.#end, 'End of the blob in source seconds', 's'),
+      field('Duration', this.#duration, 'Output duration of the blob in seconds', 's'),
+      field('Time Offset', this.#timeOffset, 'Seconds the blob is moved along the timeline', 's'),
       this.#readoutField(
         'Detected Centre',
         this.#detected,
@@ -357,12 +359,13 @@ export class Inspector {
         this.#targetName,
         'Pitch the blob is corrected to, in MIDI notes',
       ),
-      field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch'),
-      field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents'),
+      field('Pitch Offset', this.#semitones, 'Semitones the blob is moved in pitch', 'st'),
+      field('Offset Cents', this.#cents, 'The same pitch offset expressed in cents', 'ct'),
       field(
         'Gain',
         this.#gain,
         `Level of the blob in decibels, so one word can be lifted or dropped. ${String(MIN_GAIN_DB)} dB is silence.`,
+        'dB',
       ),
       field(
         'Exclude',
@@ -379,8 +382,14 @@ export class Inspector {
     // save file name and the export default all read.
     const projectPanel = panel('Project');
     this.#projectName = textInput(MAX_PROJECT_NAME);
+    this.#startBeat = numberInput({ step: 1, min: 1, max: 4 });
     projectPanel.append(
       field('Name', this.#projectName, 'What this project is called. Renaming is undoable'),
+      field(
+        'Start Beat',
+        this.#startBeat,
+        'Beat of the bar the project starts on. The metronome and the ruler count from it',
+      ),
     );
     project.append(projectPanel);
 
@@ -409,7 +418,7 @@ export class Inspector {
     this.#toolbarLabels = checkboxInput();
 
     displayPanel.append(
-      field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz'),
+      field('Tuning Reference', this.#tuning, 'Frequency of A4 in Hz', 'Hz'),
       field('Accidental Style', this.#accidentals, 'How note names spell accidentals'),
       field('Snap Division', this.#snap, 'Grid resolution edits snap to'),
       field(
@@ -691,9 +700,12 @@ export class Inspector {
     const edits = state.edits;
     this.#tuning.disabled = edits === null;
     this.#accidentals.disabled = edits === null;
+    this.#startBeat.disabled = edits === null;
     if (edits) {
       setValue(this.#tuning, edits.tuning.a4Hz.toFixed(1));
       setValue(this.#accidentals, edits.accidentals);
+      this.#startBeat.max = String(meterAt(edits.timeline, 0).numerator);
+      setValue(this.#startBeat, String(startBeat(edits.timeline)));
     }
     setValue(this.#snap, String(state.view.snapDivision));
     setValue(this.#timeDisplay, state.view.timeDisplay);
@@ -859,6 +871,21 @@ export class Inspector {
       this.#hooks.setProjectName(typed);
     });
 
+    this.#startBeat.addEventListener('change', () => {
+      const timeline = this.#state?.edits?.timeline;
+      if (timeline === undefined) return;
+      const beats = meterAt(timeline, 0).numerator;
+      const wanted = Math.round(readNumber(this.#startBeat, startBeat(timeline)));
+      const beat = Math.min(Math.max(wanted, 1), Math.max(1, beats));
+      if (beat === startBeat(timeline)) {
+        this.#startBeat.value = String(beat);
+        return;
+      }
+      this.#hooks.applyEdit({
+        type: 'setTimelineOrigin',
+        seconds: originForStartBeat(timeline, beat),
+      });
+    });
     this.#tuning.addEventListener('change', () => {
       const current = this.#state?.edits?.tuning.a4Hz ?? 440;
       this.#hooks.setTuning(readNumber(this.#tuning, current));

@@ -14,6 +14,7 @@ import type { Provenance } from '../app/provenance.js';
 import { browserLabel } from '../browser.js';
 import { probeCapabilities } from '../capabilities.js';
 import { coreLoadReport } from '../core/wasm.js';
+import { withInfo } from './controls/index.js';
 import { Dialog } from './dialog.js';
 import { setTooltip } from './tooltip.js';
 
@@ -102,7 +103,7 @@ export function renderCapabilities(capabilities: readonly Capability[]): HTMLEle
     const state = document.createElement('span');
     state.className = cap.available ? 'is-ok' : cap.required ? 'is-blocking' : 'is-missing';
     state.textContent = cap.available ? 'yes' : cap.required ? 'blocked' : 'no';
-    setTooltip(state, cap.reason);
+    withInfo(state, cap.reason);
     const label = document.createElement('span');
     label.textContent = cap.label;
     const detail = document.createElement('span');
@@ -210,7 +211,7 @@ function showProvenance(badge: HTMLElement, provenance: Provenance, info: BuildI
       'Supported Browsers:\n- Chrome 137+\n- Edge 137+\n- Firefox 129+\n- Safari 17+',
     ].join('\n\n'),
   };
-  setTooltip(badge, reasons[provenance]);
+  withInfo(badge, reasons[provenance]);
 }
 
 /**

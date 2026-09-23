@@ -3,7 +3,7 @@
 import type { AppState } from '../../app/store.js';
 import { clipOf } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
-import type { PeakEnvelope } from '../peaks.js';
+import type { PeakEnvelope, PeakSpan } from '../peaks.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
@@ -73,18 +73,46 @@ export function drawWaveform(
     const bottom = viewport.midiToY(extent.low);
     const centre = (top + bottom) / 2;
     const half = Math.max(MIN_HALF, ((bottom - top) / 2) * FILL_FRACTION);
-
-    for (let column = 0; column < span.count; column += 1) {
-      const low = span.min[column] ?? 0;
-      const high = span.max[column] ?? 0;
-      const columnTop = centre - high * half;
-      const columnBottom = centre - low * half;
-      ctx.fillRect(x0 + column, columnTop, 1, Math.max(1, columnBottom - columnTop));
-    }
+    fillEnvelope(ctx, span, x0, centre, half);
   }
 
   ctx.globalAlpha = 1;
   ctx.restore();
+}
+
+/**
+ * Fills a sampled envelope as one shape, one pixel column per sample from `left`.
+ *
+ * @remarks `centre` is the zero line and `half` the full-scale half-height, in pixels. Every column
+ * is at least a pixel tall, so silence still draws a line.
+ */
+export function fillEnvelope(
+  ctx: CanvasRenderingContext2D,
+  span: PeakSpan,
+  left: number,
+  centre: number,
+  half: number,
+): void {
+  if (span.count === 0) {
+    return;
+  }
+  ctx.beginPath();
+  for (let column = 0; column < span.count; column += 1) {
+    const top = centre - (span.max[column] ?? 0) * half;
+    const x = left + column;
+    if (column === 0) ctx.moveTo(x, top);
+    else ctx.lineTo(x, top);
+    ctx.lineTo(x + 1, top);
+  }
+  for (let column = span.count - 1; column >= 0; column -= 1) {
+    const top = centre - (span.max[column] ?? 0) * half;
+    const bottom = Math.max(top + 1, centre - (span.min[column] ?? 0) * half);
+    const x = left + column;
+    ctx.lineTo(x + 1, bottom);
+    ctx.lineTo(x, bottom);
+  }
+  ctx.closePath();
+  ctx.fill();
 }
 
 /** A clip's cached envelope and where the clip sits, or `null` when neither is known. */

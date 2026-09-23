@@ -77,6 +77,8 @@ export type EngineMessage =
   | { type: 'pause'; seq: number }
   | { type: 'seek'; seconds: number; seq: number }
   | { type: 'loop'; range: OutputRange | null }
+  // Seconds of silence the transport plays past the last source before it ends.
+  | { type: 'tail'; seconds: number }
   | { type: 'metronome'; on: boolean; clicks: Float64Array; accents: Uint8Array }
   | { type: 'audition'; start: number; end: number; seq: number }
   | { type: 'dispose' };
@@ -453,6 +455,8 @@ class RendererProcessor extends AudioWorkletProcessor {
   #sourceRate = sampleRate;
   #ratio = 1;
   #outputFrames = 0;
+  /** Seconds the transport runs past the last source, added to {@link #outputFrames}. */
+  #tail = 0;
 
   #scratch: Float32Array = new Float32Array(512);
   #position = 0;
@@ -567,6 +571,10 @@ class RendererProcessor extends AudioWorkletProcessor {
         break;
       case 'loop':
         this.#loop = message.range;
+        break;
+      case 'tail':
+        this.#tail = Number.isFinite(message.seconds) ? Math.max(0, message.seconds) : 0;
+        this.#measure();
         break;
       case 'metronome':
         this.#metronome = message.on;
@@ -730,6 +738,7 @@ class RendererProcessor extends AudioWorkletProcessor {
     for (const voice of this.#references) {
       if (voice.onLane) end = Math.max(end, voice.offset + voice.left.length);
     }
+    if (end > 0) end += this.#tail * this.#sourceRate;
     this.#outputFrames = end;
     this.#post({ type: 'length', outputSeconds: end / this.#sourceRate });
   }
@@ -1158,6 +1167,7 @@ function asEngineMessage(value: unknown): EngineMessage | null {
     case 'pause':
     case 'seek':
     case 'loop':
+    case 'tail':
     case 'metronome':
     case 'audition':
     case 'dispose':

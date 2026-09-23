@@ -30,13 +30,29 @@ export function guidedLabel(text: string, guide: string): HTMLLabelElement {
   label.className = 'axys-label';
   label.append(document.createTextNode(text));
   if (guide !== '') {
-    const mark = document.createElement('span');
-    mark.className = 'axys-info';
-    mark.innerHTML = ICONS.info;
-    label.append(mark);
+    label.append(infoMark());
     setTooltip(label, guide);
   }
   return label;
+}
+
+/**
+ * Gives an element that is not a control an explainer, marked with an info icon after its content.
+ *
+ * @remarks For a readout or a status word whose tooltip would otherwise go unfound. Safe to call
+ * again with a new explainer; the icon is added once. Setting `textContent` afterwards removes it.
+ */
+export function withInfo(element: HTMLElement, guide: string): void {
+  element.classList.add('axys-has-info');
+  if (element.querySelector(':scope > .axys-info') === null) element.append(infoMark());
+  setTooltip(element, guide);
+}
+
+function infoMark(): HTMLSpanElement {
+  const mark = document.createElement('span');
+  mark.className = 'axys-info';
+  mark.innerHTML = ICONS.info;
+  return mark;
 }
 
 /**
@@ -55,7 +71,12 @@ export const DRAG_HINT = 'Drag to set. Shift coarse, Alt fine';
  * modifier. The tooltip is not the only way to find it: the label and the field both take the
  * `ew-resize` cursor, which is what says the row can be dragged at all.
  */
-export function field(labelText: string, control: HTMLElement, guide: string): HTMLElement {
+export function field(
+  labelText: string,
+  control: HTMLElement,
+  guide: string,
+  unit?: string,
+): HTMLElement {
   const row = document.createElement('div');
   row.className = 'axys-field';
   if (control.id === '') {
@@ -66,9 +87,26 @@ export function field(labelText: string, control: HTMLElement, guide: string): H
   const explainer = scrubbable ? `${guide} ${DRAG_HINT}`.trim() : guide;
   const label = guidedLabel(labelText, explainer);
   label.htmlFor = control.id;
-  row.append(label, control);
+  row.append(label, unit === undefined ? control : withUnit(control, unit));
   bindDragAdjust(control, label);
   return row;
+}
+
+/**
+ * Wraps an input so its unit, such as `s` or `Hz`, is drawn inside its right edge.
+ *
+ * @remarks The unit takes no pointer events, so a drag that starts on it still adjusts the field.
+ */
+export function withUnit(control: HTMLElement, unit: string): HTMLElement {
+  const wrapper = document.createElement('span');
+  wrapper.className = 'axys-unit-field';
+  wrapper.style.setProperty('--axys-unit-chars', String(unit.length));
+  const suffix = document.createElement('span');
+  suffix.className = 'axys-unit';
+  suffix.textContent = unit;
+  suffix.setAttribute('aria-hidden', 'true');
+  wrapper.append(control, suffix);
+  return wrapper;
 }
 
 /** Focuses a field and offers its whole value, for a press the drag took over and gave back. */

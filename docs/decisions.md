@@ -581,7 +581,10 @@ A project holds several vocal clips, each one imported file with its own analysi
 plan, placed at a position on the one editable lane. The design bible keeps one monophonic vocal
 lane, so clips do not overlap: a clip dropped or dragged over another lands against the nearer
 edge of the clip it would have covered, and the preview shows where before the pointer is let go.
-Reordering is dragging a clip past its neighbour into the gap beyond it.
+Reordering is dragging a clip past its neighbour into the gap beyond it. A vocal dropped in from
+outside is inserted where it was let go instead, or at the nearer edge of the clip under it, and
+every clip after it moves later by the overlap: landing it at the nearest free gap put it wherever
+the lane had room, which could be well past the end.
 
 That rule is what keeps the editor unchanged underneath. The lane's blobs, taken together in
 project seconds, are always one valid ordered set, so selection, snapping, conflicts and MIDI

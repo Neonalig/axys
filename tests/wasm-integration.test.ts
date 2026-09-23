@@ -484,6 +484,7 @@ describe('wasm boundary', () => {
         analysis.blobsJson(),
         '',
         100,
+        false,
       );
       expect(clip).toBe(1);
       expect((JSON.parse(scoped.historyJson()) as HistoryJson).undo).toBe('Import Clip');
@@ -513,7 +514,15 @@ describe('wasm boundary', () => {
       const track = JSON.parse(analysis.trackJson()) as { sampleRate: number };
       track.sampleRate = sampleRate / 2;
       expect(() =>
-        scoped.addClip(samples, 'other.wav', JSON.stringify(track), analysis.blobsJson(), '', 0),
+        scoped.addClip(
+          samples,
+          'other.wav',
+          JSON.stringify(track),
+          analysis.blobsJson(),
+          '',
+          0,
+          false,
+        ),
       ).toThrow(/Hz/);
     } finally {
       scoped.free();

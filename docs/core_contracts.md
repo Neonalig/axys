@@ -294,6 +294,8 @@ pub struct Clip {
     pub blobs: BlobSet,
     /// Material deleted with its blobs, rendered as silence. Ordered, never overlapping.
     pub silenced: Vec<Span>,
+    /// What the clip is called in place of its file's name.
+    pub name: Option<String>,
 }
 
 impl Clip {
@@ -311,8 +313,18 @@ pub fn numbered_for(blobs: &BlobSet, clip: ClipId) -> bool;
 /// The position nearest `wanted` at which a span of `duration` overlaps no other clip.
 pub fn free_position(others: &[(f64, f64)], duration: f64, wanted: f64) -> f64;
 
+/// Where a span is inserted at `wanted`, moved to the nearer edge of a clip it lands inside, and
+/// how far every clip at or after that position moves later to make room: `(position, shift)`.
+pub fn ripple_insert(others: &[(f64, f64)], duration: f64, wanted: f64) -> (f64, f64);
+
 /// Audio heard beside the vocal and never edited or warped.
-pub struct Reference { pub id: ReferenceId, pub source: SourceInfo, pub position: f64 }
+pub struct Reference {
+    pub id: ReferenceId,
+    pub source: SourceInfo,
+    pub position: f64,
+    /// What the reference is called in place of its file's name.
+    pub name: Option<String>,
+}
 ```
 
 Clips never overlap on the lane. A clip added or moved over another lands against the nearer edge
@@ -896,12 +908,14 @@ pub enum EditOp {
     SetExcluded { blob: BlobId, excluded: bool },
     SetGain { blob: BlobId, gain_db: f64 },
     DeleteBlobs { blobs: Vec<BlobId> },
-    AddClip { clip: Clip },
+    AddClip { clip: Clip, ripple: bool },
     MoveClip { clip: ClipId, position: f64 },
     RemoveClip { clip: ClipId },
     AddReference { reference: Reference },
     MoveReference { reference: ReferenceId, position: f64 },
     RemoveReference { reference: ReferenceId },
+    RenameClip { clip: ClipId, name: Option<String> },
+    RenameReference { reference: ReferenceId, name: Option<String> },
     SetMixer { mixer: MixerSettings },
     SetScale { scale: ScaleSettings },
     SetModulation { modulation: ModulationSettings },
@@ -961,7 +975,8 @@ pub fn apply_with_baseline(state: &mut EditState, track: Option<&PitchTrack>,
 
 `DeleteBlobs` removes the blobs and silences the source spans they covered; `ResetRange` restores
 both the analysed blobs and the silenced material across its span. `AddClip` refuses a clip whose
-blobs are not numbered for it. Importing a second vocal or a reference is an edit like any other,
+blobs are not numbered for it. With `ripple` it lands where it was asked, or on the nearer edge of a
+clip it was asked inside, and every clip after it moves later by the overlap. Importing a second vocal or a reference is an edit like any other,
 so undo takes it back; the first clip is the base state the history replays over.
 
 ## `audio/wav.rs`

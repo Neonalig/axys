@@ -124,6 +124,8 @@ export interface AnalysedSessionInput {
 export interface ClipInput extends Omit<AnalysedSessionInput, 'sampleRate'> {
   /** Project seconds the clip is wanted at; an overlapping position lands on the nearest free one. */
   position: number;
+  /** Inserts at `position` instead, moving the clips after it later to make room. */
+  ripple?: boolean;
 }
 
 /** Typed facade over the wasm-bindgen exports. */
@@ -396,6 +398,7 @@ export class Session {
         input.blobsJson,
         params,
         input.position,
+        input.ripple ?? false,
       ),
     );
   }

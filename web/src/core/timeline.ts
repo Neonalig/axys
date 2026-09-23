@@ -43,6 +43,32 @@ export function meterAt(timeline: TimelineMap, tick: number): MeterEvent {
   return current;
 }
 
+/** Beat of the bar at source second 0, from 1, as the ruler and the metronome count it. */
+export function startBeat(timeline: TimelineMap): number {
+  return Math.floor(barBeatAt(timeline, 0).beat);
+}
+
+/**
+ * The timeline origin that puts source second 0 on beat `beat` of its bar.
+ *
+ * @remarks Moves the origin by whole beats at the tempo there, so the bars keep their length.
+ */
+export function originForStartBeat(timeline: TimelineMap, beat: number): number {
+  const meter = meterAt(timeline, 0);
+  const beatTicks = (ppqOf(timeline) * 4) / Math.max(1, meter.denominator);
+  const beatSeconds = tickToSeconds(timeline, beatTicks) - tickToSeconds(timeline, 0);
+  return timeline.originSeconds - (beat - startBeat(timeline)) * beatSeconds;
+}
+
+/** Seconds one bar lasts from a source time, at the tempo and meter in force there. */
+export function barSecondsAt(timeline: TimelineMap, seconds: number): number {
+  const tick = secondsToTick(timeline, seconds);
+  const meter = meterAt(timeline, tick);
+  const barTicks =
+    ((ppqOf(timeline) * 4) / Math.max(1, meter.denominator)) * Math.max(1, meter.numerator);
+  return tickToSeconds(timeline, tick + barTicks) - seconds;
+}
+
 /** Tempo in beats per minute at a tick. */
 export function bpmAt(timeline: TimelineMap, tick: number): number {
   return 60_000_000 / Math.max(1, tempoAt(timeline, tick).microsPerQuarter);

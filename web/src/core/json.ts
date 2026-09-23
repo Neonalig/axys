@@ -524,6 +524,8 @@ const EDIT_OP_FIELDS: Record<string, (op: Record<string, unknown>) => boolean> =
   addReference: (op) => isReference(op.reference),
   moveReference: (op) => isNumber(op.reference) && isNumber(op.position),
   removeReference: (op) => isNumber(op.reference),
+  renameClip: (op) => isNumber(op.clip) && (op.name === null || isString(op.name)),
+  renameReference: (op) => isNumber(op.reference) && (op.name === null || isString(op.name)),
   setMixer: (op) => isMixerSettings(op.mixer),
   setScale: (op) => isScaleSettings(op.scale),
   setTuning: (op) => isTuning(op.tuning),
@@ -656,14 +658,19 @@ export function isClip(value: unknown): value is Clip {
     isNumber(value.position) &&
     isBlobSet(value.blobs) &&
     Array.isArray(value.silenced) &&
-    value.silenced.every(isSpan)
+    value.silenced.every(isSpan) &&
+    (value.name === undefined || isString(value.name))
   );
 }
 
 /** Accepts one reference. */
 export function isReference(value: unknown): value is Reference {
   return (
-    isRecord(value) && isNumber(value.id) && isSourceInfo(value.source) && isNumber(value.position)
+    isRecord(value) &&
+    isNumber(value.id) &&
+    isSourceInfo(value.source) &&
+    isNumber(value.position) &&
+    (value.name === undefined || isString(value.name))
   );
 }
 

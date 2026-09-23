@@ -11,7 +11,7 @@ import type { TimeRange } from '../app/selection.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
-import { clipOf, MIN_BLOB_SECONDS, sourceTitle } from '../core/types.js';
+import { clipOf, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -943,9 +943,10 @@ export class EditorController {
    * Shows where audio dragged in from outside would land, and returns that time.
    *
    * @remarks Client coordinates, as a drag event carries them. `null` when the pointer is not over
-   * the canvas, which also takes the marker away.
+   * the canvas, which also takes the marker away. Ctrl puts it at the start and Shift at the
+   * playhead, as they do for a clip being moved.
    */
-  previewDrop(clientX: number, clientY: number): number | null {
+  previewDrop(clientX: number, clientY: number, modifiers = NO_MODIFIERS): number | null {
     const rect = this.#canvas.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
@@ -953,7 +954,7 @@ export class EditorController {
       this.endDrop();
       return null;
     }
-    const time = Math.max(0, this.#snapTime(this.viewport.xToTime(x), NO_MODIFIERS));
+    const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false });
     this.#renderer?.setPreview({
       kind: 'drop',
       time,
@@ -1130,12 +1131,12 @@ export class EditorController {
         break;
       }
       case 'clip': {
-        const wanted = this.#snapTime(time - gesture.grab, modifiers);
+        const wanted = this.#placeTime(time - gesture.grab, modifiers);
         gesture.position = freePosition(gesture.others, gesture.duration, wanted);
         break;
       }
       case 'reference':
-        gesture.position = Math.max(0, this.#snapTime(time - gesture.grab, modifiers));
+        gesture.position = this.#placeTime(time - gesture.grab, modifiers);
         break;
       case 'rubberBand':
         break;
@@ -1429,9 +1430,9 @@ export class EditorController {
       end = Math.max(end, blobOutputEnd(blob));
     }
     this.#selectSpan(start, end);
-    const name = state.edits?.clips.find((entry) => entry.id === clip)?.source.name;
-    if (name !== undefined) {
-      this.#announce(`${sourceTitle(name)} selected`);
+    const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+    if (entry !== undefined) {
+      this.#announce(`${displayTitle(entry)} selected`);
     }
   }
 
@@ -1556,6 +1557,16 @@ export class EditorController {
     }
     const moved = blobOutputStart(first) + raw;
     return snapTime(moved, this.#snapContext()) - blobOutputStart(first);
+  }
+
+  /**
+   * Where a clip, a reference or a dropped file is put: the start with Ctrl, the playhead with
+   * Shift, and otherwise `seconds` snapped. Never negative.
+   */
+  #placeTime(seconds: number, modifiers: Modifiers): number {
+    if (modifiers.snap) return 0;
+    if (modifiers.constrain) return this.#playhead();
+    return Math.max(0, this.#snapTime(seconds, modifiers));
   }
 
   #snapTime(seconds: number, modifiers: Modifiers): number {

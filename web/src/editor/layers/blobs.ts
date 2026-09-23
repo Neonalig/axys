@@ -3,7 +3,7 @@
 import { DEFAULT_MIXER, vocalMonitor } from '../../audio/mixer.js';
 import type { AppState } from '../../app/store.js';
 import type { Blob, Clip, PitchCurve, PitchTrackArrays, TimingConflict } from '../../core/types.js';
-import { clipOf, sourceTitle } from '../../core/types.js';
+import { clipOf, displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 
@@ -27,6 +27,9 @@ const HANDLE_HEIGHT = 18;
  * said it was muted or disabled, which is the one thing exclusion does not mean.
  */
 const EXCLUDED_DASH: readonly number[] = [4, 3];
+
+/** Narrowest blob, in pixels, that draws its voicing regions and centre line. */
+const DETAIL_MIN_WIDTH = 8;
 
 /** Height in pixels of the tab above a blob naming the clip it came from. */
 export const TITLE_HEIGHT = 16;
@@ -173,14 +176,38 @@ export function blobDetectedExtent(
   blob: Blob,
   track: PitchTrackArrays | null,
 ): { low: number; high: number } {
+  if (track === null) {
+    return measureExtent(blob, null);
+  }
+  let cache = EXTENTS.get(track);
+  if (cache === undefined) {
+    cache = new Map();
+    EXTENTS.set(track, cache);
+  }
+  const key = `${String(blob.start)}:${String(blob.end)}:${String(blob.detectedCenter)}`;
+  let extent = cache.get(key);
+  if (extent === undefined) {
+    extent = measureExtent(blob, track);
+    cache.set(key, extent);
+  }
+  return extent;
+}
+
+/**
+ * Each track's blob extents, keyed by the span and centre they were measured over.
+ *
+ * @remarks Every layer and every hit test reads a blob's extent, so it is measured once per track
+ * rather than once per read. A new track, which every edit that moves pitch produces, starts
+ * empty, and the old one is collected with its track.
+ */
+const EXTENTS = new WeakMap<PitchTrackArrays, Map<string, { low: number; high: number }>>();
+
+function measureExtent(blob: Blob, track: PitchTrackArrays | null): { low: number; high: number } {
   let low = Number.POSITIVE_INFINITY;
   let high = Number.NEGATIVE_INFINITY;
   if (track !== null) {
-    for (let i = 0; i < track.times.length; i += 1) {
+    for (let i = firstFrameAt(track, blob.start); i < track.times.length; i += 1) {
       const time = track.times[i] ?? 0;
-      if (time < blob.start) {
-        continue;
-      }
       if (time > blob.end) {
         break;
       }
@@ -199,6 +226,18 @@ export function blobDetectedExtent(
   const centre = (low + high) / 2;
   const half = Math.max(MIN_HALF_SEMITONES, (high - low) / 2 + BODY_PADDING);
   return { low: centre - half, high: centre + half };
+}
+
+/** Index of the first frame at or after `seconds`, by binary search over the frame times. */
+function firstFrameAt(track: PitchTrackArrays, seconds: number): number {
+  let low = 0;
+  let high = track.times.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if ((track.times[middle] ?? 0) < seconds) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 /** Lowest and highest pitch a blob is drawn at, with its pitch edit applied. */
@@ -331,7 +370,9 @@ function drawBlob(
   ctx.fillStyle = isSelected ? theme.blobFillSelected : theme.blobFill;
   ctx.fillRect(x0, top, width, height);
 
-  for (const region of blob.subregions) {
+  // Detail narrower than a few pixels is not legible and costs a draw per blob when zoomed out.
+  const detailed = x1 - x0 >= DETAIL_MIN_WIDTH;
+  for (const region of detailed ? blob.subregions : []) {
     if (region.voicing === 'voiced') {
       continue;
     }
@@ -358,13 +399,15 @@ function drawBlob(
   ctx.setLineDash([]);
 
   const centreY = viewport.midiToY(blob.detectedCenter + blob.pitchOffset);
-  ctx.beginPath();
-  ctx.setLineDash([6, 4]);
-  ctx.strokeStyle = theme.blobBounds;
-  ctx.moveTo(x0, viewport.crisp(centreY));
-  ctx.lineTo(x0 + width, viewport.crisp(centreY));
-  ctx.stroke();
-  ctx.setLineDash([]);
+  if (detailed) {
+    ctx.beginPath();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = theme.blobBounds;
+    ctx.moveTo(x0, viewport.crisp(centreY));
+    ctx.lineTo(x0 + width, viewport.crisp(centreY));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   if (showHandles) {
     const handleY = top + height / 2 - HANDLE_HEIGHT / 2;
@@ -415,25 +458,52 @@ function drawTitle(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.bg;
-  const text = fitText(ctx, sourceTitle(clip.source.name), rect.width - TITLE_PADDING * 2);
+  const text = fitText(ctx, displayTitle(clip), rect.width - TITLE_PADDING * 2);
   if (text !== '') {
     ctx.fillText(text, rect.x + TITLE_PADDING, rect.y + rect.height / 2 + 0.5);
   }
   ctx.restore();
 }
 
-/** The longest prefix of `text` that fits `width`, ending in an ellipsis when it was cut. */
+/**
+ * The longest prefix of `text` that fits `width`, ending in an ellipsis when it was cut.
+ *
+ * @remarks Assumes {@link TITLE_FONT}. Answers are kept by text and whole-pixel width, since every
+ * blob of a clip asks the same question on every frame.
+ */
 function fitText(ctx: CanvasRenderingContext2D, text: string, width: number): string {
+  const key = `${String(Math.floor(width))}:${text}`;
+  const known = FITTED.get(key);
+  if (known !== undefined) {
+    return known;
+  }
+  if (FITTED.size >= MAX_FITTED) {
+    FITTED.clear();
+  }
+  const fitted = measureFit(ctx, text, Math.floor(width));
+  FITTED.set(key, fitted);
+  return fitted;
+}
+
+/** Titles already fitted, by whole-pixel width and text. */
+const FITTED = new Map<string, string>();
+
+/** Most fitted titles kept before the cache starts again. */
+const MAX_FITTED = 2048;
+
+function measureFit(ctx: CanvasRenderingContext2D, text: string, width: number): string {
   if (ctx.measureText(text).width <= width) {
     return text;
   }
-  for (let length = text.length - 1; length > 0; length -= 1) {
-    const cut = `${text.slice(0, length)}...`;
-    if (ctx.measureText(cut).width <= width) {
-      return cut;
-    }
+  let low = 0;
+  let high = text.length - 1;
+  // The widest cut that fits, by bisection: a cut is never wider than a longer one.
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (ctx.measureText(`${text.slice(0, middle)}...`).width <= width) low = middle;
+    else high = middle - 1;
   }
-  return '';
+  return low > 0 ? `${text.slice(0, low)}...` : '';
 }
 
 function drawConflict(

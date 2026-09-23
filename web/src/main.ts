@@ -16,7 +16,7 @@ import { bindShortcuts } from './app/shortcuts.js';
 import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
-import { AppStore, initialState } from './app/store.js';
+import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
 import { referencePeaksKey } from './editor/layers/references.js';
@@ -45,13 +45,14 @@ import type {
   ViewState,
 } from './core/types.js';
 import { EditorController } from './editor/interaction.js';
-import { freePosition } from './editor/tools.js';
+import { freePosition, modifiersOf, rippleInsert } from './editor/tools.js';
 import type { PendingClip } from './editor/tools.js';
 import { buildPeaks, clearPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
 import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN } from './editor/view.js';
 import { Autosave } from './persistence/autosave.js';
 import { PersistenceError, ProjectStore } from './persistence/db.js';
+import type { ProjectSummary } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import {
   EXPORT_KIND,
@@ -92,6 +93,9 @@ const OPEN_PROJECT_KEY = 'axys.project.open';
 
 /** How many projects keep a recovery copy on the device; older ones are deleted. */
 const RECOVERY_COPIES = 8;
+
+/** Local record of the recovery copies taken off the recent list, as a JSON array of ids. */
+const HIDDEN_RECENT_KEY = 'axys.recent.hidden';
 
 /** Local flag recording that the degraded-capability notice has been shown once. */
 const DEGRADED_NOTICE_KEY = 'axys.degraded.notice';
@@ -142,6 +146,26 @@ function recordOpenProject(id: string): void {
     localStorage.setItem(OPEN_PROJECT_KEY, id);
   } catch {
     // A browser that refuses storage reopens the newest project instead, which is close enough.
+  }
+}
+
+/** Ids taken off the recent list. Empty when nothing is recorded or storage is refused. */
+function hiddenRecent(): Set<string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(HIDDEN_RECENT_KEY) ?? '[]');
+    return new Set(
+      Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function recordHiddenRecent(ids: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(HIDDEN_RECENT_KEY, JSON.stringify([...ids]));
+  } catch {
+    // A browser that refuses storage shows the project again on the next visit.
   }
 }
 
@@ -292,6 +316,57 @@ class AxysWorkspace implements Workspace {
     }
   }
 
+  /**
+   * Projects this device holds a recovery copy of, most recently saved first.
+   *
+   * @remarks Leaves out the open project and any taken off the list with {@link forgetRecent}.
+   */
+  async recentProjects(): Promise<ProjectSummary[]> {
+    const projects = this.#projects;
+    if (!projects) return [];
+    let listed: ProjectSummary[];
+    try {
+      listed = await projects.list();
+    } catch {
+      return [];
+    }
+    const hidden = hiddenRecent();
+    // Ids whose copy has since been pruned are dropped, so the record does not grow forever.
+    const kept = new Set([...hidden].filter((id) => listed.some((entry) => entry.id === id)));
+    if (kept.size !== hidden.size) recordHiddenRecent(kept);
+    return listed.filter((entry) => entry.id !== this.#projectId && !kept.has(entry.id));
+  }
+
+  /** Takes a project off the recent list. Its recovery copy is kept. */
+  forgetRecent(id: string): void {
+    const hidden = hiddenRecent();
+    hidden.add(id);
+    recordHiddenRecent(hidden);
+  }
+
+  /**
+   * Reopens a project from its recovery copy on this device.
+   *
+   * @remarks Asks before discarding unsaved work, as Open does. The copy holds every edit made on
+   * it, saved to a file or not, and the project goes on saving to it.
+   */
+  async openRecent(id: string): Promise<void> {
+    const projects = this.#projects;
+    if (!projects || id === this.#projectId) return;
+    if (this.#importing) {
+      this.#toast.warn('An import is already running');
+      return;
+    }
+    if (!(await this.#mayReplaceProject())) return;
+    try {
+      const json = await projects.load(id);
+      this.#projectFile = null;
+      await this.#openProject(this.#core.readProject(json).json, id);
+    } catch (error) {
+      this.#fail('Open Project', error);
+    }
+  }
+
   get previewing(): boolean {
     return this.#previewing;
   }
@@ -439,19 +514,20 @@ class AxysWorkspace implements Workspace {
    *
    * @remarks `position` is project seconds, and defaults to the end of the lane so a take
    * stitches onto the one before it. A position that would overlap a clip lands on the nearest
-   * free one. The audio is decoded at the project's rate, because every clip is held at one.
-   * The decoded waveform is shown where the clip lands while it is analysed, and the view moves
-   * to it when it lands out of sight.
+   * free one, or with `ripple` stays where it is and moves the clips after it later. The audio is
+   * decoded at the project's rate, because every clip is held at one. The decoded waveform is
+   * shown where the clip lands while it is analysed, and the view moves to it when it lands out
+   * of sight. Resolves with where the clip ends, or `null` when it was not imported.
    */
-  async importClipFile(file: File, position?: number): Promise<void> {
+  async importClipFile(file: File, position?: number, ripple = false): Promise<number | null> {
     const session = this.#session;
     if (!session) {
       await this.openAudioFile(file);
-      return;
+      return null;
     }
     if (this.#importing) {
       this.#toast.warn('An import is already running');
-      return;
+      return null;
     }
     this.#progress('Decode Audio', 0.05);
     this.#importing = true;
@@ -459,14 +535,14 @@ class AxysWorkspace implements Workspace {
       const rate = session.sampleRate();
       const decoded = await decodeAudioFile(file, rate);
       const edits = this.#store.state.edits;
-      const at = freePosition(
-        (edits?.clips ?? []).map((clip): [number, number] => [
-          clip.position,
-          clip.position + clip.source.duration,
-        ]),
-        decoded.duration,
-        position ?? laneEnd(this.#store.state),
-      );
+      const spans = (edits?.clips ?? []).map((clip): [number, number] => [
+        clip.position,
+        clip.position + clip.source.duration,
+      ]);
+      const wanted = position ?? laneEnd(this.#store.state);
+      const at = ripple
+        ? rippleInsert(spans, decoded.duration, wanted).position
+        : freePosition(spans, decoded.duration, wanted);
       buildPeaks(decoded.mono, rate, decoded.fingerprint);
       this.#onPending?.({
         position: at,
@@ -482,6 +558,7 @@ class AxysWorkspace implements Workspace {
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
         position: at,
+        ripple,
       });
       buildPeaks(analysed.samples, rate, fingerprintOf(analysed.samples));
       this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
@@ -491,8 +568,10 @@ class AxysWorkspace implements Workspace {
       if (placed) this.#reveal(placed.position, placed.position + placed.source.duration);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
+      return placed === undefined ? null : placed.position + placed.source.duration;
     } catch (error) {
       this.#importFailed('Import Vocal', error);
+      return null;
     } finally {
       this.#onPending?.(null);
       this.#importing = false;
@@ -530,7 +609,8 @@ class AxysWorkspace implements Workspace {
    * otherwise a vocal or a reference, whichever the user answers.
    *
    * @remarks One question for everything dropped at once. The first file goes at `position`,
-   * and each after it follows the one before.
+   * and each after it follows the one before. A vocal dropped at a position is inserted there,
+   * moving the clips after it later rather than landing wherever there happens to be room.
    */
   async dropAudio(files: readonly File[], position: number | null): Promise<void> {
     if (this.#hasMissing()) {
@@ -539,10 +619,13 @@ class AxysWorkspace implements Workspace {
     }
     const role = await this.#askRole(files);
     if (role === null) return;
+    let next = position;
     for (const [index, file] of files.entries()) {
-      const at = index === 0 ? (position ?? undefined) : undefined;
-      if (role === 'vocal') await this.importClipFile(file, at);
-      else await this.importReferenceFile(file, at ?? 0);
+      if (role === 'vocal') {
+        next = (await this.importClipFile(file, next ?? undefined, next !== null)) ?? next;
+      } else {
+        await this.importReferenceFile(file, index === 0 ? (position ?? 0) : 0);
+      }
     }
   }
 
@@ -1170,6 +1253,8 @@ class AxysWorkspace implements Workspace {
       analysis: { running: false, progress: 1, stage: '' },
       dirty: false,
     });
+    this.#audio.setTail(endLeniency(this.#store.state));
+    this.#audio.setTimeline(edits.timeline);
 
     this.#startAutosave();
     if (id === null && this.#autosave) {
@@ -1313,6 +1398,8 @@ class AxysWorkspace implements Workspace {
         selection: selectionForRanges(blobs, this.#store.state.selection.ranges),
         dirty: true,
       });
+      this.#audio.setTail(endLeniency(this.#store.state));
+      this.#audio.setTimeline(edits.timeline);
     } catch (error) {
       this.#fail('Read Plan', error);
       return;
@@ -1544,7 +1631,7 @@ function bindDragAndDrop(
     event.dataTransfer.dropEffect = 'copy';
     // Over the canvas of an open project, a vocal lands where it is let go, so the lane shows
     // where that is before it happens.
-    if (workspace.ready) editor.previewDrop(event.clientX, event.clientY);
+    if (workspace.ready) editor.previewDrop(event.clientX, event.clientY, modifiersOf(event));
   };
   const onDragLeave = (): void => {
     depth = Math.max(0, depth - 1);
@@ -1556,7 +1643,9 @@ function bindDragAndDrop(
   const onDrop = (event: DragEvent): void => {
     depth = 0;
     shell.setDropTarget(null);
-    const at = workspace.ready ? editor.previewDrop(event.clientX, event.clientY) : null;
+    const at = workspace.ready
+      ? editor.previewDrop(event.clientX, event.clientY, modifiersOf(event))
+      : null;
     editor.endDrop();
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
@@ -1883,6 +1972,15 @@ function buildHooks(
     },
     setProjectName(name: string): void {
       workspace()?.apply({ type: 'setName', name });
+    },
+    async recentProjects(): Promise<ProjectSummary[]> {
+      return (await workspace()?.recentProjects()) ?? [];
+    },
+    openRecent(id: string): void {
+      void workspace()?.openRecent(id);
+    },
+    forgetRecent(id: string): void {
+      workspace()?.forgetRecent(id);
     },
     setView(patch: Partial<ViewState>): void {
       // How time reads is a display habit that follows the person between projects, so it is

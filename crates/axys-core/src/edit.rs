@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::f0::PitchTrack;
 use crate::blob::{BlobId, BlobSet, Edge, Voicing};
 use crate::clip::{
-    clip_of, fit_to_source, free_position, numbered_for, Clip, ClipId, Reference, ReferenceId,
-    Span, MAX_CLIPS, MAX_REFERENCES,
+    clip_of, fit_to_source, free_position, numbered_for, ripple_insert, Clip, ClipId, Reference,
+    ReferenceId, Span, MAX_CLIPS, MAX_REFERENCES,
 };
 use crate::curve::{Anchor, PitchCurve};
 use crate::dsp::formant::FormantMode;
@@ -201,8 +201,12 @@ pub enum EditOp {
     /// Puts an imported vocal on the lane.
     AddClip {
         /// The clip, its blobs numbered for it. A position that would overlap another clip is
-        /// moved to the nearest free one.
+        /// moved to the nearest free one, unless `ripple` is set.
         clip: Clip,
+        /// Inserts the clip at its position, moving every clip after it later to make room, as
+        /// [`ripple_insert`] describes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        ripple: bool,
     },
     /// Moves a clip along the lane.
     MoveClip {
@@ -227,6 +231,20 @@ pub enum EditOp {
         reference: ReferenceId,
         /// New start in project seconds.
         position: f64,
+    },
+    /// Names a clip in place of its file's name, or goes back to the file's name with `None`.
+    RenameClip {
+        /// Clip to rename.
+        clip: ClipId,
+        /// New name, which may not be blank once trimmed.
+        name: Option<String>,
+    },
+    /// Names a reference in place of its file's name, or goes back to it with `None`.
+    RenameReference {
+        /// Reference to rename.
+        reference: ReferenceId,
+        /// New name, which may not be blank once trimmed.
+        name: Option<String>,
     },
     /// Takes a reference out of the project.
     RemoveReference {
@@ -334,6 +352,8 @@ impl EditOp {
             EditOp::AddReference { .. } => "Import Reference",
             EditOp::MoveReference { .. } => "Move Reference",
             EditOp::RemoveReference { .. } => "Delete Reference",
+            EditOp::RenameClip { .. } => "Rename Clip",
+            EditOp::RenameReference { .. } => "Rename Reference",
             EditOp::SetMixer { .. } => "Set Mixer",
             EditOp::SetScale { .. } => "Set Scale",
             EditOp::SetTuning { .. } => "Set Tuning",
@@ -653,7 +673,7 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             forget_missing_mappings(state);
         }
-        EditOp::AddClip { clip } => {
+        EditOp::AddClip { clip, ripple } => {
             if state.clips.len() >= MAX_CLIPS {
                 return Err(AxysError::Invalid(format!(
                     "a project holds at most {MAX_CLIPS} clips"
@@ -677,11 +697,19 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             let mut clip = clip.clone();
             fit_to_source(&mut clip.blobs, duration);
-            clip.position = free_position(
-                &lane_spans(state, None),
-                duration,
-                finite(clip.position, "clip position")?,
-            );
+            let wanted = finite(clip.position, "clip position")?;
+            let spans = lane_spans(state, None);
+            if *ripple {
+                let (at, shift) = ripple_insert(&spans, duration, wanted);
+                for other in &mut state.clips {
+                    if other.position >= at - 1e-9 {
+                        other.position += shift;
+                    }
+                }
+                clip.position = at;
+            } else {
+                clip.position = free_position(&spans, duration, wanted);
+            }
             state.clips.push(clip);
         }
         EditOp::MoveClip { clip, position } => {
@@ -727,6 +755,22 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
                 .find(|entry| entry.id == *reference)
                 .ok_or_else(|| AxysError::NotFound(format!("reference {}", reference.0)))?
                 .position = position;
+        }
+        EditOp::RenameClip { clip, name } => {
+            let name = source_name(name.as_deref())?;
+            state
+                .clip_mut(*clip)
+                .ok_or_else(|| AxysError::NotFound(format!("clip {}", clip.0)))?
+                .name = name;
+        }
+        EditOp::RenameReference { reference, name } => {
+            let name = source_name(name.as_deref())?;
+            state
+                .references
+                .iter_mut()
+                .find(|entry| entry.id == *reference)
+                .ok_or_else(|| AxysError::NotFound(format!("reference {}", reference.0)))?
+                .name = name;
         }
         EditOp::RemoveReference { reference } => {
             let before = state.references.len();
@@ -874,6 +918,27 @@ fn lane_spans(state: &EditState, except: Option<ClipId>) -> Vec<(f64, f64)> {
         .filter(|clip| Some(clip.id) != except)
         .map(|clip| (clip.position, clip.end()))
         .collect()
+}
+
+/// A clip or reference name trimmed and checked, or `None` to go back to the file's name.
+fn source_name(name: Option<&str>) -> Result<Option<String>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AxysError::Invalid("a source name cannot be blank".into()));
+    }
+    if trimmed.chars().count() > MAX_NAME_CHARS {
+        return Err(AxysError::Invalid(format!(
+            "a source name is longer than {MAX_NAME_CHARS} characters"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Drops the guide mappings that name a blob no longer on the lane.
@@ -2659,6 +2724,7 @@ mod tests {
             None,
             &EditOp::AddClip {
                 clip: second_clip(5.0),
+                ripple: false,
             },
         )
         .unwrap();
@@ -2708,10 +2774,37 @@ mod tests {
             None,
             &EditOp::AddClip {
                 clip: second_clip(1.5),
+                ripple: false,
             },
         )
         .unwrap();
         assert_eq!(s.clip(ClipId(1)).unwrap().position, 2.0);
+    }
+
+    #[test]
+    fn a_clip_is_renamed_and_named_after_its_file_again() {
+        let mut s = state();
+        let rename = |name: Option<&str>| EditOp::RenameClip {
+            clip: ClipId(0),
+            name: name.map(str::to_string),
+        };
+        apply(&mut s, None, &rename(Some("  Lead  "))).unwrap();
+        assert_eq!(s.clips[0].name.as_deref(), Some("Lead"));
+        assert!(apply(&mut s, None, &rename(Some(" "))).is_err());
+        apply(&mut s, None, &rename(None)).unwrap();
+        assert_eq!(s.clips[0].name, None);
+    }
+
+    #[test]
+    fn a_rippled_clip_lands_where_asked_and_pushes_the_rest() {
+        let mut s = two_clips();
+        let mut clip = second_clip(4.0);
+        clip.id = ClipId(2);
+        clip.blobs = crate::clip::renumber(&clip.blobs, ClipId(2)).unwrap();
+        apply(&mut s, None, &EditOp::AddClip { clip, ripple: true }).unwrap();
+        assert_eq!(s.clip(ClipId(0)).unwrap().position, 0.0);
+        assert_eq!(s.clip(ClipId(2)).unwrap().position, 4.0);
+        assert_eq!(s.clip(ClipId(1)).unwrap().position, 6.0);
     }
 
     #[test]
@@ -2745,6 +2838,7 @@ mod tests {
             None,
             &EditOp::AddClip {
                 clip: second_clip(2.0),
+                ripple: false,
             },
         )
         .unwrap();
@@ -2854,6 +2948,7 @@ mod tests {
             id: ReferenceId(0),
             source: crate::clip::test_source("vocal.mp3", 30.0),
             position: -2.0,
+            name: None,
         };
         apply(&mut s, None, &EditOp::AddReference { reference }).unwrap();
         assert_eq!(s.references[0].position, 0.0);
@@ -2884,6 +2979,14 @@ mod tests {
         let mut s = state();
         let mut clip = second_clip(5.0);
         clip.id = ClipId(2);
-        assert!(apply(&mut s, None, &EditOp::AddClip { clip }).is_err());
+        assert!(apply(
+            &mut s,
+            None,
+            &EditOp::AddClip {
+                clip,
+                ripple: false,
+            }
+        )
+        .is_err());
     }
 }

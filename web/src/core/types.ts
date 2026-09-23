@@ -397,6 +397,8 @@ export type EditOp =
   | { type: 'addReference'; reference: Reference }
   | { type: 'moveReference'; reference: ReferenceId; position: number }
   | { type: 'removeReference'; reference: ReferenceId }
+  | { type: 'renameClip'; clip: ClipId; name: string | null }
+  | { type: 'renameReference'; reference: ReferenceId; name: string | null }
   | { type: 'setMixer'; mixer: MixerSettings }
   | { type: 'setScale'; scale: ScaleSettings }
   | { type: 'setTuning'; tuning: Tuning }
@@ -486,6 +488,8 @@ export interface Clip {
   blobs: BlobSet;
   /** Material deleted with its blobs, rendered as silence. */
   silenced: Span[];
+  /** What the clip is called in place of its file's name. */
+  name?: string;
 }
 
 /** Audio heard beside the vocal and never edited or warped. */
@@ -494,6 +498,8 @@ export interface Reference {
   source: SourceInfo;
   /** Project seconds at which the reference starts. */
   position: number;
+  /** What the reference is called in place of its file's name. */
+  name?: string;
 }
 
 /** What a project keeps about one clip's audio, whether or not the clip is on the lane now. */
@@ -520,6 +526,11 @@ export function sourceTitle(fileName: string): string {
   const trimmed = fileName.trim();
   const dot = trimmed.lastIndexOf('.');
   return dot > 0 ? trimmed.slice(0, dot) : trimmed;
+}
+
+/** What a clip or a reference is called on the desk, over its blobs and on its band. */
+export function displayTitle(entry: { name?: string; source: { name: string } }): string {
+  return entry.name ?? sourceTitle(entry.source.name);
 }
 
 /** Parameters and version that produced the stored analysis. */
