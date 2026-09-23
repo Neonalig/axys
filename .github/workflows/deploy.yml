@@ -2,10 +2,10 @@
 
 name: Deploy
 
+# A release is a version tag on main: merge to main, then tag the merge commit, e.g. v1.2.0.
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    tags: ['v*']
 
 concurrency:
   group: deploy
@@ -16,6 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main. Tag a commit that has been merged to main."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v7
         with:
@@ -31,14 +40,18 @@ jobs:
 
       - run: npm ci
 
+      - name: Stamp the release version
+        run: node scripts/set-version.mjs "$GITHUB_REF_NAME"
+
       - run: npm run doctor
 
       - run: npm run check
 
       - name: Build
         env:
-          AXYS_SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
           AXYS_SOURCE_REVISION: ${{ github.sha }}
+          AXYS_RELEASE: 'true'
+          AXYS_SIGNING_KEY: ${{ secrets.AXYS_SIGNING_KEY }}
         run: npm run build
 
       - name: Check the Cloudflare credentials
