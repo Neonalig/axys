@@ -422,6 +422,57 @@ describe('editing modes', () => {
     }
   });
 
+  it('copies only the curves that run into a span, so a paste meets its neighbours cleanly', () => {
+    const scoped = session();
+    try {
+      const b = stateOf(scoped).blobs;
+      const line = (from: number, to: number, midi: (t: number) => number) =>
+        Array.from({ length: 41 }, (_, i) => {
+          const time = from + ((to - from) * i) / 40;
+          return { time, midi: midi(time) };
+        });
+      apply(
+        scoped,
+        drawStrokeOps(
+          stateOf(scoped),
+          line(b[0]!.start, b[3]!.end, () => 66),
+          null,
+          null,
+        ),
+      );
+      const ramp = line(b[1]!.start, b[1]!.end, (t) => 58 + (t - b[1]!.start) * 10);
+      apply(
+        scoped,
+        drawStrokeOps(stateOf(scoped), ramp, [ramp[0]!, ramp[10]!, ramp[30]!, ramp[40]!], null),
+      );
+      const state = stateOf(scoped);
+      const span = { start: ramp[0]!.time, end: ramp[40]!.time };
+      const copied = copyPitch({ ...state, selection: { blobs: [], anchors: [], ranges: [span] } });
+      if (copied?.kind !== 'pitch') throw new Error('nothing copied');
+      // The flat line either side ends where the ramp begins, and none of it is copied with it.
+      const copiedLine = copied.lines[0]!;
+      expect(copiedLine[0]!.midi).toBeCloseTo(58, 6);
+      expect(copiedLine[copiedLine.length - 1]!.midi).toBeCloseTo(ramp[40]!.midi, 6);
+
+      const at = b[2]!.start + 0.05;
+      apply(scoped, [
+        ...pastePitchOps(state, placePitch(copied, null, at)),
+        ...placeStrokes(state, copied, null, at),
+      ]);
+      // Every blob's anchors run forward with one pitch at each instant.
+      for (const blob of stateOf(scoped).blobs) {
+        const anchors = blob.curve.anchors;
+        for (let i = 1; i < anchors.length; i += 1) {
+          const [prev, next] = [anchors[i - 1]!, anchors[i]!];
+          expect(next.time).toBeGreaterThanOrEqual(prev.time);
+          if (next.time === prev.time) expect(next.midi).toBe(prev.midi);
+        }
+      }
+    } finally {
+      scoped.free();
+    }
+  });
+
   it('cuts a Bezier into Beziers that keep its shape', () => {
     const scoped = session();
     try {

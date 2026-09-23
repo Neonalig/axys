@@ -612,6 +612,9 @@ function drawTarget(
   ctx.restore();
 }
 
+/** Seconds apart two curves may end and begin and still be drawn as one line. */
+const JOIN_SECONDS = 0.005;
+
 /**
  * Draws each kept curve whole: solid where a blob carries it, dotted and faint across gaps, so a
  * line drawn over nothing still shows where it runs. The one picked up is drawn bright.
@@ -662,6 +665,24 @@ function drawStrokes(
     ctx.setLineDash([2, 3]);
     ctx.stroke(loose);
   }
+  // Curves of one track that meet end to end are one line with a step in it, so the step is
+  // drawn: a paste over part of a curve reads as a change of pitch, not as two loose ends.
+  const joins = new Path2D();
+  const ordered = [...strokes].sort((a, b) => (a.points[0]?.time ?? 0) - (b.points[0]?.time ?? 0));
+  for (let i = 1; i < ordered.length; i += 1) {
+    const before = ordered[i - 1]?.points.at(-1);
+    const after = ordered[i]?.points[0];
+    if (before === undefined || after === undefined) continue;
+    if (Math.abs(after.time - before.time) > JOIN_SECONDS) continue;
+    if (ordered[i - 1]?.clip !== ordered[i]?.clip) continue;
+    joins.moveTo(viewport.timeToX(before.time), viewport.midiToY(before.midi));
+    joins.lineTo(viewport.timeToX(after.time), viewport.midiToY(after.midi));
+  }
+  ctx.strokeStyle = theme.pitchTarget;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.stroke(joins);
   ctx.restore();
 }
 

@@ -875,6 +875,15 @@ a paste showed gaps the copy never had. Whatever a paste, a Pitch-mode move or a
 is now kept whole as curves: the curves it carried where they run, a curve the copy only reached
 into cut to the part it reached, and the line's own points as freehand curves across the rest.
 
+### A copy takes only the curves that run into it
+
+A curve beside the copied span that ended exactly where the span began was copied too, its last
+point at the same instant as the first point of the curve that was wanted, so a paste put two
+pitches at one moment at each end and the line drawn through them doubled back on itself. A copy
+now reads only the curves that run into the span. Where a paste meets a curve of another pitch the
+line steps straight to it, and curves of one track that meet end to end are drawn joined across
+the step, so a paste reads as a change of pitch rather than as two loose ends.
+
 ### One pitch track per clip
 
 Kept curves were independent of each other, so a Bezier pasted over a freehand line drew two lines

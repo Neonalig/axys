@@ -244,21 +244,28 @@ export function samplePitch(state: AppState, ranges: readonly TimeRange[]): Pitc
     const target = state.plan === null ? null : planTargetMidi(state.plan, source);
     heard.push({ time: sourceToOutput(blob, source), midi: target ?? detected });
   }
-  // A kept curve is the line as it was drawn, gaps and all, so its own points stand in for what
-  // the blobs under it happen to sing.
-  const strokes = strokesOf(state);
-  const drawn = heard.filter(
-    (point) => !strokes.some((stroke) => within(strokeSpan(stroke), point.time)),
-  );
-  for (const stroke of strokes) drawn.push(...stroke.points);
-  heard.length = 0;
-  heard.push(...drawn);
   heard.sort((a, b) => a.time - b.time);
+  const strokes = strokesOf(state);
   const lines: PitchPoint[][] = [];
   for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
-    const inside = heard.filter(
-      (point) => point.time >= range.start - EPS && point.time <= range.end + EPS,
-    );
+    // A kept curve is the line as it was drawn, gaps and all, so its own points stand in for
+    // what the blobs under it happen to sing. Only the curves that run into the span count: one
+    // that ends where the span begins is its neighbour's line, and its last point there would put
+    // two pitches at one instant.
+    const reaching = strokes.filter((stroke) => {
+      const span = strokeSpan(stroke);
+      return span.end > range.start + EPS && span.start < range.end - EPS;
+    });
+    const covered = reaching.map(strokeSpan);
+    const inside = [
+      ...heard.filter(
+        (point) =>
+          point.time >= range.start - EPS &&
+          point.time <= range.end + EPS &&
+          !covered.some((span) => within(span, point.time)),
+      ),
+      ...reaching.flatMap((stroke) => lineWithin(stroke.points, range.start, range.end)),
+    ].sort((a, b) => a.time - b.time);
     const first = inside[0];
     const last = inside[inside.length - 1];
     if (first === undefined || last === undefined) continue;
