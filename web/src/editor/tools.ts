@@ -657,6 +657,7 @@ export type EditorPreview =
   | { kind: 'blobShift'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
   | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
+  | { kind: 'lines'; lines: readonly (readonly GesturePoint[])[]; label: string }
   | {
       kind: 'bezier';
       curve: BezierCurve;

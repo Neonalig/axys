@@ -14,7 +14,7 @@ import {
   outsideRunAt,
   outsideRuns,
   samplePitch,
-  shiftPoints,
+  shiftLines,
 } from '../app/clipboard.js';
 import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
 import { othersOf } from '../app/sources.js';
@@ -121,7 +121,7 @@ type Gesture =
   | {
       kind: 'contour';
       ranges: TimeRange[];
-      points: PitchPoint[];
+      lines: PitchPoint[][];
       seconds: number;
       semitones: number;
       /** Whether the drag moves the line in time rather than in pitch. */
@@ -131,7 +131,7 @@ type Gesture =
   | {
       kind: 'lift';
       run: OutsideRun;
-      points: PitchPoint[];
+      lines: PitchPoint[][];
       seconds: number;
       semitones: number;
       horizontal: boolean;
@@ -1132,17 +1132,17 @@ export class EditorController {
       this.#setSelection(selectionForRange(state.blobs, span));
       ranges = [span];
     }
-    const points = samplePitch(this.#store.state, ranges, state.outsidePitch);
-    if (points.length < 2) return null;
-    return { kind: 'contour', ranges, points, seconds: 0, semitones: 0, horizontal };
+    const lines = samplePitch(this.#store.state, ranges);
+    if (lines.length === 0) return null;
+    return { kind: 'contour', ranges, lines, seconds: 0, semitones: 0, horizontal };
   }
 
   /** Picks up pitch outside every blob, to become a blob of its own. */
   #beginLift(state: AppState, hit: Hit, horizontal: boolean): Gesture | null {
     const run = outsideRunAt(state, hit.time);
     if (run === null) return null;
-    const points = samplePitch(state, [{ start: run.start, end: run.end }], true);
-    return { kind: 'lift', run, points, seconds: 0, semitones: 0, horizontal };
+    const lines = samplePitch(state, [{ start: run.start, end: run.end }]);
+    return { kind: 'lift', run, lines, seconds: 0, semitones: 0, horizontal };
   }
 
   /** Picks up the clip a blob belongs to, by the point under the pointer. */
@@ -1457,8 +1457,8 @@ export class EditorController {
       case 'lift':
         return this.#moved
           ? {
-              kind: 'curve',
-              points: shiftPoints(gesture.points, gesture.seconds, gesture.semitones),
+              kind: 'lines',
+              lines: shiftLines(gesture.lines, gesture.seconds, gesture.semitones),
               label: `Move Pitch ${
                 gesture.horizontal
                   ? formatMilliseconds(gesture.seconds)

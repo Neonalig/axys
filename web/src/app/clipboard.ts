@@ -37,13 +37,10 @@ export interface PitchPoint {
 export type ClipboardContent =
   | { kind: 'clips'; parts: ClipPart[] }
   | { kind: 'blobs'; blobs: Blob[]; start: number; end: number }
-  | { kind: 'pitch'; points: PitchPoint[]; start: number; end: number };
+  | { kind: 'pitch'; lines: PitchPoint[][]; start: number; end: number };
 
 /** What a span of pitch is left at once its line is cut away. */
 export type PitchCutFill = 'sung' | 'flat';
-
-/** Longest gap in a pitch line, in seconds, that still reads as one line. */
-const LINE_GAP_SECONDS = 0.05;
 
 /** Longest gap between detected frames, in seconds, that one outside run spans. */
 const RUN_GAP_SECONDS = 0.03;
@@ -205,66 +202,55 @@ function blobHolding(blobs: readonly Blob[], seconds: number): Blob | undefined 
 }
 
 /**
- * The pitch line heard across some output spans, one point per detected frame.
+ * The pitch line heard across some output spans, one continuous line per span.
  *
- * @remarks Inside a blob the point is what the plan makes the blob sing, placed where the blob's
- * timing puts it. Outside every blob it is the detected pitch where it was sung, and is read only
- * when `outside` says those lines are shown.
+ * @remarks Inside a blob a point is what the plan makes the blob sing, placed where the blob's
+ * timing puts it; outside every blob it is the detected pitch where it was sung. A stretch with no
+ * pitch, a consonant or the gap between two blobs, is joined straight across, and the line is held
+ * level out to the edges of its span, so what is copied is the whole line the span covers rather
+ * than the pieces of it that happen to be sung.
  */
-export function samplePitch(
-  state: AppState,
-  ranges: readonly TimeRange[],
-  outside: boolean,
-): PitchPoint[] {
+export function samplePitch(state: AppState, ranges: readonly TimeRange[]): PitchPoint[][] {
   const track = state.track;
   if (track === null || ranges.length === 0) return [];
-  const points: PitchPoint[] = [];
-  const within = (time: number): boolean =>
-    ranges.some((range) => time >= range.start - EPS && time <= range.end + EPS);
+  const heard: PitchPoint[] = [];
   for (let i = 0; i < track.times.length; i += 1) {
     const source = track.times[i] ?? 0;
     const detected = track.midi[i] ?? Number.NaN;
     if (!Number.isFinite(detected)) continue;
     const blob = blobHolding(state.blobs, source);
     if (blob === undefined) {
-      if (outside && within(source) && clipAt(state, source) !== undefined) {
-        points.push({ time: source, midi: detected });
-      }
+      if (clipAt(state, source) !== undefined) heard.push({ time: source, midi: detected });
       continue;
     }
-    const time = sourceToOutput(blob, source);
-    if (!within(time)) continue;
-    const heard = state.plan === null ? null : planTargetMidi(state.plan, source);
-    points.push({ time, midi: heard ?? detected });
+    const target = state.plan === null ? null : planTargetMidi(state.plan, source);
+    heard.push({ time: sourceToOutput(blob, source), midi: target ?? detected });
   }
-  points.sort((a, b) => a.time - b.time);
-  return points;
+  heard.sort((a, b) => a.time - b.time);
+  const lines: PitchPoint[][] = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    const inside = heard.filter(
+      (point) => point.time >= range.start - EPS && point.time <= range.end + EPS,
+    );
+    const first = inside[0];
+    const last = inside[inside.length - 1];
+    if (first === undefined || last === undefined) continue;
+    const line = [...inside];
+    if (first.time > range.start + EPS) line.unshift({ time: range.start, midi: first.midi });
+    if (last.time < range.end - EPS) line.push({ time: range.end, midi: last.midi });
+    if (line.length >= 2) lines.push(line);
+  }
+  return lines;
 }
 
 /** Copies the heard pitch line across the selection, or `null` where there is none. */
-export function copyPitch(state: AppState, outside: boolean): ClipboardContent | null {
-  const points = samplePitch(state, state.selection.ranges, outside);
-  if (points.length < 2) return null;
+export function copyPitch(state: AppState): ClipboardContent | null {
+  const lines = samplePitch(state, state.selection.ranges);
+  if (lines.length === 0) return null;
   const ranges = state.selection.ranges;
   const start = Math.min(...ranges.map((range) => range.start));
   const end = Math.max(...ranges.map((range) => range.end));
-  return { kind: 'pitch', points, start, end };
-}
-
-/** A pitch line split where it has a gap longer than {@link LINE_GAP_SECONDS}. */
-function lineRuns(points: readonly PitchPoint[]): PitchPoint[][] {
-  const runs: PitchPoint[][] = [];
-  let current: PitchPoint[] = [];
-  for (const point of points) {
-    const last = current[current.length - 1];
-    if (last !== undefined && point.time - last.time > LINE_GAP_SECONDS) {
-      runs.push(current);
-      current = [];
-    }
-    current.push(point);
-  }
-  if (current.length > 0) runs.push(current);
-  return runs;
+  return { kind: 'pitch', lines, start, end };
 }
 
 /** The part of a line inside a span, with a point placed at each edge it crosses. */
@@ -374,12 +360,12 @@ function anchorsOf(points: readonly PitchPoint[], time: (seconds: number) => num
  */
 export function pastePitchOps(
   state: AppState,
-  points: readonly PitchPoint[],
+  lines: readonly (readonly PitchPoint[])[],
   outside: boolean,
 ): EditOp[] {
   const ops: EditOp[] = [];
   const added: Blob[] = [];
-  for (const run of lineRuns(points)) {
+  for (const run of lines) {
     const first = run[0];
     const last = run[run.length - 1];
     if (first === undefined || last === undefined || run.length < 2) continue;
@@ -449,18 +435,19 @@ export function placePitch(
   content: ClipboardContent,
   target: TimeRange | null,
   playhead: number,
-): PitchPoint[] {
+): PitchPoint[][] {
   if (content.kind !== 'pitch') return [];
   const length = content.end - content.start;
   if (target === null || !(length > 0)) {
-    const shift = playhead - content.start;
-    return content.points.map((point) => ({ time: point.time + shift, midi: point.midi }));
+    return shiftLines(content.lines, playhead - content.start, 0);
   }
   const scale = (target.end - target.start) / length;
-  return content.points.map((point) => ({
-    time: target.start + (point.time - content.start) * scale,
-    midi: point.midi,
-  }));
+  return content.lines.map((line) =>
+    line.map((point) => ({
+      time: target.start + (point.time - content.start) * scale,
+      midi: point.midi,
+    })),
+  );
 }
 
 /**
@@ -477,14 +464,10 @@ export function movePitchOps(
   fill: PitchCutFill,
   outside: boolean,
 ): EditOp[] {
-  const points = samplePitch(state, ranges, outside);
-  if (points.length < 2 || (seconds === 0 && semitones === 0)) return [];
-  const moved = points.map((point) => ({
-    time: point.time + seconds,
-    midi: point.midi + semitones,
-  }));
+  const lines = samplePitch(state, ranges);
+  if (lines.length === 0 || (seconds === 0 && semitones === 0)) return [];
   const ops = seconds === 0 ? [] : cutPitchOps(state, ranges, fill);
-  return [...ops, ...pastePitchOps(state, moved, outside)];
+  return [...ops, ...pastePitchOps(state, shiftLines(lines, seconds, semitones), outside)];
 }
 
 /**
@@ -504,11 +487,13 @@ export function liftRunOps(run: OutsideRun, semitones: number, seconds: number):
   ];
 }
 
-/** A copied line's points moved by a distance, for drawing where a move lands. */
-export function shiftPoints(
-  points: readonly PitchPoint[],
+/** Pitch lines moved by a distance in time and in pitch. */
+export function shiftLines(
+  lines: readonly (readonly PitchPoint[])[],
   seconds: number,
   semitones: number,
-): PitchPoint[] {
-  return points.map((point) => ({ time: point.time + seconds, midi: point.midi + semitones }));
+): PitchPoint[][] {
+  return lines.map((line) =>
+    line.map((point) => ({ time: point.time + seconds, midi: point.midi + semitones })),
+  );
 }

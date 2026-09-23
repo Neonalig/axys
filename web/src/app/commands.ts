@@ -420,7 +420,7 @@ function copyFor(state: AppState): ClipboardContent | null {
     case 'blob':
       return copyBlobs(state);
     case 'pitch':
-      return copyPitch(state, state.outsidePitch);
+      return copyPitch(state);
     default:
       return copyClips(state);
   }

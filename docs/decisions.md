@@ -831,6 +831,25 @@ Decided where the backlog left it open:
 - **A pasted clip carries its edits and analysis.** It is the same audio, so analysing it again
   would only cost time and throw away the edits that were copied.
 
+### Copied pitch is one line per span
+
+Copying took the pitch only where it was sung inside a blob, so a Bezier drawn across three blobs
+came back as three pieces and pasted with holes wherever the copy had crossed a gap or a consonant.
+A copy now takes one line per selected span: what each blob is heard singing, the detected pitch
+outside every blob whether or not it is shown, joined straight across anything unpitched, and held
+level to the span's edges. Pasting lays each line whole, so every blob it lands on takes its part.
+The Pitch-mode moves and the arrow keys read the same line.
+
+Where the stretch between two sung stretches was drawn rather than sung, the straight join is an
+approximation of what was drawn there, since only the part over a blob was ever stored.
+
+### What a mode does not edit is drawn faint
+
+In Pitch mode the blobs and their waveforms are drawn at a third of their strength, and in Blob mode
+the pitch lines and anchors are, so what a drag will not touch reads as out of reach before it is
+tried. Each is faded as a finished picture on a canvas of its own, as the clips behind the layer
+are, because the layers set their own opacities stroke by stroke.
+
 ### Pitch is replaced a span at a time
 
 `ReplacePitch` sets what a blob sounds across a span and leaves the rest of the blob as it sounded.

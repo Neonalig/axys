@@ -127,7 +127,7 @@ describe('editing modes', () => {
     try {
       const state = stateOf(scoped);
       const [source, target] = [state.blobs[0]!, state.blobs[2]!];
-      const copied = copyPitch(selecting(state, source), false);
+      const copied = copyPitch(selecting(state, source));
       expect(copied?.kind).toBe('pitch');
       const range = { start: target.start, end: target.end };
       const points = placePitch(copied!, range, 0);
@@ -136,10 +136,40 @@ describe('editing modes', () => {
       const after = stateOf(scoped);
       const middle = (target.start + target.end) / 2;
       const heard = planTargetMidi(after.plan!, middle);
-      const wanted = samplePitch(state, [{ start: source.start, end: source.end }], false);
+      const wanted = samplePitch(state, [{ start: source.start, end: source.end }]).flat();
       const median = wanted.map((point) => point.midi).sort((a, b) => a - b)[wanted.length >> 1]!;
       expect(heard).not.toBeNull();
       expect(Math.abs(heard! - median)).toBeLessThan(0.5);
+    } finally {
+      scoped.free();
+    }
+  });
+
+  it('copies one unbroken line across blobs and the gaps between them', () => {
+    const scoped = session();
+    try {
+      const state = stateOf(scoped);
+      const [first, last] = [state.blobs[0]!, state.blobs[2]!];
+      const range = { start: first.start - 0.05, end: last.end + 0.05 };
+      const copied = copyPitch({
+        ...state,
+        selection: { blobs: [], anchors: [], ranges: [range] },
+      });
+      expect(copied?.kind).toBe('pitch');
+      if (copied?.kind !== 'pitch') return;
+      expect(copied.lines).toHaveLength(1);
+      const line = copied.lines[0]!;
+      expect(line[0]!.time).toBeCloseTo(range.start, 5);
+      expect(line[line.length - 1]!.time).toBeCloseTo(range.end, 5);
+
+      // Pasted over the whole take, every blob under it takes its part of the one line.
+      const points = placePitch(
+        copied,
+        { start: 0, end: fixture.samples.length / fixture.sampleRate },
+        0,
+      );
+      const ops = pastePitchOps(state, points, false);
+      expect(ops.filter((op) => op.type === 'replacePitch')).toHaveLength(state.blobs.length);
     } finally {
       scoped.free();
     }
