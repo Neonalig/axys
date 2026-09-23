@@ -826,6 +826,8 @@ class AxysWorkspace implements Workspace {
       analyse: (params) => this.#reanalyseClips(clips, params),
       cancel: () => {
         this.#takeBack(clips);
+        // Back asks again, and what the next answer imports starts from nothing.
+        clips.length = 0;
       },
     });
   }
