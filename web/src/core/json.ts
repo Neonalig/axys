@@ -691,13 +691,21 @@ export interface ClipPlan {
   clip: number;
   /** Project seconds at which the clip's output second 0 sits. */
   position: number;
+  /** The clip's first voice. */
   plan: RenderPlan;
+  /** Every further voice, one per set of blobs a timing edit laid over the others. */
+  layers?: RenderPlan[];
 }
 
 /** Accepts one clip's placed plan. */
 export function isClipPlan(value: unknown): value is ClipPlan {
   return (
-    isRecord(value) && isNumber(value.clip) && isNumber(value.position) && isRenderPlan(value.plan)
+    isRecord(value) &&
+    isNumber(value.clip) &&
+    isNumber(value.position) &&
+    isRenderPlan(value.plan) &&
+    (value.layers === undefined ||
+      (Array.isArray(value.layers) && value.layers.every(isRenderPlan)))
   );
 }
 

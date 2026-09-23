@@ -113,7 +113,7 @@ it that overlaps none of the rest, or the active clip alone with `isolate`. `blo
 and `plan()` read that layer; `layer()` names its clips, active first, and `otherBlobs()` holds
 every other clip's blobs. `plan()` is one plan for the layer in project seconds, which the editor
 draws from; with one clip at zero it is that clip's own plan. Playback and export read
-`clipPlans()`, every clip's plan with its position. `track()` is the layer's detected pitch, clips
+`clipPlans()`, every clip's plan with its position and a plan per further voice in `layers`. `track()` is the layer's detected pitch, clips
 joined with an unvoiced frame between them and deleted material unvoiced. `conflicts()` are
 measured inside each clip, across every clip. `proposeMappingsPreview(clips)` maps each listed
 clip to the guide on its own, or every clip when none are listed. `addClip` takes mono samples at the project rate and

@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::PitchTrack;
-use crate::blob::{Blob, BlobSet};
+use crate::blob::{Blob, BlobId, BlobSet};
 use crate::clip::Span;
 use crate::dsp::formant::FormantMode;
 use crate::midi::{GuideMode, GuideSelection, MidiNote, NoteMapping};
@@ -482,6 +482,99 @@ pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan> {
         gain: build_gain(inputs, hop, count),
         formant: inputs.formant,
     })
+}
+
+/// Splits blobs into voices whose edited spans never overlap, in edited start order.
+///
+/// Each blob goes to the first voice whose last blob has ended by the time it starts. With no
+/// two blobs overlapping, this is one voice holding every blob.
+pub fn voice_layers(blobs: &BlobSet) -> Vec<Vec<BlobId>> {
+    let mut order: Vec<&Blob> = blobs.blobs().iter().collect();
+    order.sort_by(|a, b| a.edited_start().total_cmp(&b.edited_start()));
+    let mut voices: Vec<(f64, Vec<BlobId>)> = Vec::new();
+    for blob in order {
+        let start = blob.edited_start();
+        match voices
+            .iter_mut()
+            .find(|(end, _)| *end <= start + VOICE_EPSILON)
+        {
+            Some((end, ids)) => {
+                *end = blob.edited_end();
+                ids.push(blob.id);
+            }
+            None => voices.push((blob.edited_end(), vec![blob.id])),
+        }
+    }
+    if voices.is_empty() {
+        voices.push((0.0, Vec::new()));
+    }
+    voices.into_iter().map(|(_, ids)| ids).collect()
+}
+
+/// Seconds two edited spans may share and still sit in one voice.
+const VOICE_EPSILON: f64 = 1e-9;
+
+/// Compiles a plan per voice of [`voice_layers`], so blobs whose timing edits overlap all sound.
+///
+/// The first voice plays everything but the other voices' blobs, which it leaves silent; every
+/// other voice plays its own blobs and nothing else. With no overlaps this is one plan, the one
+/// [`compile_plan`] makes.
+pub fn compile_voices(inputs: &PlanInputs<'_>) -> Result<Vec<RenderPlan>> {
+    let layers = voice_layers(inputs.blobs);
+    if layers.len() <= 1 {
+        return Ok(vec![compile_plan(inputs)?]);
+    }
+    let span_of = |id: &BlobId| {
+        inputs.blobs.get(*id).map(|blob| Span {
+            start: blob.start,
+            end: blob.end,
+        })
+    };
+    let mut plans = Vec::with_capacity(layers.len());
+    for (index, ids) in layers.iter().enumerate() {
+        let blobs = BlobSet::from_blobs(
+            ids.iter()
+                .filter_map(|id| inputs.blobs.get(*id).cloned())
+                .collect(),
+        )?;
+        let silenced: Vec<Span> = if index == 0 {
+            let mut spans = inputs.silenced.to_vec();
+            spans.extend(layers[1..].iter().flatten().filter_map(span_of));
+            spans
+        } else {
+            let mut own: Vec<Span> = ids.iter().filter_map(span_of).collect();
+            own.sort_by(|a, b| a.start.total_cmp(&b.start));
+            outside(&own, inputs.duration)
+        };
+        plans.push(compile_plan(&PlanInputs {
+            blobs: &blobs,
+            silenced: &silenced,
+            ..*inputs
+        })?);
+    }
+    Ok(plans)
+}
+
+/// The spans of `0..duration` that none of the ordered, disjoint `spans` covers.
+fn outside(spans: &[Span], duration: f64) -> Vec<Span> {
+    let mut gaps = Vec::with_capacity(spans.len() + 1);
+    let mut from = 0.0;
+    for span in spans {
+        if span.start > from {
+            gaps.push(Span {
+                start: from,
+                end: span.start,
+            });
+        }
+        from = from.max(span.end);
+    }
+    if duration > from {
+        gaps.push(Span {
+            start: from,
+            end: duration,
+        });
+    }
+    gaps
 }
 
 /// Rejects inputs that would produce an unbounded or meaningless plan.
@@ -1210,6 +1303,45 @@ mod tests {
         assert!((plan.time_map.source_at(1.25) - 1.0).abs() < 1e-9);
         assert!(plan.time_map.source_at(0.2) < 0.2);
         assert!(plan.pitch_ratio.values.iter().all(|r| *r == 1.0));
+    }
+
+    #[test]
+    fn blobs_that_do_not_overlap_are_one_voice() {
+        let blobs = BlobSet::from_blobs(vec![
+            Blob::new(BlobId(0), 0.0, 1.0, 60.0),
+            Blob::new(BlobId(1), 1.0, 2.0, 62.0),
+        ])
+        .unwrap();
+        assert_eq!(voice_layers(&blobs), vec![vec![BlobId(0), BlobId(1)]]);
+    }
+
+    #[test]
+    fn a_blob_moved_over_another_gets_a_voice_of_its_own() {
+        let mut moved = Blob::new(BlobId(1), 1.0, 2.0, 62.0);
+        moved.time_offset = -0.75;
+        let blobs = BlobSet::from_blobs(vec![
+            Blob::new(BlobId(0), 0.0, 1.0, 60.0),
+            moved,
+            Blob::new(BlobId(2), 2.0, 3.0, 64.0),
+        ])
+        .unwrap();
+        assert_eq!(
+            voice_layers(&blobs),
+            vec![vec![BlobId(0), BlobId(2)], vec![BlobId(1)]]
+        );
+        let track = flat_track(60.0, 3.0);
+        let scale = ScaleSettings::default();
+        let modulation = ModulationSettings::default();
+        let plans = compile_voices(&inputs(&track, &blobs, &scale, &modulation, 3.0)).unwrap();
+        assert_eq!(plans.len(), 2);
+        // The first voice leaves the moved blob's audio out, and the second plays only it.
+        let first = &plans[0].gain;
+        let second = &plans[1].gain;
+        let at = |curve: &SampledCurve, time: f64| curve.values[(time / curve.hop) as usize];
+        assert_eq!(at(first, 1.5), 0.0);
+        assert!(at(first, 0.5) > 0.0);
+        assert!(at(second, 1.5) > 0.0);
+        assert_eq!(at(second, 0.5), 0.0);
     }
 
     #[test]

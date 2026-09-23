@@ -222,10 +222,16 @@ segmentation mistake.
 ### How timing edits treat gaps, overlaps and neighbours
 
 Timing edits are local by default: moving or scaling a blob does not ripple into its neighbours, so
-source duration outside the changed region stays stable. That makes overlaps and gaps possible, and
-`BlobSet::timing_conflicts` reports every one of them. Conflicts are drawn in the editor and listed
-before export rather than being silently resolved. Where blobs overlap, the render plan's time map
-stays monotone by crossfading the contested span, so the output never plays backwards.
+source duration outside the changed region stays stable. That makes overlaps and gaps possible.
+Blobs moved over each other all sound: `compile_voices` splits a clip's blobs into voices whose
+edited spans never overlap and compiles a plan per voice, each with a monotone time map, and the
+worklet and the export render every voice. A gap is reported, drawn as a strip along the top of
+the plot and listed before export, rather than being silently filled.
+
+Rejected: crossfading the contested span of two overlapping blobs through one time map. It
+sounded like neither blob, and an overlap is as deliberate as two clips laid over each other.
+Rejected: a full-height band over every conflict. It turned the whole plot red for a gap a few
+milliseconds wide.
 
 ### How intent sources compose
 
@@ -612,19 +618,19 @@ pitch, a double say, have no pitch to tell them apart; bringing one forward alwa
 
 ### Questions the overlap raised
 
-- A clip overlaps only other clips. Inside a clip, blobs stay one ordered set, as a monophonic take
-  is, and a timing edit that makes two of them overlap is reported as a conflict.
+- A source may overlap itself as well as other sources. Blobs a timing edit lays over each other
+  inside one clip each sound, in a voice of their own, exactly as two clips would.
 - The view is built for a handful of sources at once, a lead with two or three harmonies or
   doubles. Past that, Dim Others or Hide Others keeps the one being edited readable.
 - Moving a clip past another no longer reorders them. Nothing orders clips any more, so a clip
   simply goes where it is put. An `addClip` or `moveClip` recorded before `exact` existed still
   replays with the old rule, so a history keeps meaning what it did.
 
-### Conflicts are reported per clip
+### Only gaps are reported, per clip
 
-Timing conflicts and gaps are measured inside each clip. Two clips sounding at once is the point
-of overlapping them, not a problem to flag. A single-lane project that moved a clip's last blob
-into the next clip no longer reports that as an overlap.
+Gaps timing edits open are measured inside each clip. Blobs sounding at once, of one clip or of
+two, are the point of overlapping them, not a problem to flag. A single-lane project that moved a
+clip's last blob into the next clip no longer reports that as an overlap.
 
 ### A clip keeps its own time, and the lane adds its position
 

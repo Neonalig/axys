@@ -884,7 +884,7 @@ export class AppShell {
     this.#statusPhase = statusItem(footer, 'State');
     this.#statusPosition = statusItem(footer, 'Position').value;
     this.#statusSelection = statusItem(footer, 'Selection').value;
-    this.#statusConflicts = statusItem(footer, 'Conflicts');
+    this.#statusConflicts = statusItem(footer, 'Gaps');
     this.#statusPlayback = statusItem(footer, 'Playback');
 
     const progress = new ProgressBar('Analysis Progress');

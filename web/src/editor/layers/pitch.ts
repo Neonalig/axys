@@ -166,16 +166,19 @@ export function drawPitch(
   if (state.track === null) {
     return;
   }
-  const columns = collect(warpedTrack(state.track, state.blobs), viewport);
-
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
 
-  drawUnvoiced(ctx, columns, viewport, theme);
-  drawUncertainty(ctx, columns, viewport, theme);
-  drawDetected(ctx, columns, viewport, theme);
+  // One pass per voice, so blobs moved over each other draw two lines rather than one column
+  // spanning both.
+  for (const track of warpedTracks(state.track, state.blobs)) {
+    const columns = collect(track, viewport);
+    drawUnvoiced(ctx, columns, viewport, theme);
+    drawUncertainty(ctx, columns, viewport, theme);
+    drawDetected(ctx, columns, viewport, theme);
+  }
   drawTarget(ctx, state, viewport, theme);
   drawAnchors(ctx, state, viewport, theme);
 
@@ -183,40 +186,69 @@ export function drawPitch(
 }
 
 /**
- * A track with every frame inside a blob moved to where that blob's timing edit puts it.
+ * The track with every frame inside a blob moved to where that blob's timing edit puts it, split
+ * into voices whose blobs never overlap.
  *
  * @remarks The detected line then moves and stretches with its blob, as the waveform and the
- * target already do. Frames outside every blob stay where they were sung. Kept per track and
- * blob list, which every edit replaces.
+ * target already do. Frames outside every blob stay where they were sung, in the first voice.
+ * Blobs go to voices as the core splits them for playback: each to the first voice whose last
+ * blob has ended. Kept per track and blob list, which every edit replaces.
  */
-function warpedTrack(track: PitchTrackArrays, blobs: readonly Blob[]): PitchTrackArrays {
+function warpedTracks(track: PitchTrackArrays, blobs: readonly Blob[]): PitchTrackArrays[] {
   const known = WARPED.get(track);
   if (known !== undefined && known.blobs === blobs) {
     return known.warped;
   }
-  const edited = blobs.filter((blob) => blob.timeOffset !== 0 || blob.timeScale !== 1);
-  let warped = track;
-  if (edited.length > 0) {
+  let warped = [track];
+  if (blobs.some((blob) => blob.timeOffset !== 0 || blob.timeScale !== 1)) {
+    const voiceOf = voicesOf(blobs);
+    const count = Math.max(1, ...voiceOf.values()) + 1;
+    const members: number[][] = Array.from({ length: count }, () => []);
     const times = new Float32Array(track.times);
     let next = 0;
     for (let i = 0; i < times.length; i += 1) {
       const time = track.times[i] ?? 0;
-      while (next < edited.length && (edited[next]?.end ?? 0) < time) next += 1;
-      const blob = edited[next];
-      if (blob !== undefined && time >= blob.start) {
-        times[i] = sourceToOutput(blob, time);
-      }
+      while (next < blobs.length && (blobs[next]?.end ?? 0) < time) next += 1;
+      const blob = blobs[next];
+      const inside = blob !== undefined && time >= blob.start;
+      if (inside) times[i] = sourceToOutput(blob, time);
+      members[inside ? (voiceOf.get(blob.id) ?? 0) : 0]?.push(i);
     }
-    warped = { ...track, times };
+    warped = members
+      .filter((indices) => indices.length > 0)
+      .map((indices) => ({
+        times: Float32Array.from(indices, (i) => times[i] ?? 0),
+        midi: Float32Array.from(indices, (i) => track.midi[i] ?? Number.NaN),
+        confidence: Float32Array.from(indices, (i) => track.confidence[i] ?? 0),
+        rms: Float32Array.from(indices, (i) => track.rms[i] ?? 0),
+      }));
   }
   WARPED.set(track, { blobs, warped });
   return warped;
 }
 
-/** Each track's warped copy, and the blob list it was warped by. */
+/** Each blob's voice: the first whose last blob has ended by the edited start of this one. */
+function voicesOf(blobs: readonly Blob[]): Map<number, number> {
+  const order = [...blobs].sort((a, b) => blobOutputStart(a) - blobOutputStart(b));
+  const ends: number[] = [];
+  const voices = new Map<number, number>();
+  for (const blob of order) {
+    const start = blobOutputStart(blob);
+    let voice = ends.findIndex((end) => end <= start + 1e-9);
+    if (voice === -1) {
+      voice = ends.length;
+      ends.push(0);
+    }
+    ends[voice] = blobOutputEnd(blob);
+    voices.set(blob.id, voice);
+  }
+  return voices;
+}
+
+/** Each track's warped voices, and the blob list they were warped by. */
 const WARPED = new WeakMap<
   PitchTrackArrays,
-  { blobs: readonly Blob[]; warped: PitchTrackArrays }
+  { blobs: readonly Blob[]; warped: PitchTrackArrays[] }
 >();
 
 function drawUnvoiced(

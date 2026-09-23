@@ -333,7 +333,7 @@ pub struct Reference {
 
 Clips may overlap. The blobs of a `layer`, taken together in project seconds, are always one valid
 `BlobSet`; `EditState::layer_blobs` builds it, `EditState::all_blobs` lists every clip's blobs,
-and `EditState::conflicts` measures timing conflicts inside each clip. `free_position` and
+and `EditState::conflicts` lists the gaps timing edits opened inside each clip. `free_position` and
 `ripple_insert` place a clip that is not `exact`, which only operations recorded before `exact`
 existed still do. `Blob::shifted` and `PitchCurve::shifted` move a blob and its anchors between
 the two time domains.
@@ -881,6 +881,13 @@ pub struct GuideInputs<'a> {
 /// and MIDI guidance for that blob. Blob timing offsets and scales, plus MIDI timing guidance,
 /// build the time map.
 pub fn compile_plan(inputs: &PlanInputs<'_>) -> Result<RenderPlan>;
+
+/// Splits blobs into voices whose edited spans never overlap, in edited start order.
+pub fn voice_layers(blobs: &BlobSet) -> Vec<Vec<BlobId>>;
+
+/// A plan per voice of `voice_layers`: the first plays everything but the other voices' blobs,
+/// every other plays its own blobs alone. One plan, `compile_plan`'s, with no overlaps.
+pub fn compile_voices(inputs: &PlanInputs<'_>) -> Result<Vec<RenderPlan>>;
 
 /// Splits a detected contour into slow drift and fast vibrato about `split_hz`.
 ///

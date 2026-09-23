@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::f0::{F0Params, PitchTrack};
 use crate::analysis::segment::SegmentParams;
-use crate::blob::{Blob, BlobId, BlobSet, TimingConflict};
+use crate::blob::{Blob, BlobId, BlobSet, ConflictKind, TimingConflict};
 use crate::clip::{clip_of, Clip, ClipId, Reference, ReferenceId};
 use crate::dsp::formant::FormantMode;
 use crate::edit::History;
@@ -175,15 +175,18 @@ impl EditState {
         blobs
     }
 
-    /// Overlaps and gaps timing edits produced, in project seconds, each within one clip.
+    /// Gaps timing edits opened between neighbouring blobs, in project seconds, each within one
+    /// clip.
     ///
-    /// Two clips sounding at once is not a conflict.
+    /// Blobs sounding at once, of one clip or of two, are not a conflict: each overlapping blob
+    /// sounds in a voice of its own.
     pub fn conflicts(&self) -> Vec<TimingConflict> {
         let mut conflicts: Vec<TimingConflict> = self
             .clips
             .iter()
             .flat_map(|clip| {
                 let mut conflicts = clip.blobs.timing_conflicts();
+                conflicts.retain(|conflict| conflict.kind == ConflictKind::Gap);
                 for conflict in &mut conflicts {
                     conflict.start += clip.position;
                     conflict.end += clip.position;

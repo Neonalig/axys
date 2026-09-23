@@ -258,7 +258,7 @@ export function blobPitchExtent(
 }
 
 /**
- * Draws blob bodies, centres, boundary handles and timing conflicts.
+ * Draws blob bodies, centres, boundary handles and the gaps timing edits opened.
  *
  * @remarks Blobs are drawn at their edited positions, so a timing edit moves the body, and the
  * pitch layer moves the detected line with it.
@@ -564,6 +564,15 @@ function measureFit(ctx: CanvasRenderingContext2D, text: string, width: number):
   return low > 0 ? `${text.slice(0, low)}...` : '';
 }
 
+/** Height in pixels of the strip along the top of the plot that marks a gap. */
+export const CONFLICT_STRIP = 4;
+
+/**
+ * Marks a gap a timing edit opened, as a strip along the top of the plot over its span.
+ *
+ * @remarks A strip rather than a band down the whole plot: a gap is worth knowing about, not
+ * worth covering the pitch field for.
+ */
 function drawConflict(
   ctx: CanvasRenderingContext2D,
   viewport: Viewport,
@@ -575,32 +584,9 @@ function drawConflict(
   if (x1 < 0 || x0 > viewport.width) {
     return;
   }
-  const width = Math.max(2, x1 - x0);
   ctx.save();
-  ctx.globalAlpha = 0.22;
+  ctx.globalAlpha = 0.8;
   ctx.fillStyle = theme.conflict;
-  ctx.fillRect(x0, viewport.plotTop, width, viewport.plotHeight);
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = theme.conflict;
-  ctx.lineWidth = viewport.crispWidth();
-  if (conflict.kind === 'gap') {
-    ctx.setLineDash([4, 4]);
-  }
-  ctx.beginPath();
-  ctx.moveTo(viewport.crisp(x0), viewport.plotTop);
-  ctx.lineTo(viewport.crisp(x0), viewport.height);
-  ctx.moveTo(viewport.crisp(x0 + width), viewport.plotTop);
-  ctx.lineTo(viewport.crisp(x0 + width), viewport.height);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  ctx.fillStyle = theme.conflict;
-  ctx.beginPath();
-  const tip = viewport.plotTop + 4;
-  ctx.moveTo(x0 + width / 2, tip + 8);
-  ctx.lineTo(x0 + width / 2 - 5, tip);
-  ctx.lineTo(x0 + width / 2 + 5, tip);
-  ctx.closePath();
-  ctx.fill();
+  ctx.fillRect(x0, viewport.plotTop, Math.max(2, x1 - x0), CONFLICT_STRIP);
   ctx.restore();
 }

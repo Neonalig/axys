@@ -32,7 +32,9 @@ use axys_core::project::{
     AnalysisInfo, ClipMedia, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION,
 };
 use axys_core::render::{Quality, Renderer};
-use axys_core::target::{compile_plan, GuideInputs, PlanInputs, RenderPlan, SampledCurve, TimeMap};
+use axys_core::target::{
+    compile_voices, GuideInputs, PlanInputs, RenderPlan, SampledCurve, TimeMap,
+};
 use axys_core::timeline::TimelineMap;
 use axys_core::AxysError;
 
@@ -501,12 +503,24 @@ struct ClipRuntime {
     needs_track: bool,
     /// The segmentation analysis produced, numbered for the clip.
     analysed: BlobSet,
+    /// What the editor draws the clip from: its first voice, with every voice's pitch on it.
     plan: RenderPlan,
-    /// Built on first use and kept, because its epoch map costs a pass over the whole source.
-    renderer: Option<Renderer>,
+    /// A plan per voice, so blobs whose timing edits overlap all sound. Usually one.
+    voices: Vec<RenderPlan>,
+    /// A renderer per voice, built on first use and kept, because its epoch map costs a pass over
+    /// the whole source.
+    renderers: Vec<Renderer>,
 }
 
 impl ClipRuntime {
+    /// Output seconds the clip's longest voice lasts.
+    fn output_duration(&self) -> f64 {
+        self.voices
+            .iter()
+            .map(|plan| plan.time_map.output_duration())
+            .fold(0.0, f64::max)
+    }
+
     fn media(&self) -> ClipMedia {
         ClipMedia {
             clip: self.id,
@@ -544,7 +558,10 @@ struct ClipPlan<'a> {
     clip: ClipId,
     /// Project seconds at which the clip's output second 0 sits.
     position: f64,
+    /// The clip's first voice.
     plan: &'a RenderPlan,
+    /// Every further voice, one for each set of blobs a timing edit laid over the others.
+    layers: &'a [RenderPlan],
 }
 
 /// Audio a project needs from the device to open fully.
@@ -680,7 +697,8 @@ impl Session {
                 needs_track: false,
                 analysed,
                 plan: RenderPlan::passthrough(sample_rate, duration),
-                renderer: None,
+                voices: vec![RenderPlan::passthrough(sample_rate, duration)],
+                renderers: Vec::new(),
             }],
             references: Vec::new(),
             base: state.clone(),
@@ -735,7 +753,8 @@ impl Session {
                     }),
                     analysed: media.blobs.clone(),
                     plan: RenderPlan::passthrough(sample_rate, duration),
-                    renderer: None,
+                    voices: vec![RenderPlan::passthrough(sample_rate, duration)],
+                    renderers: Vec::new(),
                 }
             })
             .collect();
@@ -781,7 +800,7 @@ impl Session {
             runtime.needs_track = false;
         }
         runtime.samples = Some(samples);
-        runtime.renderer = None;
+        runtime.renderers.clear();
         self.recompile()
     }
 
@@ -824,7 +843,8 @@ impl Session {
             needs_track: false,
             analysed: analysed.clone(),
             plan: RenderPlan::passthrough(self.sample_rate, duration),
-            renderer: None,
+            voices: vec![RenderPlan::passthrough(self.sample_rate, duration)],
+            renderers: Vec::new(),
         });
         let op = EditOp::AddClip {
             clip: Clip::new(id, source, position, analysed),
@@ -936,9 +956,14 @@ impl Session {
                 guide,
                 hop: self.plan_hop,
             };
-            runtime.plan = compile_plan(&inputs).map_err(to_js)?;
-            if let Some(renderer) = runtime.renderer.as_mut() {
-                renderer.set_plan(runtime.plan.clone());
+            runtime.voices = compile_voices(&inputs).map_err(to_js)?;
+            runtime.plan = drawing_plan(&runtime.voices);
+            if runtime.renderers.len() == runtime.voices.len() {
+                for (renderer, plan) in runtime.renderers.iter_mut().zip(&runtime.voices) {
+                    renderer.set_plan(plan.clone());
+                }
+            } else {
+                runtime.renderers.clear();
             }
         }
         Ok(())
@@ -1070,7 +1095,8 @@ impl Session {
             .map(|(clip, runtime)| ClipPlan {
                 clip: clip.id,
                 position: clip.position,
-                plan: &runtime.plan,
+                plan: &runtime.voices[0],
+                layers: &runtime.voices[1..],
             })
             .collect();
         dump(&plans)
@@ -1161,7 +1187,7 @@ impl Session {
     /// Project seconds at which the last clip's output ends.
     fn output_seconds(&self) -> f64 {
         self.lane()
-            .map(|(clip, runtime)| clip.position + runtime.plan.time_map.output_duration())
+            .map(|(clip, runtime)| clip.position + runtime.output_duration())
             .fold(0.0, f64::max)
     }
 
@@ -1551,27 +1577,35 @@ impl Session {
             let Some(samples) = runtime.samples.as_ref() else {
                 continue;
             };
-            let length = runtime.plan.time_map.output_duration();
-            let local_from = (from - position).max(0.0);
-            let local_to = (to - position).min(length);
-            if local_to <= local_from {
-                continue;
+            if runtime.renderers.len() != runtime.voices.len() {
+                runtime.renderers = runtime
+                    .voices
+                    .iter()
+                    .map(|plan| {
+                        Renderer::new(
+                            samples.clone(),
+                            &runtime.track,
+                            plan.clone(),
+                            Quality::Offline,
+                        )
+                    })
+                    .collect();
             }
-            let renderer = runtime.renderer.get_or_insert_with(|| {
-                Renderer::new(
-                    samples.clone(),
-                    &runtime.track,
-                    runtime.plan.clone(),
-                    Quality::Offline,
-                )
-            });
-            let rendered = renderer.render_all(Some((local_from, local_to)));
-            let offset = ((position + local_from) * rate).round() as i64 - first;
-            for (index, sample) in rendered.iter().enumerate() {
-                let at = offset + index as i64;
-                if at >= 0 {
-                    if let Some(slot) = out.get_mut(at as usize) {
-                        *slot += *sample;
+            for (renderer, plan) in runtime.renderers.iter_mut().zip(&runtime.voices) {
+                let length = plan.time_map.output_duration();
+                let local_from = (from - position).max(0.0);
+                let local_to = (to - position).min(length);
+                if local_to <= local_from {
+                    continue;
+                }
+                let rendered = renderer.render_all(Some((local_from, local_to)));
+                let offset = ((position + local_from) * rate).round() as i64 - first;
+                for (index, sample) in rendered.iter().enumerate() {
+                    let at = offset + index as i64;
+                    if at >= 0 {
+                        if let Some(slot) = out.get_mut(at as usize) {
+                            *slot += *sample;
+                        }
                     }
                 }
             }
@@ -1679,7 +1713,12 @@ impl Session {
         let placements: Vec<(f64, &RenderPlan, f64)> = self
             .lane()
             .filter(|(_, runtime)| runtime.samples.is_some())
-            .map(|(clip, runtime)| (clip.position, &runtime.plan, runtime.source.duration))
+            .flat_map(|(clip, runtime)| {
+                runtime
+                    .voices
+                    .iter()
+                    .map(move |plan| (clip.position, plan, runtime.source.duration))
+            })
             .collect();
         let heard: Vec<(f64, f64)> = if with_references {
             self.export_references()
@@ -1792,6 +1831,37 @@ fn merge_reports(reports: Vec<MappingReport>, notes: usize) -> MappingReport {
     merged.unmapped_notes = (0..notes).filter(|note| unmapped[*note]).collect();
     merged.multiply_mapped_notes.sort_unstable();
     merged
+}
+
+/// A clip's first voice with every other voice's pitch laid over it, for the editor to draw.
+///
+/// Voices hold disjoint blobs, so each sample of pitch belongs to at most one of them.
+fn drawing_plan(voices: &[RenderPlan]) -> RenderPlan {
+    let mut plan = voices[0].clone();
+    for voice in &voices[1..] {
+        overlay(&mut plan.pitch_ratio, &voice.pitch_ratio, 1.0);
+        overlay(&mut plan.target_midi, &voice.target_midi, 0.0);
+    }
+    plan
+}
+
+/// Copies every sample of `other` that is not `neutral` onto `base`, on the same grid.
+fn overlay(base: &mut SampledCurve, other: &SampledCurve, neutral: f32) {
+    if other.values.iter().all(|value| *value == neutral) {
+        return;
+    }
+    if base.values.len() < other.values.len() {
+        *base = SampledCurve {
+            start: other.start,
+            hop: other.hop,
+            values: vec![neutral; other.values.len()],
+        };
+    }
+    for (slot, value) in base.values.iter_mut().zip(&other.values) {
+        if *value != neutral {
+            *slot = *value;
+        }
+    }
 }
 
 /// Facts recorded about mono PCM at import.

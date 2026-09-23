@@ -157,6 +157,7 @@ export class AudioEngine {
         samples: buffer,
         track: this.#encoder.encode(trackJson),
         plan: this.#encoder.encode(JSON.stringify(plan)),
+        layers: (placed?.layers ?? []).map((layer) => this.#encoder.encode(JSON.stringify(layer))),
         position: placed?.position ?? 0,
       },
       [buffer],
@@ -229,6 +230,7 @@ export class AudioEngine {
       clip: placed.clip,
       position: placed.position,
       plan: this.#encoder.encode(JSON.stringify(placed.plan)),
+      layers: (placed.layers ?? []).map((layer) => this.#encoder.encode(JSON.stringify(layer))),
     }));
     this.#send({ type: 'plans', plans: placements });
     if (this.#metronome) this.#sendClicks();

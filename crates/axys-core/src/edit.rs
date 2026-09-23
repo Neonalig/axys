@@ -3182,6 +3182,17 @@ mod tests {
             },
         )
         .unwrap();
+        // Blob 1 now overlaps blob 2, which is allowed.
+        assert!(s.conflicts().is_empty());
+        apply(
+            &mut s,
+            None,
+            &EditOp::MoveTime {
+                blobs: vec![BlobId(1)],
+                seconds: -1.0,
+            },
+        )
+        .unwrap();
         let conflicts = s.conflicts();
         assert!(!conflicts.is_empty());
         assert!(conflicts.iter().all(|c| clip_of(c.first) == ClipId(0)));

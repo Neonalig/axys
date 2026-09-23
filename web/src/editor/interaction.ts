@@ -17,6 +17,7 @@ import {
   blobOutputEnd,
   blobOutputStart,
   blobPitchExtent,
+  CONFLICT_STRIP,
   outputToSource,
   sourceToOutput,
   titleRect,
@@ -327,9 +328,9 @@ export class EditorController {
       return { ...base, kind: 'blob', blob: blob.id, sourceTime };
     }
 
-    // Reported only where no blob covers the position, so the red band explains itself without
-    // taking a hover away from the blobs whose timing produced it.
-    for (const conflict of state.conflicts) {
+    // Reported only over its strip along the top of the plot, where no blob covers it.
+    const onStrip = y <= viewport.plotTop + CONFLICT_STRIP + EDGE_GRIP;
+    for (const conflict of onStrip ? state.conflicts : []) {
       if (time >= conflict.start && time <= conflict.end) {
         return { ...base, kind: 'conflict', conflict };
       }

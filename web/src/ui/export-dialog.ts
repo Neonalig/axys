@@ -200,7 +200,7 @@ function describe(panel: HTMLElement, preview: ExportPreview | null, choice: Exp
   if (preview.conflicts > 0) {
     panel.append(
       warning(
-        `${String(preview.conflicts)} timing conflicts overlap this range and may be audible.`,
+        `${String(preview.conflicts)} ${preview.conflicts === 1 ? 'gap' : 'gaps'} from timing edits fall in this range and may be audible.`,
       ),
     );
   }
