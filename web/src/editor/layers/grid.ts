@@ -6,6 +6,7 @@ import type { AccidentalStyle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
+import { labelBaseline } from './label.js';
 
 /**
  * Draws the pitch rows, octave emphasis, note labels and cents guides.
@@ -125,7 +126,7 @@ export function drawPitchLabels(
 
   ctx.font = '12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
   ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
+  ctx.textBaseline = 'alphabetic';
   for (let midi = low; midi <= high; midi += 1) {
     const isOctave = pitchClass(midi) === 0;
     if (!everySemitone && !isOctave) {
@@ -136,7 +137,11 @@ export function drawPitchLabels(
       continue;
     }
     ctx.fillStyle = isOctave ? theme.text : theme.gridLabel;
-    ctx.fillText(noteName(midi, style), PITCH_LABEL_GUTTER - 8, y);
+    ctx.fillText(
+      noteName(midi, style),
+      PITCH_LABEL_GUTTER - 8,
+      labelBaseline(ctx, y, y, viewport.ratio),
+    );
   }
   ctx.restore();
 }

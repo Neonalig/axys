@@ -10,6 +10,7 @@ import { detectedAt } from './pitch.js';
 import { stretchHandlesShown } from '../tools.js';
 import { chipWidth, drawChip, READOUT_FONT } from './readout.js';
 import { formatBarBeat, formatClock } from './ruler.js';
+import { labelBaseline } from './label.js';
 
 /** Width in pixels of the grips on the loop range edges. */
 const LOOP_GRIP = 7;
@@ -216,10 +217,11 @@ function drawHoverKeyLabel(
   const midi = Math.round(viewport.yToMidi(y));
   const text = noteName(midi, state.edits?.accidentals ?? 'sharps');
   ctx.font = READOUT_FONT;
-  ctx.textBaseline = 'middle';
+  ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.text;
-  ctx.fillText(text, 4, viewport.midiToY(midi));
+  const row = viewport.midiToY(midi);
+  ctx.fillText(text, 4, labelBaseline(ctx, row, row, viewport.ratio));
 }
 
 function drawPlayhead(
