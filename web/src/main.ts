@@ -1634,7 +1634,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
  * @remarks Drawn with the splash's own inline styles, since a failed load may have fetched no
  * stylesheet. A failed fetch is named as the connection it is, with the browser's text under it.
  */
-function showFailure(mount: HTMLElement, error: unknown): void {
+function showFailure(mount: HTMLElement, error: unknown, part = 'audio core'): void {
   mount.textContent = '';
   const section = document.createElement('section');
   section.className = 'axys-failure';
@@ -1646,9 +1646,9 @@ function showFailure(mount: HTMLElement, error: unknown): void {
   heading.textContent = 'Load Failed';
   const lead = document.createElement('p');
   lead.textContent =
-    error instanceof TypeError || (error instanceof Error && error.cause instanceof TypeError)
-      ? 'Axys could not download its audio core. Check the connection, then reload.'
-      : 'Axys could not start its audio core.';
+    lostConnection(error) || (error instanceof Error && lostConnection(error.cause))
+      ? `Axys could not download its ${part}. Check the connection, then reload.`
+      : `Axys could not start its ${part}.`;
   const detail = document.createElement('p');
   detail.className = 'axys-failure-detail';
   detail.textContent = describe(error);
@@ -1660,6 +1660,19 @@ function showFailure(mount: HTMLElement, error: unknown): void {
   });
   section.append(mark, heading, lead, detail, retry);
   mount.append(section);
+}
+
+/**
+ * Whether an error is a download that never arrived.
+ *
+ * @remarks A failed `fetch` is a `TypeError`, and a worklet module that would not load is an
+ * `AbortError` or `NetworkError` `DOMException`.
+ */
+function lostConnection(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  return (
+    error instanceof DOMException && (error.name === 'AbortError' || error.name === 'NetworkError')
+  );
 }
 
 /** Tells the user once, on first run, which optional capabilities are missing here. */
@@ -1946,6 +1959,14 @@ async function start(): Promise<void> {
   let context: CommandContext | null = null;
 
   const audio = await AudioEngine.create(store);
+  // Nothing plays without the core and the renderer, so a download lost during the first load is
+  // the failure screen rather than an editor that cannot play.
+  if (audio.loadError !== null) {
+    audio.dispose();
+    dismissSplash();
+    showFailure(mount, audio.loadError, 'audio engine');
+    return;
+  }
   const projectsPromise = openStore(ProjectStore.open());
   const mediaPromise = openStore(MediaStore.open());
 
@@ -2050,25 +2071,38 @@ async function start(): Promise<void> {
   workspace.onPending = (clip) => {
     editor.showPending(clip);
   };
-  window.addEventListener(
-    'pagehide',
-    () => {
-      window.removeEventListener('beforeunload', onUnload);
-      releaseShortcuts();
-      releaseDrop();
-      releaseStore();
-      releaseEngine();
-      releaseOffline();
-      releaseSystemTheme();
-      stopPlayhead();
-      open.dispose();
-      editor.dispose();
-      renderer?.dispose();
-      audio.dispose();
-      shell.dispose();
-    },
-    { once: true },
-  );
+  let tornDown = false;
+  let releaseLoadWatch = (): void => {};
+  const teardown = (): void => {
+    if (tornDown) return;
+    tornDown = true;
+    window.removeEventListener('beforeunload', onUnload);
+    releaseLoadWatch();
+    releaseShortcuts();
+    releaseDrop();
+    releaseStore();
+    releaseEngine();
+    releaseOffline();
+    releaseSystemTheme();
+    stopPlayhead();
+    open.dispose();
+    editor.dispose();
+    renderer?.dispose();
+    audio.dispose();
+    shell.dispose();
+  };
+  window.addEventListener('pagehide', teardown, { once: true });
+  // The renderer module is added when the first project opens, so a download lost then ends the
+  // session the same way. The project is written to its recovery copy first, so a reload keeps it.
+  releaseLoadWatch = audio.subscribe(() => {
+    const error = audio.loadError;
+    if (error === null || tornDown) return;
+    open.flush();
+    queueMicrotask(() => {
+      teardown();
+      showFailure(mount, error, 'audio engine');
+    });
+  });
 
   await restoreLastProject(workspace, projects, toast);
   noteDegradedCapabilities(caps, toast);

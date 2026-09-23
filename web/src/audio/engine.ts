@@ -74,6 +74,7 @@ export class AudioEngine {
   #message: string | null = null;
   #underruns = 0;
   #meters: MeterReport | null = null;
+  #loadError: unknown = null;
   #listeners = new Set<(report: EngineReport) => void>();
 
   #encoder = new TextEncoder();
@@ -382,6 +383,16 @@ export class AudioEngine {
   }
 
   /**
+   * Why the core or the renderer module could not be fetched, or `null` when both arrived.
+   *
+   * @remarks Set when a download fails, which on a static host is a dropped connection rather
+   * than a fault a reload would repeat.
+   */
+  get loadError(): unknown {
+    return this.#loadError;
+  }
+
+  /**
    * Each strip's loudest recent sample after its fader, or `null` before the renderer reports.
    *
    * @remarks Refreshed about twenty times a second while the transport runs.
@@ -428,14 +439,20 @@ export class AudioEngine {
    * @remarks The bytes, not a compiled `WebAssembly.Module`, are what cross to the
    * worklet. A worklet is a separate agent cluster, and a module posted across one is
    * dropped with no error on either side, which silences playback without a diagnostic.
+   * The renderer module is fetched here as well, though it is only added once a project opens,
+   * so a connection lost during the first load is found at startup and the later add reads the
+   * cached copy.
    */
   async #compile(): Promise<void> {
     const url = wasmModuleUrl();
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`${String(response.status)} ${response.statusText}`);
-      this.#coreBytes = await response.arrayBuffer();
+      const [core, renderer] = await Promise.all([fetch(url), fetch(workletUrl)]);
+      for (const response of [core, renderer]) {
+        if (!response.ok) throw new Error(`${String(response.status)} ${response.statusText}`);
+      }
+      this.#coreBytes = await core.arrayBuffer();
     } catch (thrown) {
+      this.#loadError = thrown;
       this.#publish('failed', `Playback is unavailable: ${messageOf(thrown)}`);
     }
   }
@@ -460,6 +477,7 @@ export class AudioEngine {
       await context.audioWorklet.addModule(workletUrl);
     } catch (thrown) {
       void context.close();
+      this.#loadError = thrown;
       this.#publish('failed', `The audio renderer did not load: ${messageOf(thrown)}`);
       return null;
     }
