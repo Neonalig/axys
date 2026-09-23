@@ -151,6 +151,14 @@
   flex: 0 0 auto;
 }
 
+/* A readout sits close under the slider it reads, so it reads as that slider's rather than as
+   something between two controls */
+
+.axys-mixer-pan-readout,
+.axys-mixer-level {
+  margin-top: -4px;
+}
+
 .axys-mixer-name {
   overflow: hidden;
   max-width: 100%;
