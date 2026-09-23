@@ -575,24 +575,53 @@ playing and set it, and a second way to say it is a second thing to keep in step
 
 ## Multiple sources
 
-### Clips on one lane, never overlapping
+### Clips overlap, and the editor edits one layer of them
 
 A project holds several vocal clips, each one imported file with its own analysis, blobs and
-plan, placed at a position on the one editable lane. The design bible keeps one monophonic vocal
-lane, so clips do not overlap: a clip dropped or dragged over another lands against the nearer
-edge of the clip it would have covered, and the preview shows where before the pointer is let go.
-Reordering is dragging a clip past its neighbour into the gap beyond it. A vocal dropped in from
-outside is inserted where it was let go instead, or at the nearer edge of the clip under it, and
-every clip after it moves later by the overlap: landing it at the nearest free gap put it wherever
-the lane had room, which could be well past the end.
+plan, placed at a position on the timeline. Clips may overlap, a lead under its harmonies or a
+double on top of a take, and each keeps its own blobs, pitch, timing and correction. A clip
+dropped or dragged lands exactly where it was let go: nothing snaps to another clip's edge and
+nothing is pushed along. Stems dropped together all land at the drop time, so they line up.
 
-That rule is what keeps the editor unchanged underneath. The lane's blobs, taken together in
-project seconds, are always one valid ordered set, so selection, snapping, conflicts and MIDI
-mapping read one list rather than a list per clip.
+The editor still reads one ordered, non-overlapping set of blobs, because every time-domain
+question it asks, which blob is under the pointer, what a span covers, where the playhead sits in
+source time, assumes one. That set is now a layer: the active clip, and every clip that sits
+beside it without overlapping, chosen in the order the project holds them
+(`axys_core::clip::layer`). Selection, snapping, the lane plan, the drawn track and the playhead
+all read the layer. A project whose clips never overlap has every clip in its layer, so it edits
+exactly as it did.
 
-Rejected: overlapping clips summed together. Every time-domain question the editor asks, which
-blob is under the pointer, what a span covers, where the playhead sits in source time, would have
-needed a clip to answer it.
+Every clip outside the layer is drawn behind it, faded, in its own colour. A click on one brings
+its clip forward, which rebuilds the layer around it; a click that lands on the layer acts on the
+layer, so dragging one source never disturbs the one it overlaps. Focus is also reached by the
+Sources menu, by `[` and `]`, and by clicking a clip's track on the desk. Dim Others and Hide
+Others, cycled with `\`, edit the active clip alone with the rest faint or gone.
+
+Which clip is in front and how the others show are view state, saved with the project and never
+undone.
+
+Rejected: a lane per source, stacked vertically. The pitch axis is the vertical axis, so a second
+lane either halves the pitch range or needs a second plot, and a harmony a third above its lead is
+exactly what should be read against it.
+
+Rejected: letting a click pick among overlapping blobs by pitch. Two sources at the same time and
+pitch, a double say, have no pitch to tell them apart; bringing one forward always does.
+
+### Questions the overlap raised
+
+- A clip overlaps only other clips. Inside a clip, blobs stay one ordered set, as a monophonic take
+  is, and a timing edit that makes two of them overlap is reported as a conflict.
+- The view is built for a handful of sources at once, a lead with two or three harmonies or
+  doubles. Past that, Dim Others or Hide Others keeps the one being edited readable.
+- Moving a clip past another no longer reorders them. Nothing orders clips any more, so a clip
+  simply goes where it is put. An `addClip` or `moveClip` recorded before `exact` existed still
+  replays with the old rule, so a history keeps meaning what it did.
+
+### Conflicts are reported per clip
+
+Timing conflicts and gaps are measured inside each clip. Two clips sounding at once is the point
+of overlapping them, not a problem to flag. A single-lane project that moved a clip's last blob
+into the next clip no longer reports that as an overlap.
 
 ### A clip keeps its own time, and the lane adds its position
 
@@ -604,6 +633,15 @@ owning clip's before it is applied, so every existing operation kept its shape.
 Blob ids are partitioned by clip, twenty low bits each, so a blob id alone names its clip and no
 operation needed a clip field. The first clip's ids are the ids a single-source project always
 had, which is what made the migration a rename.
+
+### Operations say which sources they change
+
+Correction and Align Guide tick the sources they change, starting from those holding the
+selection, or every source with nothing selected. Correction leaves an unticked source out by
+excluding its blobs, the same way it already confined itself to a selection. Align Guide maps
+each ticked source to the guide on its own, so a double follows the same notes as its lead, and
+every other source keeps its mappings. Voice Character is compiled over every take and says so,
+naming them. A project with one source shows none of this.
 
 ### Importing a second source is an edit
 

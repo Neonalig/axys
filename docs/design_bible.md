@@ -142,7 +142,7 @@ These are valuable extensions but must not complicate the central note-and-curve
 
 | Capability | Requirement |
 | --- | --- |
-| Multiple references | Display additional audio or MIDI references while retaining one editable monophonic vocal lane. |
+| Multiple references | Display additional audio or MIDI references beside the vocal sources. Each vocal source stays monophonic and editable, and sources may overlap. |
 | Advanced mapping | Explicitly map one blob across several MIDI notes or several blobs to one note for melismas and segmentation differences. |
 | Groove and swing | Represent swung subdivisions or groove references separately from the base tempo map. |
 | Markers and regions | Named markers, comments, colour labels and export regions. |
