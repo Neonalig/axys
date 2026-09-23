@@ -376,8 +376,8 @@ export type EditOp =
   | { type: 'joinBlobs'; first: BlobId; second: BlobId }
   | { type: 'moveBoundary'; blob: BlobId; edge: Edge; time: number }
   | { type: 'setVoicing'; blob: BlobId; start: number; end: number; voicing: Voicing }
-  | { type: 'movePitch'; blobs: BlobId[]; semitones: number }
-  | { type: 'setPitchOffset'; blob: BlobId; semitones: number }
+  | { type: 'movePitch'; blobs: BlobId[]; semitones: number; anchors?: boolean }
+  | { type: 'setPitchOffset'; blob: BlobId; semitones: number; anchors?: boolean }
   | { type: 'moveTime'; blobs: BlobId[]; seconds: number }
   | { type: 'setTimeScale'; blob: BlobId; scale: number }
   | { type: 'addAnchor'; blob: BlobId; anchor: Anchor }

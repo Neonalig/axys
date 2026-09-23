@@ -92,6 +92,9 @@ pub enum EditOp {
         blobs: Vec<BlobId>,
         /// Relative transposition in semitones.
         semitones: f64,
+        /// Moves the blobs' drawn anchors by the same amount.
+        #[serde(default, skip_serializing_if = "is_false")]
+        anchors: bool,
     },
     /// Sets one blob's transposition to an absolute amount.
     SetPitchOffset {
@@ -99,6 +102,9 @@ pub enum EditOp {
         blob: BlobId,
         /// Absolute transposition in semitones.
         semitones: f64,
+        /// Moves the blob's drawn anchors by as much as the transposition changes.
+        #[serde(default, skip_serializing_if = "is_false")]
+        anchors: bool,
     },
     /// Slides a selection along the timeline by a relative amount.
     MoveTime {
@@ -542,17 +548,32 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             clip.blobs
                 .set_voicing(*blob, start - offset, end - offset, *voicing)?;
         }
-        EditOp::MovePitch { blobs, semitones } => {
+        EditOp::MovePitch {
+            blobs,
+            semitones,
+            anchors,
+        } => {
             let semitones = finite(*semitones, "pitch move")?;
             for id in require_all(state, blobs)? {
                 if let Some(b) = state.blob_mut(id) {
                     b.pitch_offset += semitones;
+                    if *anchors {
+                        b.curve = b.curve.transposed(semitones);
+                    }
                 }
             }
         }
-        EditOp::SetPitchOffset { blob, semitones } => {
+        EditOp::SetPitchOffset {
+            blob,
+            semitones,
+            anchors,
+        } => {
             let semitones = finite(*semitones, "pitch offset")?;
-            blob_mut(state, *blob)?.pitch_offset = semitones;
+            let b = blob_mut(state, *blob)?;
+            if *anchors {
+                b.curve = b.curve.transposed(semitones - b.pitch_offset);
+            }
+            b.pitch_offset = semitones;
         }
         EditOp::MoveTime { blobs, seconds } => {
             let seconds = finite(*seconds, "time move")?;
@@ -1307,11 +1328,48 @@ mod tests {
         let op = EditOp::MovePitch {
             blobs: vec![BlobId(1), BlobId(2)],
             semitones: 1.5,
+            anchors: false,
         };
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
         assert!((s.clips[0].blobs.get(BlobId(1)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
         assert!((s.clips[0].blobs.get(BlobId(2)).unwrap().pitch_offset - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn moving_pitch_carries_drawn_anchors_when_asked() {
+        let mut s = state();
+        apply(
+            &mut s,
+            None,
+            &EditOp::AddAnchor {
+                blob: BlobId(1),
+                anchor: Anchor::new(0.5, 60.0),
+            },
+        )
+        .unwrap();
+        let moved = |anchors: bool| EditOp::MovePitch {
+            blobs: vec![BlobId(1)],
+            semitones: 2.0,
+            anchors,
+        };
+        apply(&mut s, None, &moved(false)).unwrap();
+        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 60.0);
+        apply(&mut s, None, &moved(true)).unwrap();
+        assert_eq!(s.blob(BlobId(1)).unwrap().curve.anchors()[0].midi, 62.0);
+        apply(
+            &mut s,
+            None,
+            &EditOp::SetPitchOffset {
+                blob: BlobId(1),
+                semitones: 1.0,
+                anchors: true,
+            },
+        )
+        .unwrap();
+        let blob = s.blob(BlobId(1)).unwrap();
+        assert_eq!(blob.pitch_offset, 1.0);
+        assert_eq!(blob.curve.anchors()[0].midi, 59.0);
     }
 
     #[test]
@@ -1323,6 +1381,7 @@ mod tests {
             &EditOp::MovePitch {
                 blobs: vec![BlobId(1), BlobId(99)],
                 semitones: 1.0,
+                anchors: false,
             },
         )
         .unwrap_err();
@@ -1336,6 +1395,7 @@ mod tests {
         let op = EditOp::SetPitchOffset {
             blob: BlobId(1),
             semitones: -2.0,
+            anchors: false,
         };
         apply(&mut s, None, &op).unwrap();
         apply(&mut s, None, &op).unwrap();
@@ -1823,6 +1883,7 @@ mod tests {
             &EditOp::SetPitchOffset {
                 blob: BlobId(2),
                 semitones: 4.0,
+                anchors: false,
             },
         )
         .unwrap();
@@ -1869,6 +1930,7 @@ mod tests {
             &EditOp::SetPitchOffset {
                 blob: BlobId(2),
                 semitones: 4.0,
+                anchors: false,
             },
         )
         .unwrap();
@@ -1936,6 +1998,7 @@ mod tests {
             &EditOp::SetPitchOffset {
                 blob: BlobId(1),
                 semitones: 3.0,
+                anchors: false,
             },
         )
         .unwrap();
@@ -2412,10 +2475,12 @@ mod tests {
             EditOp::MovePitch {
                 blobs: vec![missing],
                 semitones: 1.0,
+                anchors: false,
             },
             EditOp::SetPitchOffset {
                 blob: missing,
                 semitones: 1.0,
+                anchors: false,
             },
             EditOp::MoveTime {
                 blobs: vec![missing],
@@ -2495,10 +2560,12 @@ mod tests {
             EditOp::MovePitch {
                 blobs: vec![],
                 semitones: 0.0,
+                anchors: false,
             },
             EditOp::SetPitchOffset {
                 blob: BlobId(1),
                 semitones: 0.0,
+                anchors: false,
             },
             EditOp::MoveTime {
                 blobs: vec![],
@@ -2667,6 +2734,7 @@ mod tests {
             EditOp::MovePitch {
                 blobs: vec![BlobId(1)],
                 semitones: 2.0,
+                anchors: false,
             },
             EditOp::AddAnchor {
                 blob: BlobId(2),
@@ -2701,6 +2769,7 @@ mod tests {
         let op = EditOp::MovePitch {
             blobs: vec![BlobId(1), BlobId(2)],
             semitones: -1.25,
+            anchors: false,
         };
         let json = serde_json::to_string(&op).unwrap();
         assert!(json.contains("\"type\":\"movePitch\""), "{json}");
@@ -3078,6 +3147,7 @@ mod tests {
             &EditOp::MovePitch {
                 blobs: vec![id],
                 semitones: 2.0,
+                anchors: false,
             },
         )
         .unwrap();

@@ -410,7 +410,7 @@ export class EditorController {
       return;
     }
     this.#commit(
-      { type: 'movePitch', blobs: [...selection.blobs], semitones },
+      { type: 'movePitch', blobs: [...selection.blobs], semitones, anchors: true },
       `Move Pitch ${formatSemitones(semitones)}`,
     );
   }
@@ -457,7 +457,7 @@ export class EditorController {
     if (selection.blobs.length === 1) {
       const semitones = midi - first.detectedCenter;
       this.#commit(
-        { type: 'setPitchOffset', blob: first.id, semitones },
+        { type: 'setPitchOffset', blob: first.id, semitones, anchors: true },
         `Move Pitch ${noteNameWithCents(midi, this.#accidentals())}`,
       );
       return;
@@ -467,7 +467,7 @@ export class EditorController {
       return;
     }
     this.#commit(
-      { type: 'movePitch', blobs: [...selection.blobs], semitones: delta },
+      { type: 'movePitch', blobs: [...selection.blobs], semitones: delta, anchors: true },
       `Move Pitch ${formatSemitones(delta)}`,
     );
   }
@@ -1314,7 +1314,12 @@ export class EditorController {
       case 'pitch':
         if (gesture.semitones !== 0) {
           this.#commit(
-            { type: 'movePitch', blobs: gesture.blobs, semitones: gesture.semitones },
+            {
+              type: 'movePitch',
+              blobs: gesture.blobs,
+              semitones: gesture.semitones,
+              anchors: true,
+            },
             `Move Pitch ${formatSemitones(gesture.semitones)}`,
           );
         }

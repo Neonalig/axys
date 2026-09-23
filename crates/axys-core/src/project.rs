@@ -776,6 +776,7 @@ mod tests {
         project.history.push(EditOp::SetPitchOffset {
             blob: BlobId(1),
             semitones: -1.5,
+            anchors: false,
         });
         project
     }
