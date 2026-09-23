@@ -17,19 +17,22 @@ use axys_core::analysis::energy::{
     analyse_energy, observe_energy, EnergyFrames, EnergyGrid, EnergyTrack,
 };
 use axys_core::analysis::f0::{
-    decode_f0, detect_f0, observe_f0, F0Candidates, F0Frames, F0Params, PitchTrack,
+    decode_f0, detect_f0, observe_f0, F0Candidates, F0Frames, F0Params, PitchFrame, PitchTrack,
 };
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
+use axys_core::clip::{renumber, Clip, ClipId, Reference, ReferenceId};
 use axys_core::dsp::formant::FormantMode;
-use axys_core::edit::{apply_with_baseline, EditOp, History};
+use axys_core::edit::{apply_in, ClipSources, EditOp, History};
 use axys_core::midi::{
     measure_drift, parse_smf, propose_mappings, MappingReport, MidiFile, NoteMapping,
 };
-use axys_core::project::{AnalysisInfo, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION};
+use axys_core::project::{
+    AnalysisInfo, ClipMedia, EditState, Project, SourceInfo, ViewState, SCHEMA_VERSION,
+};
 use axys_core::render::{Quality, Renderer};
-use axys_core::target::{compile_plan, GuideInputs, PlanInputs, RenderPlan};
+use axys_core::target::{compile_plan, GuideInputs, PlanInputs, RenderPlan, SampledCurve, TimeMap};
 use axys_core::timeline::TimelineMap;
 use axys_core::AxysError;
 
@@ -171,6 +174,14 @@ pub fn midi_to_hz(midi: f64, a4_hz: f64) -> f64 {
 }
 
 /// Parses a Standard MIDI File and returns it as JSON.
+/// Rewrites a project document of any supported schema version in the current one.
+#[wasm_bindgen(js_name = migrateProject)]
+pub fn migrate_project(json: &str) -> Result<String, JsValue> {
+    Project::from_json(json)
+        .and_then(|project| project.to_json())
+        .map_err(to_js)
+}
+
 #[wasm_bindgen(js_name = parseMidi)]
 pub fn parse_midi(bytes: &[u8]) -> Result<String, JsValue> {
     let file = parse_smf(bytes).map_err(to_js)?;
@@ -475,32 +486,106 @@ struct GuideOverlap {
     end_seconds: f64,
 }
 
-/// An editing session over one source vocal.
+/// One clip's audio and analysis, kept whether or not the clip is on the lane now.
 ///
-/// Owns the immutable analysis, the mutable edit state and the undo history, and
-/// compiles a [`RenderPlan`] on demand. It does not render audio; the worklet and the
-/// export worker each build their own [`PlaybackRenderer`] from the plan.
+/// A clip taken off the lane can be put back by undo, and a clip brought in by an import can be
+/// taken back by undo and returned by redo, so the session keeps every clip it has seen.
+struct ClipRuntime {
+    id: ClipId,
+    /// Mono PCM at the project rate, or `None` until a reopened project is relinked.
+    samples: Option<Vec<f32>>,
+    source: SourceInfo,
+    analysis: AnalysisInfo,
+    track: PitchTrack,
+    /// Whether the track was missing from the document and must be detected on attach.
+    needs_track: bool,
+    /// The segmentation analysis produced, numbered for the clip.
+    analysed: BlobSet,
+    plan: RenderPlan,
+    /// Built on first use and kept, because its epoch map costs a pass over the whole source.
+    renderer: Option<Renderer>,
+}
+
+impl ClipRuntime {
+    fn media(&self) -> ClipMedia {
+        ClipMedia {
+            clip: self.id,
+            source: self.source.clone(),
+            analysis: self.analysis.clone(),
+            track: Some(self.track.clone()),
+            blobs: self.analysed.clone(),
+        }
+    }
+}
+
+/// Each clip's own evidence, read by the edit applier.
+struct Sources<'a>(&'a [ClipRuntime]);
+
+impl ClipSources for Sources<'_> {
+    fn track(&self, clip: ClipId) -> Option<&PitchTrack> {
+        self.0
+            .iter()
+            .find(|runtime| runtime.id == clip)
+            .map(|r| &r.track)
+    }
+
+    fn baseline(&self, clip: ClipId) -> Option<&BlobSet> {
+        self.0
+            .iter()
+            .find(|runtime| runtime.id == clip)
+            .map(|r| &r.analysed)
+    }
+}
+
+/// A clip's compiled plan and where the clip sits, as the worklet and the export read it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipPlan<'a> {
+    clip: ClipId,
+    /// Project seconds at which the clip's output second 0 sits.
+    position: f64,
+    plan: &'a RenderPlan,
+}
+
+/// Audio a project needs from the device to open fully.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaList<'a> {
+    /// Every clip the project or its history can put on the lane, and whether it is attached.
+    clips: Vec<ClipMediaEntry<'a>>,
+    /// Every reference the project or its history can bring in.
+    references: &'a [Reference],
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipMediaEntry<'a> {
+    clip: ClipId,
+    source: &'a SourceInfo,
+    attached: bool,
+}
+
+/// An editing session over the clips of one project.
+///
+/// Owns every clip's immutable analysis, the mutable edit state and the undo history, and
+/// compiles a [`RenderPlan`] per clip on demand. Times crossing this boundary are project
+/// seconds; each clip's analysis and plan stay in that clip's own source seconds.
 ///
 /// The project's name is not a field here: it lives in [`EditState`], so renaming is undone and
 /// redone with every other edit.
 #[wasm_bindgen]
 pub struct Session {
-    samples: Vec<f32>,
     sample_rate: f64,
-    source: SourceInfo,
-    analysis: AnalysisInfo,
-    track: PitchTrack,
+    clips: Vec<ClipRuntime>,
+    references: Vec<Reference>,
     state: EditState,
-    /// Segmentation before any edit, resegmented on first use when reopening a project.
-    /// The state the history replays from: the analysis, plus what no edit recorded.
+    /// The state the history replays from: the first clip's analysis, plus what no edit
+    /// recorded.
     base: EditState,
     history: History,
     midi: Option<MidiFile>,
     midi_bytes: Option<Vec<u8>>,
-    plan: RenderPlan,
     plan_hop: f64,
-    /// Built on first use and kept, because its epoch map costs a pass over the whole source.
-    renderer: Option<Renderer>,
     last_report: Option<ExportReport>,
 }
 
@@ -556,82 +641,65 @@ impl Session {
         blobs: BlobSet,
         params: AnalysisParams,
     ) -> Result<Session, JsValue> {
-        let duration = samples.len() as f64 / sample_rate;
-        let source = SourceInfo {
-            name: name.clone(),
-            sample_rate: sample_rate as u32,
-            channels: 1,
-            frames: samples.len(),
-            duration,
-            fingerprint: axys_core::project::fingerprint(&samples),
-            mime: None,
-        };
-        let info = AnalysisInfo {
-            analyser_version: 1,
-            f0: params.f0,
-            segment: params.segment,
-        };
-        let timeline = TimelineMap {
-            sample_rate,
-            ..TimelineMap::default()
-        };
-
+        let id = ClipId(0);
+        let source = source_info(&name, sample_rate, &samples);
+        let analysed = renumber(&blobs, id).map_err(to_js)?;
         let state = EditState {
             name: project_name(&name),
-            blobs,
+            clips: vec![Clip::new(id, source.clone(), 0.0, analysed.clone())],
+            references: Vec::new(),
             scale: Default::default(),
             modulation: Default::default(),
             formant: FormantMode::default(),
-            timeline,
+            timeline: TimelineMap {
+                sample_rate,
+                ..TimelineMap::default()
+            },
             guide: None,
             mappings: Vec::new(),
             tuning: Default::default(),
             accidentals: Default::default(),
             mixer: Default::default(),
         };
-
+        let duration = source.duration;
         let mut session = Session {
-            samples,
             sample_rate,
-            source,
-            analysis: info,
-            track,
+            clips: vec![ClipRuntime {
+                id,
+                samples: Some(samples),
+                source,
+                analysis: analysis_info(&params),
+                track,
+                needs_track: false,
+                analysed,
+                plan: RenderPlan::passthrough(sample_rate, duration),
+                renderer: None,
+            }],
+            references: Vec::new(),
             base: state.clone(),
             state,
             history: History::new(),
             midi: None,
             midi_bytes: None,
-            plan: RenderPlan::passthrough(sample_rate, duration),
             plan_hop: 0.005,
-            renderer: None,
             last_report: None,
         };
         session.recompile()?;
         Ok(session)
     }
 
-    /// Reopens a saved project against relinked source audio.
+    /// Reopens a saved project.
     ///
-    /// Errors when the audio does not match the project's recorded fingerprint.
+    /// The session can be edited and saved at once, but a clip plays and exports only once its
+    /// audio is attached with [`Session::attach_clip`]; [`Session::media_json`] lists what is
+    /// still missing.
     #[wasm_bindgen(js_name = openProject)]
-    pub fn open_project(
-        project_json: &str,
-        samples: Vec<f32>,
-        sample_rate: f64,
-    ) -> Result<Session, JsValue> {
+    pub fn open_project(project_json: &str) -> Result<Session, JsValue> {
         let project = Project::from_json(project_json).map_err(to_js)?;
-        let fingerprint = axys_core::project::fingerprint(&samples);
-        if fingerprint != project.source.fingerprint {
-            return Err(JsValue::from_str(
-                "this audio is not the file the project was made from",
-            ));
-        }
-
-        let track = match project.track.clone() {
-            Some(track) => track,
-            None => detect_f0(&samples, sample_rate, &project.analysis.f0).map_err(to_js)?,
+        let Some(first) = project.clips.first() else {
+            return Err(JsValue::from_str("the project has no clips"));
         };
-
+        let sample_rate = f64::from(first.source.sample_rate);
         let midi_bytes = match &project.midi {
             Some(text) => Some(axys_core::project::from_base64(text).map_err(to_js)?),
             None => None,
@@ -640,99 +708,225 @@ impl Session {
             Some(bytes) => Some(parse_smf(bytes).map_err(to_js)?),
             None => None,
         };
-
-        let duration = samples.len() as f64 / sample_rate;
+        let clips = project
+            .clips
+            .iter()
+            .map(|media| {
+                let duration = media.source.duration;
+                ClipRuntime {
+                    id: media.clip,
+                    samples: None,
+                    source: media.source.clone(),
+                    analysis: media.analysis.clone(),
+                    needs_track: media.track.is_none(),
+                    track: media.track.clone().unwrap_or_else(|| PitchTrack {
+                        sample_rate,
+                        ..PitchTrack::default()
+                    }),
+                    analysed: media.blobs.clone(),
+                    plan: RenderPlan::passthrough(sample_rate, duration),
+                    renderer: None,
+                }
+            })
+            .collect();
         let mut session = Session {
-            samples,
             sample_rate,
-            source: project.source.clone(),
-            analysis: project.analysis.clone(),
-            track,
+            clips,
+            references: project.references.clone(),
             base: project.base.clone(),
             state: project.edits.clone(),
             history: project.history.clone(),
             midi,
             midi_bytes,
-            plan: RenderPlan::passthrough(sample_rate, duration),
             plan_hop: 0.005,
-            renderer: None,
             last_report: None,
         };
         session.recompile()?;
         Ok(session)
     }
 
-    fn guide_inputs(&self) -> Option<(Vec<axys_core::midi::MidiNote>, ())> {
+    /// Gives a reopened project one clip's audio.
+    ///
+    /// Errors when the audio is not the file the clip was made from.
+    #[wasm_bindgen(js_name = attachClip)]
+    pub fn attach_clip(&mut self, clip: u32, samples: Vec<f32>) -> Result<(), JsValue> {
+        let sample_rate = self.sample_rate;
+        let Some(runtime) = self.clips.iter_mut().find(|r| r.id == ClipId(clip)) else {
+            return Err(JsValue::from_str(&format!(
+                "the project has no clip {clip}"
+            )));
+        };
+        if axys_core::project::fingerprint(&samples) != runtime.source.fingerprint {
+            return Err(JsValue::from_str(&format!(
+                "this audio is not {}, which the project was made from",
+                runtime.source.name
+            )));
+        }
+        if runtime.needs_track {
+            runtime.track =
+                detect_f0(&samples, sample_rate, &runtime.analysis.f0).map_err(to_js)?;
+            runtime.needs_track = false;
+        }
+        runtime.samples = Some(samples);
+        runtime.renderer = None;
+        self.recompile()
+    }
+
+    /// Imports another vocal onto the lane as one undoable edit, returning the new clip's id.
+    ///
+    /// `samples` must be mono at the project rate. `position` is project seconds; a position
+    /// that would overlap a clip lands on the nearest free one.
+    #[wasm_bindgen(js_name = addClip)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_clip(
+        &mut self,
+        samples: Vec<f32>,
+        name: String,
+        track_json: &str,
+        blobs_json: &str,
+        params_json: &str,
+        position: f64,
+    ) -> Result<u32, JsValue> {
+        let params = AnalysisParams::from_json(params_json)?;
+        let track: PitchTrack = parse(track_json)?;
+        let blobs: Vec<Blob> = parse(blobs_json)?;
+        let blobs = BlobSet::from_blobs(blobs).map_err(to_js)?;
+        check_fits_audio(&track, &blobs, self.sample_rate, samples.len())
+            .map_err(|message| JsValue::from_str(&message))?;
+        let id = ClipId(self.clips.iter().map(|r| r.id.0 + 1).max().unwrap_or(0));
+        let analysed = renumber(&blobs, id).map_err(to_js)?;
+        let source = source_info(&name, self.sample_rate, &samples);
+        let duration = source.duration;
+        self.clips.push(ClipRuntime {
+            id,
+            samples: Some(samples),
+            source: source.clone(),
+            analysis: analysis_info(&params),
+            track,
+            needs_track: false,
+            analysed: analysed.clone(),
+            plan: RenderPlan::passthrough(self.sample_rate, duration),
+            renderer: None,
+        });
+        let op = EditOp::AddClip {
+            clip: Clip::new(id, source, position, analysed),
+        };
+        if let Err(error) = self.apply_op(op) {
+            self.clips.retain(|r| r.id != id);
+            return Err(error);
+        }
+        Ok(id.0)
+    }
+
+    /// Brings in a reference as one undoable edit, returning its id.
+    ///
+    /// `source_json` is the reference's `SourceInfo`. Its audio never enters the core: it is
+    /// heard in the worklet and never exported.
+    #[wasm_bindgen(js_name = addReference)]
+    pub fn add_reference(&mut self, source_json: &str, position: f64) -> Result<u32, JsValue> {
+        let source: SourceInfo = parse(source_json)?;
+        let id = ReferenceId(
+            self.references
+                .iter()
+                .map(|r| r.id.0 + 1)
+                .max()
+                .unwrap_or(0),
+        );
+        let reference = Reference {
+            id,
+            source,
+            position,
+        };
+        self.apply_op(EditOp::AddReference {
+            reference: reference.clone(),
+        })?;
+        self.references.push(reference);
+        Ok(id.0)
+    }
+
+    /// Every clip and reference the project can need, and which clips have audio attached.
+    #[wasm_bindgen(js_name = mediaJson)]
+    pub fn media_json(&self) -> Result<String, JsValue> {
+        dump(&MediaList {
+            clips: self
+                .clips
+                .iter()
+                .map(|runtime| ClipMediaEntry {
+                    clip: runtime.id,
+                    source: &runtime.source,
+                    attached: runtime.samples.is_some(),
+                })
+                .collect(),
+            references: &self.references,
+        })
+    }
+
+    fn guide_notes(&self) -> Option<Vec<axys_core::midi::MidiNote>> {
         let selection = self.state.guide.as_ref()?;
         let file = self.midi.as_ref()?;
-        Some((file.notes_of(selection.track, selection.channel), ()))
+        Some(file.notes_of(selection.track, selection.channel))
     }
 
     fn recompile(&mut self) -> Result<(), JsValue> {
-        let duration = self.samples.len() as f64 / self.sample_rate;
-        let notes = self.guide_inputs().map(|(n, _)| n);
-        let guide = match (&notes, &self.state.guide) {
-            (Some(notes), Some(selection)) => Some(GuideInputs {
-                notes,
-                mappings: &self.state.mappings,
-                timeline: &self.state.timeline,
-                selection,
-            }),
-            _ => None,
-        };
-        let plan = {
+        let notes = self.guide_notes();
+        for runtime in &mut self.clips {
+            let Some(clip) = self.state.clip(runtime.id) else {
+                continue;
+            };
+            // The guide is placed in project seconds; a clip reads it in its own.
+            let timeline = TimelineMap {
+                origin_seconds: self.state.timeline.origin_seconds - clip.position,
+                ..self.state.timeline.clone()
+            };
+            let guide = match (&notes, &self.state.guide) {
+                (Some(notes), Some(selection)) => Some(GuideInputs {
+                    notes,
+                    mappings: &self.state.mappings,
+                    timeline: &timeline,
+                    selection,
+                }),
+                _ => None,
+            };
             let inputs = PlanInputs {
-                track: &self.track,
-                blobs: &self.state.blobs,
+                track: &runtime.track,
+                blobs: &clip.blobs,
+                silenced: &clip.silenced,
                 sample_rate: self.sample_rate,
-                duration,
+                duration: runtime.source.duration,
                 scale: &self.state.scale,
                 modulation: &self.state.modulation,
                 formant: self.state.formant,
                 guide,
                 hop: self.plan_hop,
             };
-            compile_plan(&inputs).map_err(to_js)?
-        };
-        self.plan = plan;
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_plan(self.plan.clone());
+            runtime.plan = compile_plan(&inputs).map_err(to_js)?;
+            if let Some(renderer) = runtime.renderer.as_mut() {
+                renderer.set_plan(runtime.plan.clone());
+            }
         }
         Ok(())
     }
 
-    /// The renderer for this session, built once.
-    ///
-    /// @remarks Its epoch map is a pass over the whole source, so building one per measurement
-    /// made a question about one second of a long take cost as much as the take.
-    fn renderer(&mut self) -> &Renderer {
-        if self.renderer.is_none() {
-            self.renderer = Some(Renderer::new(
-                self.samples.clone(),
-                &self.track,
-                self.plan.clone(),
-                Quality::Offline,
-            ));
+    /// Records and applies one operation, putting the state back as it was if it fails.
+    fn apply_op(&mut self, op: EditOp) -> Result<(), JsValue> {
+        // An op that fails partway, a group whose third member is refused say, has already
+        // changed the state; replaying puts it back exactly as it was.
+        if let Err(error) = apply_in(&mut self.state, &Sources(&self.clips), &op) {
+            self.replay()?;
+            return Err(to_js(error));
         }
-        self.renderer.as_ref().expect("just built")
-    }
-
-    /// Applies one edit operation and recompiles the plan.
-    #[wasm_bindgen(js_name = applyEdit)]
-    pub fn apply_edit(&mut self, op_json: &str) -> Result<(), JsValue> {
-        let op: EditOp = parse(op_json)?;
-        apply_with_baseline(
-            &mut self.state,
-            Some(&self.track),
-            Some(&self.base.blobs),
-            &op,
-        )
-        .map_err(to_js)?;
         self.history.push(op);
         self.recompile()
     }
 
-    /// Undoes the newest operation by replaying the history from the analysis.
+    /// Applies one edit operation and recompiles the plans.
+    #[wasm_bindgen(js_name = applyEdit)]
+    pub fn apply_edit(&mut self, op_json: &str) -> Result<(), JsValue> {
+        let op: EditOp = parse(op_json)?;
+        self.apply_op(op)
+    }
+
+    /// Undoes the newest operation by replaying the history from the base state.
     pub fn undo(&mut self) -> Result<bool, JsValue> {
         if self.history.undo().is_none() {
             return Ok(false);
@@ -746,13 +940,7 @@ impl Session {
         let Some(op) = self.history.redo() else {
             return Ok(false);
         };
-        apply_with_baseline(
-            &mut self.state,
-            Some(&self.track),
-            Some(&self.base.blobs),
-            &op,
-        )
-        .map_err(to_js)?;
+        apply_in(&mut self.state, &Sources(&self.clips), &op).map_err(to_js)?;
         self.recompile()?;
         Ok(true)
     }
@@ -766,13 +954,7 @@ impl Session {
         let ops: Vec<EditOp> = self.history.applied().to_vec();
         self.state = self.base.clone();
         for op in &ops {
-            apply_with_baseline(
-                &mut self.state,
-                Some(&self.track),
-                Some(&self.base.blobs),
-                op,
-            )
-            .map_err(to_js)?;
+            apply_in(&mut self.state, &Sources(&self.clips), op).map_err(to_js)?;
         }
         self.recompile()
     }
@@ -783,22 +965,123 @@ impl Session {
         dump(&self.state)
     }
 
-    /// The current blobs as JSON.
+    /// Every blob on the lane, in project seconds, as JSON.
     #[wasm_bindgen(js_name = blobsJson)]
     pub fn blobs_json(&self) -> Result<String, JsValue> {
-        dump(self.state.blobs.blobs())
+        dump(self.project_blobs()?.blobs())
     }
 
-    /// Overlaps and gaps produced by timing edits, as JSON.
+    fn project_blobs(&self) -> Result<BlobSet, JsValue> {
+        self.state.project_blobs().map_err(to_js)
+    }
+
+    /// Overlaps and gaps produced by timing edits, in project seconds, as JSON.
     #[wasm_bindgen(js_name = conflictsJson)]
     pub fn conflicts_json(&self) -> Result<String, JsValue> {
-        dump(&self.state.blobs.timing_conflicts())
+        dump(&self.project_blobs()?.timing_conflicts())
     }
 
-    /// The compiled render plan as JSON.
+    /// One plan for the whole lane in project seconds, as JSON, for the editor to draw from.
+    ///
+    /// The time map joins each clip's own in project seconds and the target pitch is sampled
+    /// on one grid across the lane. Playback and export read the per-clip plans instead, from
+    /// [`Session::clip_plans_json`].
     #[wasm_bindgen(js_name = planJson)]
     pub fn plan_json(&self) -> Result<String, JsValue> {
-        dump(&self.plan)
+        dump(&self.editor_plan())
+    }
+
+    /// Each clip on the lane's own plan and position, as JSON.
+    #[wasm_bindgen(js_name = clipPlansJson)]
+    pub fn clip_plans_json(&self) -> Result<String, JsValue> {
+        let plans: Vec<ClipPlan<'_>> = self
+            .lane()
+            .map(|(clip, runtime)| ClipPlan {
+                clip: clip.id,
+                position: clip.position,
+                plan: &runtime.plan,
+            })
+            .collect();
+        dump(&plans)
+    }
+
+    /// Clips on the lane with their runtime, in lane order.
+    fn lane(&self) -> impl Iterator<Item = (&Clip, &ClipRuntime)> {
+        let mut clips: Vec<&Clip> = self.state.clips.iter().collect();
+        clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+        clips.into_iter().filter_map(|clip| {
+            self.clips
+                .iter()
+                .find(|runtime| runtime.id == clip.id)
+                .map(|runtime| (clip, runtime))
+        })
+    }
+
+    fn editor_plan(&self) -> RenderPlan {
+        let lane: Vec<(&Clip, &ClipRuntime)> = self.lane().collect();
+        // One clip at the start of the lane is the lane: its own plan is exact, where a copy
+        // resampled onto the lane grid would only be close.
+        if let [(clip, runtime)] = lane.as_slice() {
+            if clip.position == 0.0 {
+                return runtime.plan.clone();
+            }
+        }
+        let hop = self.plan_hop;
+        let duration = self.output_seconds().max(hop);
+        let count = ((duration / hop).ceil() as usize + 1).min(MAX_EDITOR_PLAN_POINTS);
+        let mut ratios = vec![1.0f32; count];
+        let mut targets = vec![0.0f32; count];
+        let mut gains = vec![1.0f32; count];
+        let mut points: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+        for (clip, runtime) in lane {
+            let place = |values: &mut [f32], curve: &SampledCurve, neutral: f32| {
+                place_on_lane(
+                    values,
+                    hop,
+                    curve,
+                    clip.position,
+                    runtime.source.duration,
+                    neutral,
+                );
+            };
+            place(&mut ratios, &runtime.plan.pitch_ratio, 1.0);
+            place(&mut targets, &runtime.plan.target_midi, 0.0);
+            place(&mut gains, &runtime.plan.gain, 1.0);
+            for (out, src) in &runtime.plan.time_map.points {
+                let point = (out + clip.position, src + clip.position);
+                let Some(last) = points.last() else {
+                    points.push(point);
+                    continue;
+                };
+                // Kept strictly ascending in both columns, so a clip whose tail was moved past
+                // the next clip's start still reads as one monotone map.
+                if point.0 > last.0 && point.1 > last.1 {
+                    points.push(point);
+                }
+            }
+        }
+        if points.len() < 2 {
+            points.push((duration, duration));
+        }
+        let curve = |values: Vec<f32>| SampledCurve {
+            start: 0.0,
+            hop,
+            values,
+        };
+        RenderPlan {
+            sample_rate: self.sample_rate,
+            time_map: TimeMap { points },
+            pitch_ratio: curve(ratios),
+            target_midi: curve(targets),
+            gain: curve(gains),
+            formant: self.state.formant,
+        }
+    }
+    /// Project seconds at which the last clip's output ends.
+    fn output_seconds(&self) -> f64 {
+        self.lane()
+            .map(|(clip, runtime)| clip.position + runtime.plan.time_map.output_duration())
+            .fold(0.0, f64::max)
     }
 
     /// Undo and redo labels, as `{ "undo": string | null, "redo": string | null }`.
@@ -810,10 +1093,62 @@ impl Session {
         }))
     }
 
-    /// The detected pitch track as JSON.
+    /// Detected pitch across the lane in project seconds, as JSON.
+    ///
+    /// Each clip's frames are moved to where the clip sits, with an unvoiced frame between clips
+    /// so the drawn line breaks where one take ends and the next begins.
     #[wasm_bindgen(js_name = trackJson)]
     pub fn track_json(&self) -> Result<String, JsValue> {
-        dump(&self.track)
+        let mut frames: Vec<PitchFrame> = Vec::new();
+        for (clip, runtime) in self.lane() {
+            if let Some(last) = frames.last().copied() {
+                frames.push(PitchFrame {
+                    time: last.time + runtime.track.hop_seconds.max(1e-3),
+                    f0: 0.0,
+                    midi: f64::NAN,
+                    confidence: 0.0,
+                    rms: 0.0,
+                    voiced: false,
+                });
+            }
+            frames.extend(runtime.track.frames.iter().map(|frame| PitchFrame {
+                time: frame.time + clip.position,
+                ..*frame
+            }));
+        }
+        dump(&PitchTrack {
+            sample_rate: self.sample_rate,
+            hop_seconds: self.plan_hop,
+            frames,
+        })
+    }
+
+    /// One clip's detected pitch in its own source seconds, as JSON, for its renderer.
+    #[wasm_bindgen(js_name = clipTrackJson)]
+    pub fn clip_track_json(&self, clip: u32) -> Result<String, JsValue> {
+        dump(&self.runtime(ClipId(clip))?.track)
+    }
+
+    /// One clip's mono source samples, for handing to the worklet or the export worker.
+    #[wasm_bindgen(js_name = clipSamples)]
+    pub fn clip_samples(&self, clip: u32) -> Result<Vec<f32>, JsValue> {
+        self.runtime(ClipId(clip))?
+            .samples
+            .clone()
+            .ok_or_else(|| JsValue::from_str(&format!("clip {clip} has no audio attached")))
+    }
+
+    fn runtime(&self, clip: ClipId) -> Result<&ClipRuntime, JsValue> {
+        self.clips
+            .iter()
+            .find(|runtime| runtime.id == clip)
+            .ok_or_else(|| JsValue::from_str(&format!("the project has no clip {}", clip.0)))
+    }
+
+    /// The project sample rate every clip is held at.
+    #[wasm_bindgen(js_name = sampleRate)]
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
     }
 
     /// The imported MIDI file as JSON, or `null` when none is loaded.
@@ -850,11 +1185,11 @@ impl Session {
     /// alignment are one edit that one undo takes back.
     #[wasm_bindgen(js_name = proposeMappingsPreview)]
     pub fn propose_mappings_preview_js(&self) -> Result<String, JsValue> {
-        let Some((notes, _)) = self.guide_inputs() else {
+        let Some(notes) = self.guide_notes() else {
             return Err(JsValue::from_str("no MIDI guide is selected"));
         };
         let (mappings, report) = propose_mappings(
-            &self.state.blobs,
+            &self.project_blobs()?,
             &notes,
             &self.state.timeline,
             &self.state.mappings,
@@ -865,25 +1200,16 @@ impl Session {
     /// Proposes blob-to-note mappings, keeping manual ones, and returns the report.
     #[wasm_bindgen(js_name = proposeMappings)]
     pub fn propose_mappings_js(&mut self) -> Result<String, JsValue> {
-        let Some((notes, _)) = self.guide_inputs() else {
+        let Some(notes) = self.guide_notes() else {
             return Err(JsValue::from_str("no MIDI guide is selected"));
         };
         let (mappings, report) = propose_mappings(
-            &self.state.blobs,
+            &self.project_blobs()?,
             &notes,
             &self.state.timeline,
             &self.state.mappings,
         );
-        let op = EditOp::SetMappings { mappings };
-        apply_with_baseline(
-            &mut self.state,
-            Some(&self.track),
-            Some(&self.base.blobs),
-            &op,
-        )
-        .map_err(to_js)?;
-        self.history.push(op);
-        self.recompile()?;
+        self.apply_op(EditOp::SetMappings { mappings })?;
         dump(&report)
     }
 
@@ -918,11 +1244,11 @@ impl Session {
     /// Measures alignment error between mapped blobs and their guide notes.
     #[wasm_bindgen(js_name = driftJson)]
     pub fn drift_json(&self) -> Result<String, JsValue> {
-        let Some((notes, _)) = self.guide_inputs() else {
+        let Some(notes) = self.guide_notes() else {
             return Ok("null".to_string());
         };
         match measure_drift(
-            &self.state.blobs,
+            &self.project_blobs()?,
             &notes,
             &self.state.mappings,
             &self.state.timeline,
@@ -932,7 +1258,7 @@ impl Session {
         }
     }
 
-    /// Source seconds that move the given guide note onto `target_seconds`.
+    /// Project seconds that move the given guide note onto `target_seconds`.
     #[wasm_bindgen(js_name = anchorOffset)]
     pub fn anchor_offset(&self, note_tick: f64, target_seconds: f64) -> f64 {
         axys_core::midi::anchor_offset(
@@ -954,7 +1280,7 @@ impl Session {
         self.state.timeline.snap_seconds(seconds, division)
     }
 
-    /// Bar and beat reading at a source time, as JSON.
+    /// Bar and beat reading at a project time, as JSON.
     #[wasm_bindgen(js_name = barBeatJson)]
     pub fn bar_beat_json(&self, seconds: f64) -> Result<String, JsValue> {
         dump(&self.state.timeline.seconds_to_bar_beat(seconds))
@@ -972,9 +1298,8 @@ impl Session {
             schema_version: SCHEMA_VERSION,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             name: self.state.name.clone(),
-            source: self.source.clone(),
-            analysis: self.analysis.clone(),
-            track: Some(self.track.clone()),
+            clips: self.clips.iter().map(ClipRuntime::media).collect(),
+            references: self.references.clone(),
             edits: self.state.clone(),
             base: self.base.clone(),
             midi: self
@@ -987,17 +1312,69 @@ impl Session {
         project.to_json().map_err(to_js)
     }
 
-    /// Output length of the current plan, in samples.
+    /// Output length of the lane, in samples.
     #[wasm_bindgen(js_name = outputFrames)]
-    pub fn output_frames(&mut self) -> u32 {
-        self.renderer().output_frames() as u32
+    pub fn output_frames(&self) -> u32 {
+        (self.output_seconds() * self.sample_rate).round() as u32
+    }
+
+    /// Renders every clip on the lane at export quality and mixes them into one buffer.
+    ///
+    /// `range` is project output seconds, or the whole lane. A clip without audio attached
+    /// renders as silence.
+    fn render_mix(&mut self, range: Option<(f64, f64)>) -> Vec<f32> {
+        let rate = self.sample_rate;
+        let (from, to) = match range {
+            Some((start, end)) => (start.max(0.0), end.max(start.max(0.0))),
+            None => (0.0, self.output_seconds()),
+        };
+        let first = (from * rate).round() as i64;
+        let last = (to * rate).round() as i64;
+        let mut out = vec![0.0f32; (last - first).max(0) as usize];
+        let placements: Vec<(ClipId, f64)> = self
+            .lane()
+            .map(|(clip, _)| (clip.id, clip.position))
+            .collect();
+        for (id, position) in placements {
+            let Some(runtime) = self.clips.iter_mut().find(|runtime| runtime.id == id) else {
+                continue;
+            };
+            let Some(samples) = runtime.samples.as_ref() else {
+                continue;
+            };
+            let length = runtime.plan.time_map.output_duration();
+            let local_from = (from - position).max(0.0);
+            let local_to = (to - position).min(length);
+            if local_to <= local_from {
+                continue;
+            }
+            let renderer = runtime.renderer.get_or_insert_with(|| {
+                Renderer::new(
+                    samples.clone(),
+                    &runtime.track,
+                    runtime.plan.clone(),
+                    Quality::Offline,
+                )
+            });
+            let rendered = renderer.render_all(Some((local_from, local_to)));
+            let offset = ((position + local_from) * rate).round() as i64 - first;
+            for (index, sample) in rendered.iter().enumerate() {
+                let at = offset + index as i64;
+                if at >= 0 {
+                    if let Some(slot) = out.get_mut(at as usize) {
+                        *slot += *sample;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Renders and encodes a WAV file at export quality.
     ///
-    /// `start` and `end` are output seconds; pass a negative `end` for the whole
-    /// output. Returns the encoded bytes; call [`Session::last_export_report`] for the
-    /// peak and clipping figures.
+    /// `start` and `end` are project output seconds; pass a negative `end` for the whole
+    /// lane. Returns the encoded bytes; call [`Session::last_export_report`] for the peak and
+    /// clipping figures.
     #[wasm_bindgen(js_name = exportWav)]
     pub fn export_wav(
         &mut self,
@@ -1012,25 +1389,44 @@ impl Session {
             "float32" => BitDepth::Float32,
             other => return Err(JsValue::from_str(&format!("unknown bit depth {other}"))),
         };
+        self.require_audio()?;
         let range = if end > start && end > 0.0 {
             Some((start.max(0.0), end))
         } else {
             None
         };
-        let rendered = self.renderer().render_all(range);
-        let resampled = if sample_rate as f64 == self.sample_rate {
+        let rendered = self.render_mix(range);
+        let resampled = if f64::from(sample_rate) == self.sample_rate {
             rendered
         } else {
-            axys_core::dsp::resample::resample(&rendered, self.sample_rate, sample_rate as f64, 16)
+            axys_core::dsp::resample::resample(
+                &rendered,
+                self.sample_rate,
+                f64::from(sample_rate),
+                16,
+            )
         };
         let (bytes, report) = encode_wav(&[resampled], sample_rate, depth).map_err(to_js)?;
         self.last_report = Some(report);
         Ok(bytes)
     }
 
+    /// Refuses an export while a clip on the lane has no audio, which would write it as silence.
+    fn require_audio(&self) -> Result<(), JsValue> {
+        for (clip, runtime) in self.lane() {
+            if runtime.samples.is_none() {
+                return Err(JsValue::from_str(&format!(
+                    "relink {} before exporting",
+                    clip.source.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Describes what exporting an output range would produce, without encoding a file.
     ///
-    /// `start` and `end` are output seconds; pass a negative `end` for the whole output.
+    /// `start` and `end` are project output seconds; pass a negative `end` for the whole lane.
     /// Returns an [`ExportPreview`] as JSON so the range can be reviewed before the user
     /// commits to a file.
     #[wasm_bindgen(js_name = exportPreview)]
@@ -1041,15 +1437,15 @@ impl Session {
         } else {
             None
         };
-        let rendered = self.renderer().render_all(range);
-
+        let rendered = self.render_mix(range);
+        let rate = self.sample_rate;
         let first = if ranged {
-            (start.max(0.0) * self.sample_rate).round().max(0.0)
+            (start.max(0.0) * rate).round().max(0.0)
         } else {
             0.0
         };
-        let from = first / self.sample_rate;
-        let duration = rendered.len() as f64 / self.sample_rate;
+        let from = first / rate;
+        let duration = rendered.len() as f64 / rate;
         let to = from + duration;
 
         let mut peak = 0.0f32;
@@ -1057,25 +1453,30 @@ impl Session {
             peak = peak.max(sample.abs());
         }
 
-        let last = self.samples.len() as f64;
+        let placements: Vec<(f64, &RenderPlan, f64)> = self
+            .lane()
+            .filter(|(_, runtime)| runtime.samples.is_some())
+            .map(|(clip, runtime)| (clip.position, &runtime.plan, runtime.source.duration))
+            .collect();
         let silent = (0..rendered.len())
             .filter(|i| {
-                let seconds = from + *i as f64 / self.sample_rate;
-                let position = self.plan.time_map.source_at(seconds) * self.sample_rate;
-                !position.is_finite() || position < -1.0 || position >= last
+                let seconds = from + *i as f64 / rate;
+                !placements.iter().any(|(position, plan, length)| {
+                    let local = seconds - position;
+                    if local < 0.0 || local > plan.time_map.output_duration() {
+                        return false;
+                    }
+                    let source = plan.time_map.source_at(local);
+                    source.is_finite() && source >= 0.0 && source < *length
+                })
             })
             .count();
 
-        let (src_from, src_to) = (
-            self.plan.time_map.source_at(from),
-            self.plan.time_map.source_at(to),
-        );
         let conflicts = self
-            .state
-            .blobs
+            .project_blobs()?
             .timing_conflicts()
             .iter()
-            .filter(|c| c.end >= src_from && c.start <= src_to)
+            .filter(|c| c.end >= from && c.start <= to)
             .count();
 
         dump(&ExportPreview {
@@ -1086,7 +1487,7 @@ impl Session {
             peak,
             clips: peak > 1.0,
             conflicts,
-            silent: silent as f64 / self.sample_rate,
+            silent: silent as f64 / rate,
         })
     }
 
@@ -1098,16 +1499,58 @@ impl Session {
             None => Ok("null".to_string()),
         }
     }
+}
 
-    /// Mono source samples, for handing to the worklet.
-    pub fn source(&self) -> Vec<f32> {
-        self.samples.clone()
+/// Most samples the editor's lane-wide target pitch carries: an hour at the plan hop.
+const MAX_EDITOR_PLAN_POINTS: usize = 720_001;
+
+/// Copies a clip's curve onto the lane grid where the clip sits, leaving `neutral` samples alone.
+///
+/// Nearest sample, never an interpolation: mixing an edited sample with the neutral one beside
+/// it draws a line plunging towards MIDI zero at every span edge.
+fn place_on_lane(
+    values: &mut [f32],
+    hop: f64,
+    curve: &SampledCurve,
+    position: f64,
+    length: f64,
+    neutral: f32,
+) {
+    if curve.hop.is_nan() || curve.hop <= 0.0 {
+        return;
     }
+    for (index, slot) in values.iter_mut().enumerate() {
+        let local = index as f64 * hop - position - curve.start;
+        if local < 0.0 || local > length {
+            continue;
+        }
+        let nearest = (local / curve.hop).round() as usize;
+        if let Some(value) = curve.values.get(nearest) {
+            if *value != neutral {
+                *slot = *value;
+            }
+        }
+    }
+}
 
-    /// Source facts recorded at import, as JSON.
-    #[wasm_bindgen(js_name = sourceJson)]
-    pub fn source_json(&self) -> Result<String, JsValue> {
-        dump(&self.source)
+/// Facts recorded about mono PCM at import.
+fn source_info(name: &str, sample_rate: f64, samples: &[f32]) -> SourceInfo {
+    SourceInfo {
+        name: name.to_string(),
+        sample_rate: sample_rate as u32,
+        channels: 1,
+        frames: samples.len(),
+        duration: samples.len() as f64 / sample_rate,
+        fingerprint: axys_core::project::fingerprint(samples),
+        mime: None,
+    }
+}
+
+fn analysis_info(params: &AnalysisParams) -> AnalysisInfo {
+    AnalysisInfo {
+        analyser_version: 1,
+        f0: params.f0,
+        segment: params.segment,
     }
 }
 
@@ -1189,6 +1632,129 @@ mod analysis_handoff_tests {
         (samples, analysis)
     }
 
+    /// A session with the tone as clip 0 and the tone again as clip 1 at `position`.
+    fn two_clips(position: f64) -> (Session, u32) {
+        let (samples, analysis) = analysed();
+        let mut session = Session::create(
+            samples.clone(),
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis,
+            "",
+        )
+        .expect("session");
+        let clip = session
+            .add_clip(
+                samples,
+                "second.wav".to_string(),
+                &analysis.track_json().expect("track"),
+                &analysis.blobs_json().expect("blobs"),
+                "",
+                position,
+            )
+            .expect("second clip");
+        (session, clip)
+    }
+
+    fn json(text: String) -> serde_json::Value {
+        serde_json::from_str(&text).expect("json")
+    }
+
+    #[test]
+    fn a_second_clip_sits_where_it_was_put_with_its_own_blobs() {
+        let (session, clip) = two_clips(3.0);
+        assert_eq!(clip, 1);
+        let blobs = json(session.blobs_json().expect("blobs"));
+        let blobs = blobs.as_array().expect("array");
+        let ids: Vec<u64> = blobs.iter().map(|b| b["id"].as_u64().unwrap()).collect();
+        let first_of_clip = u64::from(ClipId(1).first_blob().0);
+        assert!(ids.iter().any(|id| *id >= first_of_clip));
+        let later = blobs
+            .iter()
+            .find(|b| b["id"].as_u64().unwrap() >= first_of_clip)
+            .unwrap();
+        assert!(later["start"].as_f64().unwrap() >= 3.0);
+
+        let plans = json(session.clip_plans_json().expect("plans"));
+        assert_eq!(plans.as_array().expect("array").len(), 2);
+        assert_eq!(plans[1]["position"], serde_json::json!(3.0));
+        assert_eq!(session.output_frames(), (4.0 * SAMPLE_RATE) as u32);
+    }
+
+    #[test]
+    fn a_clip_dropped_over_another_moves_beside_it() {
+        let (session, _) = two_clips(0.4);
+        let state = json(session.state_json().expect("state"));
+        assert_eq!(state["clips"][1]["position"], serde_json::json!(1.0));
+    }
+
+    #[test]
+    fn undoing_an_import_takes_the_clip_off_the_lane_and_redo_returns_it() {
+        let (mut session, _) = two_clips(3.0);
+        assert!(session.undo().expect("undo"));
+        let state = json(session.state_json().expect("state"));
+        assert_eq!(state["clips"].as_array().expect("clips").len(), 1);
+        assert!(session.redo().expect("redo"));
+        let state = json(session.state_json().expect("state"));
+        assert_eq!(state["clips"].as_array().expect("clips").len(), 2);
+    }
+
+    #[test]
+    fn the_export_mixes_every_clip_at_its_position() {
+        let (mut session, _) = two_clips(2.0);
+        let bytes = session
+            .export_wav(0.0, -1.0, 16_000, "float32")
+            .expect("wav");
+        let report = json(session.last_export_report().expect("report"));
+        assert_eq!(report["frames"], serde_json::json!(3 * 16_000));
+        assert!(bytes.len() > 3 * 16_000 * 4);
+        let preview = json(session.export_preview(0.0, -1.0).expect("preview"));
+        // The second between the clips has nothing under it.
+        let silent = preview["silent"].as_f64().expect("silent");
+        assert!((silent - 1.0).abs() < 0.01, "{silent}");
+    }
+
+    #[test]
+    fn a_reopened_project_needs_every_clip_before_it_exports() {
+        let (session, _) = two_clips(2.0);
+        let project = session.project_json("").expect("project");
+        let mut reopened = Session::open_project(&project).expect("reopened");
+        let media = json(reopened.media_json().expect("media"));
+        assert_eq!(media["clips"].as_array().expect("clips").len(), 2);
+        assert_eq!(media["clips"][0]["attached"], serde_json::json!(false));
+        let samples = tone();
+        reopened.attach_clip(0, samples.clone()).expect("first");
+        reopened.attach_clip(1, samples).expect("second");
+        let media = json(reopened.media_json().expect("media"));
+        assert_eq!(media["clips"][1]["attached"], serde_json::json!(true));
+        assert!(reopened.export_wav(0.0, -1.0, 16_000, "pcm16").is_ok());
+    }
+
+    #[test]
+    fn an_edit_in_project_seconds_reaches_the_second_clip() {
+        let (mut session, _) = two_clips(3.0);
+        let blobs = json(session.blobs_json().expect("blobs"));
+        let later = blobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["start"].as_f64().unwrap() >= 3.0)
+            .cloned()
+            .unwrap();
+        let id = later["id"].as_u64().unwrap();
+        let middle = (later["start"].as_f64().unwrap() + later["end"].as_f64().unwrap()) / 2.0;
+        session
+            .apply_edit(&format!(
+                r#"{{"type":"splitBlob","blob":{id},"time":{middle}}}"#
+            ))
+            .expect("split");
+        let after = json(session.blobs_json().expect("blobs"));
+        assert_eq!(
+            after.as_array().unwrap().len(),
+            blobs.as_array().unwrap().len() + 1
+        );
+    }
+
     #[test]
     fn create_from_analysis_matches_create() {
         let (samples, analysis) = analysed();
@@ -1223,8 +1789,8 @@ mod analysis_handoff_tests {
             rebuilt.plan_json().expect("b")
         );
         assert_eq!(
-            direct.source_json().expect("a"),
-            rebuilt.source_json().expect("b")
+            direct.media_json().expect("a"),
+            rebuilt.media_json().expect("b")
         );
     }
 
@@ -1331,8 +1897,8 @@ mod analysis_handoff_tests {
         session.load_midi(smf_with_tempo()).expect("midi");
         let project = session.project_json("").expect("project");
 
-        let mut reopened =
-            Session::open_project(&project, samples, SAMPLE_RATE).expect("reopened session");
+        let mut reopened = Session::open_project(&project).expect("reopened session");
+        reopened.attach_clip(0, samples).expect("attached");
         let before = reopened.state_json().expect("state");
         let first = analysis.blobs.blobs().first().expect("a blob").id.0;
         reopened
@@ -1379,8 +1945,8 @@ mod analysis_handoff_tests {
         .expect("session");
         let project = session.project_json("").expect("project");
 
-        let mut reopened =
-            Session::open_project(&project, samples, SAMPLE_RATE).expect("reopened session");
+        let mut reopened = Session::open_project(&project).expect("reopened session");
+        reopened.attach_clip(0, samples).expect("attached");
         let before = reopened.state_json().expect("state");
         let first = analysis.blobs.blobs().first().expect("a blob").id.0;
         reopened

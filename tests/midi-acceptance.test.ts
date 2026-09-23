@@ -267,7 +267,7 @@ describe('13.5 step 2: align a known MIDI onset to the recording', () => {
     const blobs = JSON.parse(session.blobsJson()) as Blob[];
     const onset = at(blobs, 0).start;
 
-    const sourceBefore = session.source().slice();
+    const sourceBefore = session.clipSamples(0).slice();
     const trackBefore = session.trackJson();
     const blobsBefore = session.blobsJson();
 
@@ -280,7 +280,7 @@ describe('13.5 step 2: align a known MIDI onset to the recording', () => {
     expect(tickSeconds(session, 480)).toBeCloseTo(onset + 0.5, 9);
 
     // The audio did not.
-    const sourceAfter = session.source();
+    const sourceAfter = session.clipSamples(0);
     expect(sourceAfter.length).toBe(sourceBefore.length);
     expect(Array.from(sourceAfter)).toEqual(Array.from(sourceBefore));
     expect(session.trackJson()).toBe(trackBefore);

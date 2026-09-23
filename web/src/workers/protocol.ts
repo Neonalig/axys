@@ -125,12 +125,19 @@ export interface ExportWavRequest {
   type: 'exportWav';
   id: RequestId;
   projectJson: string;
-  samples: Float32Array;
+  /** Every clip's mono samples at the project rate, keyed by clip id. */
+  clips: ClipAudio[];
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
   /** Rate to write the file at; the core resamples when it differs from the source rate. */
   sampleRate: number;
+}
+
+/** One clip's mono samples, keyed by the clip they belong to. */
+export interface ClipAudio {
+  clip: number;
+  samples: Float32Array;
 }
 
 /** Everything the render worker accepts. */
@@ -151,8 +158,6 @@ export interface RenderedRange {
 export interface EncodedWav {
   bytes: Uint8Array;
   report: ExportReport;
-  /** The caller's source buffer, transferred back. */
-  source: Float32Array;
 }
 
 /** How far a job has got. */
@@ -244,7 +249,7 @@ export function renderedTransfers(result: RenderedRange): Transferable[] {
 
 /** Buffers to transfer alongside an {@link EncodedWav}. */
 export function encodedTransfers(result: EncodedWav): Transferable[] {
-  return [bufferOf(result.bytes), bufferOf(result.source)];
+  return [bufferOf(result.bytes)];
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   analyseFixture,
   correlation,
   decodeWavBytes,
+  firstClipInputs,
   loadTestCore,
   measureF0,
   medianMidi,
@@ -501,10 +502,11 @@ describe('DSP quality over the generated fixtures', () => {
         expect(report.frames).toBe(decoded.length);
         expect(report.clippedSamples).toBe(0);
 
+        const inputs = firstClipInputs(session);
         const renderer = core.PlaybackRenderer.create(
-          session.source(),
-          session.trackJson(),
-          session.planJson(),
+          inputs.samples,
+          inputs.trackJson,
+          inputs.planJson,
           true,
         );
         try {

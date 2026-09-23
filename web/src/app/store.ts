@@ -9,7 +9,6 @@ import type {
   MidiFile,
   PitchTrackArrays,
   RenderPlan,
-  SourceInfo,
   TimingConflict,
   ViewState,
 } from '../core/types.js';
@@ -18,7 +17,6 @@ import type {
 export interface AppState {
   phase: 'empty' | 'loading' | 'ready' | 'error';
   message: string | null;
-  source: SourceInfo | null;
   /** What the project is called, or `null` with nothing open. */
   projectName: string | null;
   track: PitchTrackArrays | null;
@@ -168,7 +166,6 @@ export function initialState(): AppState {
   return {
     phase: 'empty',
     message: null,
-    source: null,
     projectName: null,
     track: null,
     blobs: [],
@@ -199,4 +196,29 @@ export function initialState(): AppState {
     inspectorWidth: 328,
     dirty: false,
   };
+}
+
+/**
+ * Project seconds at which the last source on the lane ends.
+ *
+ * @remarks The later of every clip's source, every reference and every blob's edited end, so a
+ * blob moved past the end of its clip still counts. Zero with nothing open.
+ */
+export function projectEnd(state: AppState): number {
+  const edits = state.edits;
+  if (edits === null) return 0;
+  let end = 0;
+  for (const clip of edits.clips) end = Math.max(end, clip.position + clip.source.duration);
+  for (const reference of edits.references) {
+    end = Math.max(end, reference.position + reference.source.duration);
+  }
+  for (const blob of state.blobs) {
+    end = Math.max(end, blob.start + blob.timeOffset + (blob.end - blob.start) * blob.timeScale);
+  }
+  return end;
+}
+
+/** The sample rate every source in the open project is held at, or `null` with nothing open. */
+export function projectRate(state: AppState): number | null {
+  return state.edits?.clips[0]?.source.sampleRate ?? state.edits?.timeline.sampleRate ?? null;
 }

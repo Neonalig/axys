@@ -65,6 +65,20 @@ impl PitchCurve {
         Self::default()
     }
 
+    /// The same curve with every anchor moved by `seconds`.
+    pub fn shifted(&self, seconds: f64) -> PitchCurve {
+        PitchCurve {
+            anchors: self
+                .anchors
+                .iter()
+                .map(|anchor| Anchor {
+                    time: anchor.time + seconds,
+                    ..*anchor
+                })
+                .collect(),
+        }
+    }
+
     /// Creates a curve from anchors, sorting them by time.
     pub fn from_anchors(mut anchors: Vec<Anchor>) -> Result<Self> {
         if anchors.len() > limits::MAX_CURVE_ANCHORS {

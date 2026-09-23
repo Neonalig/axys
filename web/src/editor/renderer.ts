@@ -18,7 +18,8 @@ import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
-import { drawWaveform } from './layers/waveform.js';
+import { clipPeaks, drawWaveform } from './layers/waveform.js';
+import { clipOf } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview } from './tools.js';
 import type { Viewport } from './view.js';
 import { RULER_HEIGHT } from './view.js';
@@ -236,6 +237,20 @@ export class EditorRenderer {
         drawCurvePreview(ctx, viewport, theme, preview.points);
         drawBezierHandles(ctx, viewport, theme, preview.curve, preview.active);
         labelAt(ctx, viewport, theme, preview.label, curveAnchorPoint(viewport, preview.points));
+        break;
+      case 'clipDrag':
+        drawClipDrag(ctx, state, viewport, theme, preview.clip, preview.position);
+        labelAt(ctx, viewport, theme, preview.label, {
+          x: viewport.timeToX(preview.position),
+          y: viewport.plotTop + 24,
+        });
+        break;
+      case 'drop':
+        drawDropMarker(ctx, viewport, theme, preview.time);
+        labelAt(ctx, viewport, theme, preview.label, {
+          x: viewport.timeToX(preview.time) + 6,
+          y: viewport.plotTop + 24,
+        });
         break;
       case 'span':
         drawSpanPreview(ctx, state, viewport, theme, preview.blob, preview.start, preview.end);
@@ -582,6 +597,119 @@ function drawBezierHandles(
     ctx.fillRect(point.x - 4, point.y - 4, 8, 8);
     ctx.strokeRect(point.x - 4, point.y - 4, 8, 8);
   }
+  ctx.restore();
+}
+
+/** Fraction of the plot height the dragged clip's waveform band takes. */
+const CLIP_BAND_FRACTION = 0.24;
+
+/**
+ * Draws a clip being dragged where it would land: its blobs as ghosts, over a band carrying its
+ * whole waveform.
+ *
+ * @remarks The band spans the clip's source, gaps and all, so where the take starts and ends is
+ * read at a glance while the blobs show where its notes fall. The envelope is the one already
+ * cached for the waveform layer, so the preview costs one pass over it per frame.
+ */
+function drawClipDrag(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  clip: number,
+  position: number,
+): void {
+  const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+  if (entry === undefined) {
+    return;
+  }
+  const shift = position - entry.position;
+  const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const blob of blobs) {
+    const extent = blobPitchExtent(blob, state.track);
+    low = Math.min(low, extent.low);
+    high = Math.max(high, extent.high);
+  }
+  const bandHeight = viewport.plotHeight * CLIP_BAND_FRACTION;
+  const middle =
+    Number.isFinite(low) && Number.isFinite(high)
+      ? viewport.midiToY((low + high) / 2)
+      : viewport.plotTop + viewport.plotHeight / 2;
+  const top = Math.min(
+    Math.max(viewport.plotTop, middle - bandHeight / 2),
+    viewport.height - bandHeight,
+  );
+  const x0 = viewport.timeToX(position);
+  const x1 = viewport.timeToX(position + entry.source.duration);
+
+  ctx.save();
+  ctx.globalAlpha = GHOST_ALPHA * 0.45;
+  ctx.fillStyle = theme.blobFillSelected;
+  ctx.fillRect(x0, top, Math.max(2, x1 - x0), bandHeight);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = theme.handleActive;
+  ctx.lineWidth = viewport.crispWidth();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(
+    viewport.crisp(x0),
+    viewport.crisp(top),
+    Math.round(Math.max(2, x1 - x0)),
+    Math.round(bandHeight),
+  );
+  ctx.setLineDash([]);
+
+  const peaks = clipPeaks(state, clip);
+  const left = Math.max(x0, 0);
+  const right = Math.min(x1, viewport.width);
+  if (peaks !== null && right > left) {
+    const columns = Math.max(1, Math.round(right - left));
+    const from = viewport.xToTime(left) - position;
+    const to = viewport.xToTime(right) - position;
+    const span = peaks.envelope.sample(from, to, columns);
+    const centre = top + bandHeight / 2;
+    const half = bandHeight / 2 - 2;
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = theme.waveform;
+    for (let column = 0; column < span.count; column += 1) {
+      const lowest = span.min[column] ?? 0;
+      const highest = span.max[column] ?? 0;
+      const columnTop = centre - highest * half;
+      ctx.fillRect(left + column, columnTop, 1, Math.max(1, centre - lowest * half - columnTop));
+    }
+  }
+  ctx.restore();
+
+  for (const blob of blobs) {
+    drawBlobGhost(ctx, state, viewport, theme, blob, shift, 0);
+  }
+}
+
+/** Draws where audio dragged in from outside would land. */
+function drawDropMarker(
+  ctx: CanvasRenderingContext2D,
+  viewport: Viewport,
+  theme: Theme,
+  time: number,
+): void {
+  const x = viewport.timeToX(time);
+  ctx.save();
+  ctx.strokeStyle = theme.handleActive;
+  ctx.lineWidth = viewport.crispWidth(2);
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(viewport.crisp(x, 2), viewport.plotTop);
+  ctx.lineTo(viewport.crisp(x, 2), viewport.height);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = theme.handleActive;
+  ctx.beginPath();
+  ctx.moveTo(x, RULER_HEIGHT);
+  ctx.lineTo(x - 6, RULER_HEIGHT - 8);
+  ctx.lineTo(x + 6, RULER_HEIGHT - 8);
+  ctx.closePath();
+  ctx.fill();
   ctx.restore();
 }
 

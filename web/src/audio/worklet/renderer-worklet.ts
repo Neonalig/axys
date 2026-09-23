@@ -10,7 +10,7 @@
  * use, so the small wasm-bindgen calling convention the renderer needs is implemented here.
  */
 
-import { DEFAULT_MIXER, mixLevels } from '../mixer.js';
+import { clipLevels, DEFAULT_MIXER, mixLevels, referenceLevel } from '../mixer.js';
 import type { MixLevels } from '../mixer.js';
 import type { MixerSettings } from '../../core/types.js';
 
@@ -36,20 +36,41 @@ export interface OutputRange {
   end: number;
 }
 
+/** One clip's plan, as UTF-8 JSON, and where the clip sits in project seconds. */
+export interface ClipPlacement {
+  clip: number;
+  position: number;
+  plan: Uint8Array;
+}
+
 /** What the main thread asks the renderer to do. */
 export type EngineMessage =
   // The module crosses as bytes, not as a compiled WebAssembly.Module. An AudioWorklet
   // is a separate agent cluster, and a Module posted across one is dropped silently:
   // no exception on the sending side and no message on the receiving side.
   | { type: 'init'; bytes: ArrayBuffer }
+  // Starts a project over: drops every source and sets the rate they are all held at.
+  | { type: 'project'; sampleRate: number }
   | {
-      type: 'source';
+      type: 'clip';
+      id: number;
       samples: ArrayBuffer;
-      sampleRate: number;
       track: Uint8Array;
       plan: Uint8Array;
+      position: number;
     }
-  | { type: 'plan'; plan: Uint8Array }
+  // Every clip on the lane; a loaded clip left out is off the lane and silent.
+  | { type: 'plans'; plans: ClipPlacement[] }
+  | {
+      type: 'reference';
+      id: number;
+      left: ArrayBuffer;
+      /** The second channel, or `null` for a mono reference. */
+      right: ArrayBuffer | null;
+      position: number;
+    }
+  // Every reference in the project; a loaded one left out is silent.
+  | { type: 'placements'; references: { id: number; position: number }[] }
   | { type: 'unload' }
   | { type: 'mixer'; mixer: MixerSettings }
   | { type: 'play'; from: number | null; countIn: boolean; seq: number }
@@ -68,7 +89,8 @@ export type EngineMessage =
  * latest command from one that answers it.
  */
 export type RendererMessage =
-  | { type: 'ready'; outputSeconds: number; sourceRate: number }
+  | { type: 'ready'; clip: number; sourceRate: number }
+  | { type: 'length'; outputSeconds: number }
   | {
       type: 'status';
       position: number;
@@ -369,23 +391,50 @@ function asciiBytes(text: string): Uint8Array {
   return bytes;
 }
 
+/** One vocal clip the processor can render: its source, its renderer and where it sits. */
+interface ClipVoice {
+  id: number;
+  source: Float32Array;
+  track: Uint8Array;
+  plan: Uint8Array;
+  renderer: number;
+  /** Output frames the clip's plan produces. */
+  outputFrames: number;
+  /** Project output frame at which the clip's output frame 0 sits. */
+  offset: number;
+  /** Whether the clip is on the lane, which an undo of its import takes it off. */
+  onLane: boolean;
+}
+
+/** One reference the processor plays unwarped: its channels and where it starts. */
+interface ReferenceVoice {
+  id: number;
+  left: Float32Array;
+  /** The second channel, or the first again for a mono reference. */
+  right: Float32Array;
+  offset: number;
+  onLane: boolean;
+  /** Balance gains, resolved from the desk when it arrives. */
+  gainLeft: number;
+  gainRight: number;
+}
+
 /**
- * Mixes the compiled plan, the original source and the click into the output.
+ * Mixes every clip's compiled plan, every clip's original, the references and the click into
+ * the output.
  *
  * @remarks Every block is answered from preallocated buffers, and the desk is resolved to
  * amplitudes when it changes rather than per sample. A missing core, a rejected plan or a failed
  * render counts an underrun and outputs silence, and the count and the reason reach the main
- * thread with the position report once a second.
+ * thread with the position report.
  */
 class RendererProcessor extends AudioWorkletProcessor {
   #core: Core | null = null;
-  #renderer = 0;
-  #source: Float32Array = new Float32Array(0);
+  #clips: ClipVoice[] = [];
+  #references: ReferenceVoice[] = [];
   #sourceRate = sampleRate;
   #ratio = 1;
   #outputFrames = 0;
-  #track: Uint8Array | null = null;
-  #plan: Uint8Array | null = null;
 
   #scratch: Float32Array = new Float32Array(512);
   #position = 0;
@@ -455,17 +504,29 @@ class RendererProcessor extends AudioWorkletProcessor {
       case 'init':
         this.#initialise(message.bytes);
         break;
-      case 'source':
-        this.#loadSource(message);
+      case 'project':
+        this.#unload();
+        this.#sourceRate = message.sampleRate > 0 ? message.sampleRate : sampleRate;
+        this.#ratio = this.#sourceRate / sampleRate;
         break;
-      case 'plan':
-        this.#setPlan(message.plan);
+      case 'clip':
+        this.#loadClip(message);
+        break;
+      case 'plans':
+        this.#setPlans(message.plans);
+        break;
+      case 'reference':
+        this.#loadReference(message);
+        break;
+      case 'placements':
+        this.#placeReferences(message.references);
         break;
       case 'unload':
         this.#unload();
         break;
       case 'mixer':
         this.#levels = mixLevels(message.mixer);
+        this.#balanceReferences();
         break;
       case 'play':
         this.#seq = message.seq;
@@ -513,82 +574,158 @@ class RendererProcessor extends AudioWorkletProcessor {
     try {
       this.#core = Core.instantiate(new WebAssembly.Module(bytes));
       this.#failure = null;
-      this.#build();
+      for (const voice of this.#clips) this.#build(voice);
+      this.#measure();
     } catch (thrown) {
       this.#core = null;
       this.#fail(thrown);
     }
   }
 
-  #loadSource(message: Extract<EngineMessage, { type: 'source' }>): void {
-    this.#playing = false;
-    this.#position = 0;
-    this.#preroll = 0;
-    this.#audition = null;
-    this.#source = new Float32Array(message.samples);
-    this.#sourceRate = message.sampleRate > 0 ? message.sampleRate : sampleRate;
-    this.#ratio = this.#sourceRate / sampleRate;
-    this.#track = message.track;
-    this.#plan = message.plan;
-    this.#build();
+  #loadClip(message: Extract<EngineMessage, { type: 'clip' }>): void {
+    const existing = this.#clips.find((voice) => voice.id === message.id);
+    if (existing) this.#release(existing);
+    const voice: ClipVoice = {
+      id: message.id,
+      source: new Float32Array(message.samples),
+      track: message.track,
+      plan: message.plan,
+      renderer: 0,
+      outputFrames: 0,
+      offset: Math.round(message.position * this.#sourceRate),
+      onLane: true,
+    };
+    this.#clips = [...this.#clips.filter((entry) => entry.id !== message.id), voice];
+    this.#build(voice);
+    this.#measure();
   }
 
-  #build(): void {
+  #build(voice: ClipVoice): void {
     const core = this.#core;
-    const track = this.#track;
-    const plan = this.#plan;
-    this.#release();
-    if (!core || !track || !plan || this.#source.length === 0) return;
+    this.#release(voice);
+    if (!core || voice.source.length === 0) return;
     try {
-      this.#renderer = core.createRenderer(this.#source, track, plan);
-      this.#outputFrames = core.outputFrames(this.#renderer);
+      voice.renderer = core.createRenderer(voice.source, voice.track, voice.plan);
+      voice.outputFrames = core.outputFrames(voice.renderer);
       this.#failure = null;
       this.#post({
         type: 'ready',
-        outputSeconds: this.#outputFrames / this.#sourceRate,
+        clip: voice.id,
         sourceRate: this.#sourceRate,
       });
     } catch (thrown) {
-      this.#renderer = 0;
-      this.#outputFrames = 0;
+      voice.renderer = 0;
+      voice.outputFrames = 0;
       this.#fail(thrown);
     }
   }
 
-  /** Drops the source and its renderer, leaving the processor up and outputting silence. */
+  /**
+   * Replaces every clip's plan and position.
+   *
+   * @remarks A clip missing from the list is off the lane and silent, but keeps its renderer so
+   * a redo puts it back without rebuilding the epoch map.
+   */
+  #setPlans(plans: readonly ClipPlacement[]): void {
+    const core = this.#core;
+    for (const voice of this.#clips) voice.onLane = false;
+    for (const placement of plans) {
+      const voice = this.#clips.find((entry) => entry.id === placement.clip);
+      if (!voice) continue;
+      voice.onLane = true;
+      voice.offset = Math.round(placement.position * this.#sourceRate);
+      voice.plan = placement.plan;
+      if (!core || voice.renderer === 0) {
+        this.#build(voice);
+        continue;
+      }
+      try {
+        core.setPlan(voice.renderer, placement.plan);
+        voice.outputFrames = core.outputFrames(voice.renderer);
+        this.#failure = null;
+      } catch (thrown) {
+        this.#fail(thrown);
+      }
+    }
+    this.#measure();
+  }
+
+  #loadReference(message: Extract<EngineMessage, { type: 'reference' }>): void {
+    const left = new Float32Array(message.left);
+    const right = message.right === null ? left : new Float32Array(message.right);
+    const voice: ReferenceVoice = {
+      id: message.id,
+      left,
+      right,
+      offset: Math.round(message.position * this.#sourceRate),
+      onLane: true,
+      gainLeft: 0,
+      gainRight: 0,
+    };
+    this.#references = [...this.#references.filter((entry) => entry.id !== message.id), voice];
+    this.#balanceReferences();
+    this.#measure();
+  }
+
+  /** Places every reference; one missing from the list is out of the project and silent. */
+  #placeReferences(placements: readonly { id: number; position: number }[]): void {
+    for (const voice of this.#references) voice.onLane = false;
+    for (const placement of placements) {
+      const voice = this.#references.find((entry) => entry.id === placement.id);
+      if (!voice) continue;
+      voice.onLane = true;
+      voice.offset = Math.round(placement.position * this.#sourceRate);
+    }
+    this.#measure();
+  }
+
+  /**
+   * Resolves each reference's strip to a gain per channel.
+   *
+   * @remarks A reference is stereo, so its pan is a balance rather than an equal-power pan of
+   * one signal: centred, both channels pass at the strip's level, and panned, the far channel
+   * fades while the near one holds.
+   */
+  #balanceReferences(): void {
+    for (const voice of this.#references) {
+      const level = referenceLevel(this.#levels, voice.id);
+      const gain = Math.hypot(level.left, level.right);
+      voice.gainLeft = Math.min(gain, Math.SQRT2 * level.left);
+      voice.gainRight = Math.min(gain, Math.SQRT2 * level.right);
+    }
+  }
+
+  /** Recomputes where the project ends: the latest clip output or reference on the lane. */
+  #measure(): void {
+    let end = 0;
+    for (const voice of this.#clips) {
+      if (voice.onLane && voice.renderer !== 0)
+        end = Math.max(end, voice.offset + voice.outputFrames);
+    }
+    for (const voice of this.#references) {
+      if (voice.onLane) end = Math.max(end, voice.offset + voice.left.length);
+    }
+    this.#outputFrames = end;
+    this.#post({ type: 'length', outputSeconds: end / this.#sourceRate });
+  }
+
+  /** Drops every source and renderer, leaving the processor up and outputting silence. */
   #unload(): void {
     this.#playing = false;
     this.#preroll = 0;
     this.#audition = null;
     this.#position = 0;
-    this.#release();
-    this.#source = new Float32Array(0);
-    this.#track = null;
-    this.#plan = null;
+    for (const voice of this.#clips) this.#release(voice);
+    this.#clips = [];
+    this.#references = [];
     this.#outputFrames = 0;
     this.#metronome = false;
     this.#failure = null;
     this.#report();
   }
 
-  #setPlan(plan: Uint8Array): void {
-    this.#plan = plan;
-    const core = this.#core;
-    if (!core || this.#renderer === 0) {
-      this.#build();
-      return;
-    }
-    try {
-      core.setPlan(this.#renderer, plan);
-      this.#outputFrames = core.outputFrames(this.#renderer);
-      this.#failure = null;
-    } catch (thrown) {
-      this.#fail(thrown);
-    }
-  }
-
   #play(from: number | null, countIn: boolean): void {
-    if (this.#renderer === 0) {
+    if (this.#outputFrames === 0) {
       this.#report();
       return;
     }
@@ -612,7 +749,7 @@ class RendererProcessor extends AudioWorkletProcessor {
   }
 
   #startAudition(start: number, end: number): void {
-    if (this.#renderer === 0 || end <= start) return;
+    if (this.#outputFrames === 0 || end <= start) return;
     this.#audition = { end, restore: this.#position };
     this.#position = this.#clampFrames(start * this.#sourceRate);
     this.#preroll = 0;
@@ -710,29 +847,70 @@ class RendererProcessor extends AudioWorkletProcessor {
     }
   }
 
+  /** Mixes every source that sounds in one segment of the block. */
+  #renderSegment(output: Float32Array[], offset: number, count: number): void {
+    for (const voice of this.#clips) {
+      if (voice.onLane) this.#mixClip(voice, output, offset, count);
+    }
+    for (const voice of this.#references) {
+      if (voice.onLane) this.#mixReference(voice, output, offset, count);
+    }
+  }
+
   /**
-   * Mixes the two vocal strips into one segment of the block.
+   * Mixes one clip's two strips into a segment.
    *
    * @remarks A strip nothing can be heard from is not rendered at all, so a muted processed
-   * strip costs no synthesis and a desk with both vocals down costs none either.
+   * strip costs no synthesis, and a clip the segment does not reach costs nothing either.
    */
-  #renderSegment(output: Float32Array[], offset: number, count: number): void {
+  #mixClip(voice: ClipVoice, output: Float32Array[], offset: number, count: number): void {
     const ratio = this.#ratio;
-    const start = Math.floor(this.#position);
-    const span = Math.floor(this.#position + (count - 1) * ratio) - start + 2;
-    const processedLevel = this.#levels.processed;
-    const originalLevel = this.#levels.original;
-    const processedOk = processedLevel.audible ? this.#renderProcessed(start, span) : false;
+    const local = this.#position - voice.offset;
+    const last = local + (count - 1) * ratio;
+    if (last < 0 || local >= Math.max(voice.outputFrames, voice.source.length)) return;
+    const levels = clipLevels(this.#levels, voice.id);
+    const processed = levels.processed;
+    const original = levels.original;
+    if (!processed.audible && !original.audible) return;
+
+    const start = Math.max(0, Math.floor(local));
+    const span = Math.floor(last) - start + 2;
+    const processedOk =
+      processed.audible && span > 0 && local < voice.outputFrames
+        ? this.#renderProcessed(voice, start, span)
+        : false;
 
     for (let i = 0; i < count; i += 1) {
-      const position = this.#position + i * ratio - start;
-      const processed = processedOk ? sampleAt(this.#scratch, position) : 0;
-      const original = originalLevel.audible ? sampleAt(this.#source, position + start) : 0;
+      const position = local + i * ratio;
+      const wet = processedOk ? sampleAt(this.#scratch, position - start) : 0;
+      const dry = original.audible ? sampleAt(voice.source, position) : 0;
       this.#write(
         output,
         offset + i,
-        processed * processedLevel.left + original * originalLevel.left,
-        processed * processedLevel.right + original * originalLevel.right,
+        wet * processed.left + dry * original.left,
+        wet * processed.right + dry * original.right,
+      );
+    }
+  }
+
+  /** Mixes one reference into a segment, straight from its channels and never warped. */
+  #mixReference(
+    voice: ReferenceVoice,
+    output: Float32Array[],
+    offset: number,
+    count: number,
+  ): void {
+    if (voice.gainLeft === 0 && voice.gainRight === 0) return;
+    const ratio = this.#ratio;
+    const local = this.#position - voice.offset;
+    if (local + (count - 1) * ratio < 0 || local >= voice.left.length) return;
+    for (let i = 0; i < count; i += 1) {
+      const position = local + i * ratio;
+      this.#write(
+        output,
+        offset + i,
+        sampleAt(voice.left, position) * voice.gainLeft,
+        sampleAt(voice.right, position) * voice.gainRight,
       );
     }
   }
@@ -755,9 +933,9 @@ class RendererProcessor extends AudioWorkletProcessor {
     }
   }
 
-  #renderProcessed(start: number, span: number): boolean {
+  #renderProcessed(voice: ClipVoice, start: number, span: number): boolean {
     const core = this.#core;
-    if (!core || this.#renderer === 0) {
+    if (!core || voice.renderer === 0) {
       this.#underruns += 1;
       return false;
     }
@@ -766,7 +944,7 @@ class RendererProcessor extends AudioWorkletProcessor {
       this.#scratch = new Float32Array(span * 2);
     }
     try {
-      core.render(this.#renderer, start, span, this.#scratch);
+      core.render(voice.renderer, start, span, this.#scratch);
       return true;
     } catch (thrown) {
       this.#underruns += 1;
@@ -858,17 +1036,18 @@ class RendererProcessor extends AudioWorkletProcessor {
     this.port.postMessage(message);
   }
 
-  #release(): void {
+  #release(voice: ClipVoice): void {
     const core = this.#core;
-    if (core && this.#renderer !== 0) core.freeRenderer(this.#renderer);
-    this.#renderer = 0;
+    if (core && voice.renderer !== 0) core.freeRenderer(voice.renderer);
+    voice.renderer = 0;
   }
 
   #dispose(): void {
     this.#playing = false;
-    this.#release();
+    for (const voice of this.#clips) this.#release(voice);
+    this.#clips = [];
+    this.#references = [];
     this.#core = null;
-    this.#source = new Float32Array(0);
     this.#disposed = true;
   }
 }
@@ -889,8 +1068,11 @@ function asEngineMessage(value: unknown): EngineMessage | null {
   if (typeof type !== 'string') return null;
   switch (type) {
     case 'init':
-    case 'source':
-    case 'plan':
+    case 'project':
+    case 'clip':
+    case 'plans':
+    case 'reference':
+    case 'placements':
     case 'unload':
     case 'mixer':
     case 'play':

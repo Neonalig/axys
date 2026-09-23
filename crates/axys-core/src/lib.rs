@@ -8,6 +8,7 @@
 pub mod analysis;
 pub mod audio;
 pub mod blob;
+pub mod clip;
 pub mod curve;
 pub mod dsp;
 pub mod edit;

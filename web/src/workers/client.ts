@@ -18,6 +18,7 @@ import type {
   CancelRequest,
   CancelledMessage,
   EncodedMessage,
+  ClipAudio,
   EncodedWav,
   ExportWavRequest,
   FailedMessage,
@@ -55,7 +56,8 @@ export interface RenderJob {
 /** A saved project to render and encode as a WAV file. */
 export interface ExportJob {
   projectJson: string;
-  samples: Float32Array;
+  /** Every clip's mono samples at the project rate, each transferred to the worker. */
+  clips: ClipAudio[];
   /** Output seconds to encode, or `null` for the whole output. */
   range: { start: number; end: number } | null;
   depth: BitDepth;
@@ -255,8 +257,7 @@ export class RenderClient extends WorkerClient {
   /**
    * Renders a saved project and encodes it as a WAV file.
    *
-   * @remarks `job.samples` is transferred to the worker and comes back on
-   * {@link EncodedWav.source}.
+   * @remarks Every buffer in `job.clips` is transferred to the worker and not returned.
    */
   exportWav(job: ExportJob, onProgress?: ProgressListener): Promise<EncodedWav> {
     return this.start<EncodedWav>(
@@ -266,12 +267,12 @@ export class RenderClient extends WorkerClient {
           type: 'exportWav',
           id,
           projectJson: job.projectJson,
-          samples: job.samples,
+          clips: job.clips,
           range: job.range,
           depth: job.depth,
           sampleRate: job.sampleRate,
         },
-        transfer: [bufferOf(job.samples)],
+        transfer: job.clips.map((clip) => bufferOf(clip.samples)),
       }),
       (message) => (message.type === 'encoded' ? message.result : null),
       onProgress,

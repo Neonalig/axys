@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../../app/store.js';
+import { clipOf } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { PeakEnvelope } from '../peaks.js';
 import { peaksFor } from '../peaks.js';
@@ -24,16 +25,18 @@ const MIN_HALF = 5;
  * when the blob is moved in pitch or time. Drawn free-floating it reads as a separate object
  * that happens to sit behind the blobs, and a pitch edit visibly pulls the two apart. Each
  * blob's envelope is sampled over its own source span, so a time-stretched blob shows the audio
- * it actually holds rather than whatever lies at those output seconds.
+ * it actually holds rather than whatever lies at those output seconds. Each blob reads the
+ * envelope of the clip it belongs to, at that clip's own source seconds.
  */
 export function drawWaveform(
   ctx: CanvasRenderingContext2D,
   state: AppState,
   viewport: Viewport,
   theme: Theme,
-  peaks: PeakEnvelope | null = peaksFor(state.source?.fingerprint),
+  peaks: (clip: number) => { envelope: PeakEnvelope; position: number } | null = (clip) =>
+    clipPeaks(state, clip),
 ): void {
-  if (peaks === null || state.source === null) {
+  if (state.edits === null) {
     return;
   }
 
@@ -55,8 +58,16 @@ export function drawWaveform(
     if (x1 < PITCH_LABEL_GUTTER || x0 > viewport.width) {
       continue;
     }
+    const source = peaks(clipOf(blob.id));
+    if (source === null) {
+      continue;
+    }
     const columns = Math.max(1, Math.round(x1 - x0));
-    const span = peaks.sample(blob.start, blob.end, columns);
+    const span = source.envelope.sample(
+      blob.start - source.position,
+      blob.end - source.position,
+      columns,
+    );
     const extent = blobPitchExtent(blob, state.track);
     const top = viewport.midiToY(extent.high);
     const bottom = viewport.midiToY(extent.low);
@@ -74,4 +85,17 @@ export function drawWaveform(
 
   ctx.globalAlpha = 1;
   ctx.restore();
+}
+
+/** A clip's cached envelope and where the clip sits, or `null` when neither is known. */
+export function clipPeaks(
+  state: AppState,
+  clip: number,
+): { envelope: PeakEnvelope; position: number } | null {
+  const entry = state.edits?.clips.find((candidate) => candidate.id === clip);
+  if (entry === undefined) {
+    return null;
+  }
+  const envelope = peaksFor(entry.source.fingerprint);
+  return envelope === null ? null : { envelope, position: entry.position };
 }

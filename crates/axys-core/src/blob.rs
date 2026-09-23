@@ -133,6 +133,22 @@ impl Blob {
         time >= self.start && time < self.end
     }
 
+    /// The same blob with every time it carries moved by `seconds`.
+    ///
+    /// Moves the span, the subregions and the curve anchors. `time_offset` is a distance rather
+    /// than a time, so it is left as it is.
+    pub fn shifted(&self, seconds: f64) -> Blob {
+        let mut blob = self.clone();
+        blob.start += seconds;
+        blob.end += seconds;
+        for region in &mut blob.subregions {
+            region.start += seconds;
+            region.end += seconds;
+        }
+        blob.curve = self.curve.shifted(seconds);
+        blob
+    }
+
     /// Target pitch centre: detected centre plus the user offset.
     pub fn target_center(&self) -> f64 {
         self.detected_center + self.pitch_offset

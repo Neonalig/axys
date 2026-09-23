@@ -179,8 +179,8 @@ const cache = new Map<string, PeakEnvelope>();
 /**
  * Builds a peak envelope and keeps it against the source fingerprint.
  *
- * @remarks The cache holds derived data for the one open source; a second fingerprint replaces
- * the first rather than accumulating.
+ * @remarks The cache holds derived data for every source of the open project, one envelope per
+ * fingerprint, until {@link clearPeaks} closes it.
  */
 export function buildPeaks(
   samples: Float32Array,
@@ -188,7 +188,6 @@ export function buildPeaks(
   fingerprint: string,
 ): PeakEnvelope {
   const envelope = PeakEnvelope.build(samples, sampleRate);
-  cache.clear();
   cache.set(fingerprint, envelope);
   return envelope;
 }
@@ -201,7 +200,7 @@ export function peaksFor(fingerprint: string | null | undefined): PeakEnvelope |
   return cache.get(fingerprint) ?? null;
 }
 
-/** Drops the cached envelope, for closing a project. */
+/** Drops every cached envelope, for closing a project. */
 export function clearPeaks(): void {
   cache.clear();
 }

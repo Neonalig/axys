@@ -1,17 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The mixer: one strip per audio source, in a panel across the bottom of the editor.
+ * The mixer: a track per vocal clip, a strip per reference and one for the metronome, in a panel
+ * across the bottom of the editor.
  *
- * A strip is laid out the way a desk lays one out, so it is read at a glance: the name, the pan
- * above the fader, the fader itself, and mute and solo under it. The desk is monitoring rather
- * than an edit to the take, so nothing here changes what an export writes.
+ * A clip's track groups its two strips, the take as edited and as sung, under the clip's name,
+ * so each clip reads as one source with two faders. A strip is laid out the way a desk lays one
+ * out: the name, the pan above the fader, the fader itself, and mute and solo under it. The desk
+ * is monitoring rather than an edit to the take, so nothing here changes what an export writes.
  */
 
-import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
-import type { EditOp, MixerSettings, MixerStrip } from '../core/types.js';
-import { DEFAULT_MIXER, STRIP_IDS, STRIP_NAMES } from '../audio/mixer.js';
-import type { StripId } from '../audio/mixer.js';
+import { MAX_GAIN_DB, MIN_GAIN_DB, sourceTitle } from '../core/types.js';
+import type {
+  ClipId,
+  EditOp,
+  EditState,
+  MixerSettings,
+  MixerStrip,
+  ReferenceId,
+} from '../core/types.js';
+import {
+  CLICK_NAME,
+  clipStrips,
+  DEFAULT_CLICK_DB,
+  DEFAULT_MIXER,
+  referenceStrip,
+  VOCAL_NAMES,
+  withClipStrip,
+  withReferenceStrip,
+} from '../audio/mixer.js';
+import type { VocalStrip } from '../audio/mixer.js';
 import { rangeInput, swapGlyph } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
 import { setTooltip } from './tooltip.js';
@@ -25,8 +43,17 @@ export interface MixerHooks {
   previewMixer(mixer: MixerSettings): void;
 }
 
+/** Which strip on the desk a control belongs to. */
+type StripKey =
+  | { kind: 'clip'; clip: ClipId; which: VocalStrip }
+  | { kind: 'reference'; reference: ReferenceId }
+  | { kind: 'click' };
+
 /** The controls one strip owns. */
 interface StripControls {
+  key: StripKey;
+  /** What the strip is called in its tooltips and accessible names. */
+  label: string;
   gain: HTMLInputElement;
   gainReadout: HTMLElement;
   pan: HTMLInputElement;
@@ -57,28 +84,70 @@ function panText(pan: number): string {
   return `${pan < 0 ? 'L' : 'R'}${String(percent)}`;
 }
 
+/** The strip a key addresses, read from a desk. */
+function stripOf(mixer: MixerSettings, key: StripKey): MixerStrip {
+  switch (key.kind) {
+    case 'clip':
+      return clipStrips(mixer, key.clip)[key.which];
+    case 'reference':
+      return referenceStrip(mixer, key.reference);
+    case 'click':
+      return mixer.click;
+  }
+}
+
+/** A desk with the strip a key addresses replaced. */
+function withStrip(mixer: MixerSettings, key: StripKey, strip: MixerStrip): MixerSettings {
+  switch (key.kind) {
+    case 'clip':
+      return withClipStrip(mixer, key.clip, key.which, strip);
+    case 'reference':
+      return withReferenceStrip(mixer, key.reference, strip);
+    case 'click':
+      return { ...mixer, click: strip };
+  }
+}
+
+/** Where a strip's fader rests until it is moved, which a double-click returns it to. */
+function restingGain(key: StripKey): number {
+  return key.kind === 'click' ? DEFAULT_CLICK_DB : 0;
+}
+
+/** Which sources the desk shows, as a key that changes when that list does. */
+function lineup(edits: EditState | null): string {
+  if (edits === null) return '';
+  const clips = [...edits.clips]
+    .sort((a, b) => a.position - b.position)
+    .map((clip) => `c${String(clip.id)}:${clip.source.name}`);
+  const references = edits.references.map(
+    (reference) => `r${String(reference.id)}:${reference.source.name}`,
+  );
+  return [...clips, ...references].join('|');
+}
+
 /**
  * The desk across the bottom of the editor.
  *
  * @remarks Holds no state of its own beyond what a control is showing. A fader is heard as it
  * moves and committed when it is let go, so dragging one leaves the history with one entry, and
- * a control under the hand is never rewritten from the state behind it.
+ * a control under the hand is never rewritten from the state behind it. The strips are rebuilt
+ * only when a source comes or goes, never while one is being dragged.
  */
 export class MixerPanel {
   readonly #hooks: MixerHooks;
   readonly #element: HTMLElement;
-  readonly #strips = new Map<StripId, StripControls>();
+  #strips: StripControls[] = [];
+  #lineup: string | null = null;
 
   #mixer: MixerSettings = DEFAULT_MIXER;
 
   constructor(hooks: MixerHooks) {
     this.#hooks = hooks;
-
     const element = document.createElement('section');
     element.className = 'axys-mixer';
     element.setAttribute('aria-label', 'Mixer');
-    for (const id of STRIP_IDS) element.append(this.#buildStrip(id));
     this.#element = element;
+    this.#rebuild(null);
   }
 
   /** The panel element, ready to append to the shell. */
@@ -97,12 +166,16 @@ export class MixerPanel {
     this.#element.classList.toggle('is-collapsed', state.mixerCollapsed);
     this.#element.inert = state.mixerCollapsed;
     if (state.mixerCollapsed) return;
+    const wanted = lineup(state.edits);
+    const active = document.activeElement;
+    const dragging = active instanceof HTMLInputElement && this.#element.contains(active);
+    if (wanted !== this.#lineup && !dragging) {
+      this.#rebuild(state.edits);
+    }
     this.#mixer = state.edits?.mixer ?? DEFAULT_MIXER;
     const ready = state.edits !== null;
-    for (const id of STRIP_IDS) {
-      const controls = this.#strips.get(id);
-      if (!controls) continue;
-      const strip = this.#mixer[id];
+    for (const controls of this.#strips) {
+      const strip = stripOf(this.#mixer, controls.key);
       for (const control of [controls.gain, controls.pan, controls.mute, controls.solo]) {
         control.disabled = !ready;
       }
@@ -120,22 +193,69 @@ export class MixerPanel {
       // A toggle's tooltip names what pressing it will do, and follows the state icon.
       swapGlyph(controls.mute, stateIcon('mute', !strip.mute));
       controls.mute.setAttribute('aria-pressed', String(strip.mute));
-      setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', STRIP_NAMES[id]));
+      setTooltip(controls.mute, switchTip(strip.mute ? 'Unmute' : 'Mute', controls.label));
       controls.solo.setAttribute('aria-pressed', String(strip.solo));
-      setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', STRIP_NAMES[id]));
+      setTooltip(controls.solo, switchTip(strip.solo ? 'Unsolo' : 'Solo', controls.label));
     }
   }
 
-  #buildStrip(id: StripId): HTMLElement {
-    const label = STRIP_NAMES[id];
+  /** Builds a track per clip in lane order, a strip per reference, and the metronome last. */
+  #rebuild(edits: EditState | null): void {
+    this.#lineup = lineup(edits);
+    this.#strips = [];
+    const parts: HTMLElement[] = [];
+    const clips = edits === null ? [] : [...edits.clips].sort((a, b) => a.position - b.position);
+    for (const clip of clips) {
+      const title = sourceTitle(clip.source.name);
+      const track = document.createElement('div');
+      track.className = 'axys-mixer-track';
+      track.setAttribute('role', 'group');
+      track.setAttribute('aria-label', `${title} Track`);
+      const head = document.createElement('div');
+      head.className = 'axys-mixer-track-name';
+      head.textContent = title;
+      setTooltip(head, clip.source.name);
+      const pair = document.createElement('div');
+      pair.className = 'axys-mixer-track-strips';
+      for (const which of ['processed', 'original'] as const) {
+        pair.append(
+          this.#buildStrip(
+            { kind: 'clip', clip: clip.id, which },
+            VOCAL_NAMES[which],
+            `${title} ${VOCAL_NAMES[which]}`,
+          ),
+        );
+      }
+      track.append(head, pair);
+      parts.push(track);
+    }
+    for (const reference of edits?.references ?? []) {
+      const title = sourceTitle(reference.source.name);
+      parts.push(
+        this.#buildStrip({ kind: 'reference', reference: reference.id }, title, title, true),
+      );
+    }
+    parts.push(this.#buildStrip({ kind: 'click' }, CLICK_NAME, CLICK_NAME, true));
+    this.#element.replaceChildren(...parts);
+  }
+
+  /**
+   * One strip.
+   *
+   * @remarks `name` is what the strip is headed with, and `label` what its controls are called:
+   * inside a track the strip reads Processed under the clip's name, while its fader is still
+   * called by the clip's name to a screen reader. A standalone strip draws the box a track
+   * draws, so every source on the desk has one outline.
+   */
+  #buildStrip(key: StripKey, name: string, label: string, standalone = false): HTMLElement {
     const strip = document.createElement('div');
-    strip.className = 'axys-mixer-strip';
+    strip.className = standalone ? 'axys-mixer-strip is-standalone' : 'axys-mixer-strip';
     strip.setAttribute('role', 'group');
     strip.setAttribute('aria-label', `${label} Strip`);
 
-    const name = document.createElement('label');
-    name.className = 'axys-mixer-name';
-    name.textContent = label;
+    const heading = document.createElement('label');
+    heading.className = 'axys-mixer-name';
+    heading.textContent = name;
 
     const pan = rangeInput(-1, 1, 0.01);
     pan.className = 'axys-mixer-pan';
@@ -148,8 +268,8 @@ export class MixerPanel {
     gain.setAttribute('aria-orientation', 'vertical');
     const gainReadout = readout('axys-mixer-level');
 
-    const mute = this.#buildSwitch(id, 'mute', label);
-    const solo = this.#buildSwitch(id, 'solo', label);
+    const mute = this.#buildSwitch(key, 'mute', label);
+    const solo = this.#buildSwitch(key, 'solo', label);
     const switches = document.createElement('div');
     switches.className = 'axys-mixer-switches';
     switches.append(mute, solo);
@@ -160,25 +280,26 @@ export class MixerPanel {
 
     // Each control gets the width of the strip and its value gets its own line under it. A
     // readout beside a slider takes the room the slider needs to be worth dragging.
-    name.htmlFor = gain.id;
-    strip.append(name, pan, panReadout, faderRow, gainReadout, switches);
-    this.#strips.set(id, { gain, gainReadout, pan, panReadout, mute, solo });
+    heading.htmlFor = gain.id;
+    strip.append(heading, pan, panReadout, faderRow, gainReadout, switches);
+    this.#strips.push({ key, label, gain, gainReadout, pan, panReadout, mute, solo });
 
+    const current = (): MixerStrip => stripOf(this.#mixer, key);
     // Heard as it moves, kept when it is let go: one drag is one undo step rather than one per
     // frame, and the sound follows the hand either way.
     gain.addEventListener('input', () => {
-      const gainDb = readNumber(gain, this.#mixer[id].gainDb);
+      const gainDb = readNumber(gain, current().gainDb);
       gainReadout.textContent = levelText(gainDb);
-      this.#hooks.previewMixer(this.#with(id, { gainDb }));
+      this.#hooks.previewMixer(this.#with(key, { gainDb }));
     });
     gain.addEventListener('change', () => {
-      this.#commit(id, { gainDb: readNumber(gain, this.#mixer[id].gainDb) });
+      this.#commit(key, { gainDb: readNumber(gain, current().gainDb) });
     });
     // The detent belongs to the hand on the slider, not to the value: the arrow keys step
     // through the middle of the field one hundredth at a time and must not be dragged to zero.
     let keyboard = false;
     const panValue = (): number => {
-      const value = readNumber(pan, this.#mixer[id].pan);
+      const value = readNumber(pan, current().pan);
       return !keyboard && Math.abs(value) < PAN_DETENT ? 0 : value;
     };
     pan.addEventListener('keydown', () => {
@@ -193,20 +314,20 @@ export class MixerPanel {
       // release and the centre the readout promised turns back into a few percent off it.
       const value = panValue();
       panReadout.textContent = panText(value);
-      this.#hooks.previewMixer(this.#with(id, { pan: value }));
+      this.#hooks.previewMixer(this.#with(key, { pan: value }));
     });
     pan.addEventListener('change', () => {
       const value = panValue();
       pan.value = String(value);
       panReadout.textContent = panText(value);
-      this.#commit(id, { pan: value });
+      this.#commit(key, { pan: value });
     });
     // A double-click puts a control back where it started, which is what every other one does.
     gain.addEventListener('dblclick', () => {
-      this.#commit(id, { gainDb: DEFAULT_MIXER[id].gainDb });
+      this.#commit(key, { gainDb: restingGain(key) });
     });
     pan.addEventListener('dblclick', () => {
-      this.#commit(id, { pan: 0 });
+      this.#commit(key, { pan: 0 });
     });
     return strip;
   }
@@ -217,7 +338,7 @@ export class MixerPanel {
    * @remarks Pressing one settles the desk on that strip alone; Ctrl or Cmd adds it to whatever
    * is already switched on, which is how more than one strip is muted or soloed at a time.
    */
-  #buildSwitch(id: StripId, field: 'mute' | 'solo', strip: string): HTMLButtonElement {
+  #buildSwitch(key: StripKey, field: 'mute' | 'solo', strip: string): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `axys-icon axys-mixer-switch is-${field}`;
@@ -229,27 +350,28 @@ export class MixerPanel {
     button.setAttribute('aria-pressed', 'false');
     setTooltip(button, switchTip(action, strip));
     button.addEventListener('click', (event: MouseEvent) => {
-      this.#toggle(id, field, event.ctrlKey || event.metaKey);
+      this.#toggle(key, field, event.ctrlKey || event.metaKey);
     });
     return button;
   }
 
-  #toggle(id: StripId, field: 'mute' | 'solo', additive: boolean): void {
-    const wanted = !this.#mixer[id][field];
-    const mixer = { ...this.#mixer };
-    for (const other of STRIP_IDS) {
-      const on = other === id ? wanted : additive ? mixer[other][field] : false;
-      mixer[other] = { ...mixer[other], [field]: on };
+  #toggle(key: StripKey, field: 'mute' | 'solo', additive: boolean): void {
+    const wanted = !stripOf(this.#mixer, key)[field];
+    let mixer = this.#mixer;
+    for (const controls of this.#strips) {
+      const strip = stripOf(mixer, controls.key);
+      const on = controls.key === key ? wanted : additive ? strip[field] : false;
+      mixer = withStrip(mixer, controls.key, { ...strip, [field]: on });
     }
     this.#hooks.applyEdit({ type: 'setMixer', mixer });
   }
 
-  #with(id: StripId, patch: Partial<MixerStrip>): MixerSettings {
-    return { ...this.#mixer, [id]: { ...this.#mixer[id], ...patch } };
+  #with(key: StripKey, patch: Partial<MixerStrip>): MixerSettings {
+    return withStrip(this.#mixer, key, { ...stripOf(this.#mixer, key), ...patch });
   }
 
-  #commit(id: StripId, patch: Partial<MixerStrip>): void {
-    const mixer = this.#with(id, patch);
+  #commit(key: StripKey, patch: Partial<MixerStrip>): void {
+    const mixer = this.#with(key, patch);
     this.#mixer = mixer;
     this.#hooks.applyEdit({ type: 'setMixer', mixer });
   }

@@ -2,7 +2,8 @@
 
 import { DEFAULT_MIXER, vocalMonitor } from '../../audio/mixer.js';
 import type { AppState } from '../../app/store.js';
-import type { Blob, PitchCurve, PitchTrackArrays, TimingConflict } from '../../core/types.js';
+import type { Blob, Clip, PitchCurve, PitchTrackArrays, TimingConflict } from '../../core/types.js';
+import { clipOf, sourceTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 
@@ -26,6 +27,45 @@ const HANDLE_HEIGHT = 18;
  * said it was muted or disabled, which is the one thing exclusion does not mean.
  */
 const EXCLUDED_DASH: readonly number[] = [4, 3];
+
+/** Height in pixels of the tab above a blob naming the clip it came from. */
+export const TITLE_HEIGHT = 16;
+
+/** Narrowest blob, in pixels, that carries a title tab. */
+const TITLE_MIN_WIDTH = 28;
+
+/** Padding in pixels either side of a title's text. */
+const TITLE_PADDING = 4;
+
+const TITLE_FONT = '600 12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
+
+/** The clip a blob belongs to, when that clip is on the lane. */
+export function clipOfBlob(state: AppState, blob: Blob): Clip | undefined {
+  const id = clipOf(blob.id);
+  return state.edits?.clips.find((clip) => clip.id === id);
+}
+
+/**
+ * The tab above a blob that names its clip, in canvas pixels, or `null` when the blob is too
+ * narrow to carry one.
+ *
+ * @remarks It is also where the clip is picked up to be moved, so hit testing reads the same
+ * rectangle the layer draws.
+ */
+export function titleRect(
+  blob: Blob,
+  track: PitchTrackArrays | null,
+  viewport: Viewport,
+): { x: number; y: number; width: number; height: number } | null {
+  const x0 = viewport.timeToX(blobOutputStart(blob));
+  const x1 = viewport.timeToX(blobOutputEnd(blob));
+  const width = x1 - x0;
+  if (width < TITLE_MIN_WIDTH) {
+    return null;
+  }
+  const top = viewport.midiToY(blobPitchExtent(blob, track).high);
+  return { x: x0, y: top - TITLE_HEIGHT, width, height: TITLE_HEIGHT };
+}
 
 /** Where a blob starts once its timing edits are applied, in output seconds. */
 export function blobOutputStart(blob: Blob): number {
@@ -184,11 +224,19 @@ export function drawBlobs(
 ): void {
   const selected = new Set(state.selection.blobs);
   // What is being heard is drawn solid and what is not is drawn transient, so the picture and
-  // the mixer never disagree. Hearing both puts both between the two.
-  const monitor = vocalMonitor(state.edits?.mixer ?? DEFAULT_MIXER);
-  const hearingOriginal = monitor === 'original';
-  const editedAlpha = monitor === 'processed' ? 1 : hearingOriginal ? 0.28 : 0.55;
-  const originalAlpha = hearingOriginal ? 1 : 0.55;
+  // the mixer never disagree. Hearing both puts both between the two. Each clip has its own
+  // strips, so each is drawn by what is heard of it.
+  const mixer = state.edits?.mixer ?? DEFAULT_MIXER;
+  const monitors = new Map<number, ReturnType<typeof vocalMonitor>>();
+  const monitorOf = (blob: Blob): ReturnType<typeof vocalMonitor> => {
+    const clip = clipOf(blob.id);
+    let monitor = monitors.get(clip);
+    if (monitor === undefined) {
+      monitor = vocalMonitor(mixer, clip);
+      monitors.set(clip, monitor);
+    }
+    return monitor;
+  };
   // Only the Time tool acts on a blob's edges, so the grips appear only while it is armed.
   const showHandles = state.tool === 'time';
 
@@ -197,13 +245,15 @@ export function drawBlobs(
   ctx.rect(0, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
 
-  if (monitor !== 'processed') {
-    for (const blob of state.blobs) {
-      if (blob.end < viewport.view.visibleStart || blob.start > viewport.view.visibleEnd) {
-        continue;
-      }
-      drawOriginalBlob(ctx, state, viewport, theme, blob, originalAlpha);
+  for (const blob of state.blobs) {
+    const monitor = monitorOf(blob);
+    if (monitor === 'processed') {
+      continue;
     }
+    if (blob.end < viewport.view.visibleStart || blob.start > viewport.view.visibleEnd) {
+      continue;
+    }
+    drawOriginalBlob(ctx, state, viewport, theme, blob, monitor === 'original' ? 1 : 0.55);
   }
 
   for (const blob of state.blobs) {
@@ -212,7 +262,11 @@ export function drawBlobs(
     if (end < viewport.view.visibleStart || start > viewport.view.visibleEnd) {
       continue;
     }
-    drawBlob(ctx, state, viewport, theme, blob, selected.has(blob.id), editedAlpha, showHandles);
+    const monitor = monitorOf(blob);
+    const alpha = monitor === 'processed' ? 1 : monitor === 'original' ? 0.28 : 0.55;
+    const isSelected = selected.has(blob.id);
+    drawBlob(ctx, state, viewport, theme, blob, isSelected, alpha, showHandles);
+    drawTitle(ctx, state, viewport, theme, blob, isSelected, alpha);
   }
 
   for (const conflict of state.conflicts) {
@@ -331,6 +385,55 @@ function drawBlob(
     ctx.fill();
   }
   ctx.restore();
+}
+
+/**
+ * Draws the tab above a blob that names the clip it came from.
+ *
+ * @remarks The clip's file name without its extension, the way a desk heads a clip, cut to the
+ * blob's width. A blob too narrow for a readable name carries no tab rather than a sliver.
+ */
+function drawTitle(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  blob: Blob,
+  isSelected: boolean,
+  alpha: number,
+): void {
+  const rect = titleRect(blob, state.track, viewport);
+  const clip = clipOfBlob(state, blob);
+  if (rect === null || clip === undefined) {
+    return;
+  }
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = isSelected ? theme.selection : theme.blobBounds;
+  ctx.fillRect(Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), rect.height);
+  ctx.font = TITLE_FONT;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = theme.bg;
+  const text = fitText(ctx, sourceTitle(clip.source.name), rect.width - TITLE_PADDING * 2);
+  if (text !== '') {
+    ctx.fillText(text, rect.x + TITLE_PADDING, rect.y + rect.height / 2 + 0.5);
+  }
+  ctx.restore();
+}
+
+/** The longest prefix of `text` that fits `width`, ending in an ellipsis when it was cut. */
+function fitText(ctx: CanvasRenderingContext2D, text: string, width: number): string {
+  if (ctx.measureText(text).width <= width) {
+    return text;
+  }
+  for (let length = text.length - 1; length > 0; length -= 1) {
+    const cut = `${text.slice(0, length)}...`;
+    if (ctx.measureText(cut).width <= width) {
+      return cut;
+    }
+  }
+  return '';
 }
 
 function drawConflict(

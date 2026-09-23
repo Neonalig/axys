@@ -10,10 +10,16 @@
 
 import workletUrl from './worklet/renderer-worklet.ts?worker&url';
 import type { AppStore } from '../app/store.js';
-import type { MixerSettings, RenderPlan, TimelineMap } from '../core/types.js';
+import type { ClipPlan } from '../core/json.js';
+import type { ClipId, MixerSettings, ReferenceId, RenderPlan, TimelineMap } from '../core/types.js';
 import { meterAt, ppqOf, tickToSeconds } from '../core/timeline.js';
 import { wasmModuleUrl } from '../core/wasm-url.js';
-import type { EngineMessage, OutputRange, RendererMessage } from './worklet/renderer-worklet.js';
+import type {
+  ClipPlacement,
+  EngineMessage,
+  OutputRange,
+  RendererMessage,
+} from './worklet/renderer-worklet.js';
 
 /** Whether the engine can play, and why not when it cannot. */
 export type EngineStatus = 'idle' | 'blocked' | 'running' | 'failed';
@@ -61,8 +67,8 @@ export class AudioEngine {
   #listeners = new Set<(report: EngineReport) => void>();
 
   #encoder = new TextEncoder();
+  /** The lane-wide plan the editor draws from, which places the clicks in output time. */
   #plan: RenderPlan | null = null;
-  #planBytes: Uint8Array | null = null;
   #timeline: TimelineMap | null = null;
   #metronome = false;
 
@@ -93,40 +99,80 @@ export class AudioEngine {
   }
 
   /**
-   * Hands the worklet its source audio. Transfers the buffer.
+   * Starts a project over at a sample rate, dropping whatever the worklet held.
    *
-   * @remarks `samples` is mono at `sampleRate` and belongs to the worklet afterwards. The
-   * context is opened at the source rate where the host allows it, so no resampling is needed.
+   * @remarks The context is opened at the project rate where the host allows it, so no
+   * resampling is needed.
    */
-  async loadSource(samples: Float32Array, sampleRate: number, trackJson: string): Promise<void> {
-    const buffer = samples.buffer;
-    if (!(buffer instanceof ArrayBuffer)) {
-      throw new TypeError('source audio must be backed by a transferable ArrayBuffer');
-    }
+  async loadProject(sampleRate: number): Promise<void> {
     this.#sourceRate = sampleRate;
-    this.#duration = samples.length / sampleRate;
+    this.#duration = 0;
     this.#reported = 0;
     this.#reportedAt = now();
     this.#playing = false;
     this.#underruns = 0;
-
     const node = await this.#ensureNode(sampleRate);
     if (!node) return;
+    this.#send({ type: 'project', sampleRate });
+  }
 
-    this.#planBytes ??= this.#encoder.encode(
-      JSON.stringify(passthroughPlan(sampleRate, this.#duration)),
-    );
+  /**
+   * Hands the worklet one clip's audio. Transfers the buffer.
+   *
+   * @remarks `samples` is mono at the project rate and belongs to the worklet afterwards.
+   * Loading a clip the worklet already holds replaces it.
+   */
+  loadClip(clip: ClipId, samples: Float32Array, trackJson: string, placed: ClipPlan | null): void {
+    const buffer = samples.buffer;
+    if (!(buffer instanceof ArrayBuffer)) {
+      throw new TypeError('source audio must be backed by a transferable ArrayBuffer');
+    }
+    const rate = this.#sourceRate ?? 48_000;
+    const plan = placed?.plan ?? passthroughPlan(rate, samples.length / rate);
     this.#send(
       {
-        type: 'source',
+        type: 'clip',
+        id: clip,
         samples: buffer,
-        sampleRate,
         track: this.#encoder.encode(trackJson),
-        plan: this.#planBytes,
+        plan: this.#encoder.encode(JSON.stringify(plan)),
+        position: placed?.position ?? 0,
       },
       [buffer],
     );
     this.#watchForReady();
+  }
+
+  /**
+   * Hands the worklet one reference's channels. Transfers the buffers.
+   *
+   * @remarks Each channel is at the project rate. A reference is heard as it is, never through a
+   * plan.
+   */
+  loadReference(reference: ReferenceId, channels: readonly Float32Array[], position: number): void {
+    const [left, right] = channels;
+    if (!left) return;
+    const buffers = [left.buffer, right?.buffer].filter(
+      (buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer,
+    );
+    this.#send(
+      {
+        type: 'reference',
+        id: reference,
+        left: left.buffer as ArrayBuffer,
+        right: right ? (right.buffer as ArrayBuffer) : null,
+        position,
+      },
+      [...new Set(buffers)],
+    );
+  }
+
+  /** Places every reference in the project; one left out is silent. */
+  placeReferences(references: readonly { id: ReferenceId; position: number }[]): void {
+    this.#send({
+      type: 'placements',
+      references: references.map(({ id, position }) => ({ id, position })),
+    });
   }
 
   /**
@@ -149,11 +195,21 @@ export class AudioEngine {
     }, READY_TIMEOUT_MS);
   }
 
-  /** Pushes a compiled plan to the worklet. Cheap, safe to call on every edit. */
-  setPlan(plan: RenderPlan): void {
-    this.#plan = plan;
-    this.#planBytes = this.#encoder.encode(JSON.stringify(plan));
-    this.#send({ type: 'plan', plan: this.#planBytes });
+  /**
+   * Pushes every clip's compiled plan and position to the worklet. Cheap, safe to call on every
+   * edit.
+   *
+   * @remarks `lane` is the lane-wide plan the editor draws from, which carries the clicks through
+   * the timing edits. A loaded clip missing from `plans` is off the lane and silent.
+   */
+  setPlans(plans: readonly ClipPlan[], lane: RenderPlan): void {
+    this.#plan = lane;
+    const placements: ClipPlacement[] = plans.map((placed) => ({
+      clip: placed.clip,
+      position: placed.position,
+      plan: this.#encoder.encode(JSON.stringify(placed.plan)),
+    }));
+    this.#send({ type: 'plans', plans: placements });
     if (this.#metronome) this.#sendClicks();
   }
 
@@ -170,7 +226,6 @@ export class AudioEngine {
     }
     this.#ready = false;
     this.#plan = null;
-    this.#planBytes = null;
     this.#timeline = null;
     this.#metronome = false;
     this.#sourceRate = null;
@@ -435,10 +490,12 @@ export class AudioEngine {
           clearTimeout(this.#readyTimer);
           this.#readyTimer = null;
         }
-        this.#duration = message.outputSeconds;
         this.#sourceRate = message.sourceRate;
-        if (this.#metronome) this.#sendClicks();
         this.#notify();
+        break;
+      case 'length':
+        this.#duration = message.outputSeconds;
+        if (this.#metronome) this.#sendClicks();
         break;
       case 'status':
         this.#underruns = message.underruns;
@@ -624,7 +681,7 @@ function openContext(rate: number): AudioContext | null {
 function asRendererMessage(value: unknown): RendererMessage | null {
   if (typeof value !== 'object' || value === null) return null;
   const type: unknown = (value as { type?: unknown }).type;
-  if (type === 'ready' || type === 'status' || type === 'ended') {
+  if (type === 'ready' || type === 'length' || type === 'status' || type === 'ended') {
     return value as RendererMessage;
   }
   return null;

@@ -18,7 +18,9 @@ import {
   analyseFixture,
   correlation,
   decodeWavBytes,
+  firstClipInputs,
   loadTestCore,
+  reopenProject,
   measureF0,
   peak,
   rms,
@@ -342,10 +344,11 @@ describe('core workflow acceptance (design bible 13.4)', () => {
 
   /** Renders a session's whole output through the shipped renderer at export quality. */
   function renderAll(session: CoreSession): Float32Array {
+    const inputs = firstClipInputs(session);
     const renderer = core.PlaybackRenderer.create(
-      session.source(),
-      session.trackJson(),
-      session.planJson(),
+      inputs.samples,
+      inputs.trackJson,
+      inputs.planJson,
       true,
     );
     try {
@@ -431,7 +434,9 @@ describe('core workflow acceptance (design bible 13.4)', () => {
 
   describe('1. import and analyse', () => {
     it('records the imported source facts', () => {
-      const source = json<SourceJson>(baseline.session.sourceJson());
+      const media = json<{ clips: { source: SourceJson }[] }>(baseline.session.mediaJson());
+      const source = media.clips[0]?.source;
+      if (!source) throw new Error('the session has no clip');
       expect(source.name).toBe('phrase.wav');
       expect(source.sampleRate).toBe(fixture.sampleRate);
       expect(source.channels).toBe(1);
@@ -767,11 +772,7 @@ describe('core workflow acceptance (design bible 13.4)', () => {
 
   describe('5. save and reopen', () => {
     it('reopens the saved project with the same state, plan and history', () => {
-      const reopened = core.Session.openProject(
-        edited.session.projectJson(''),
-        fixture.samples,
-        fixture.sampleRate,
-      );
+      const reopened = reopenProject(core, edited.session.projectJson(''), fixture.samples);
       try {
         expect(reopened.stateJson()).toBe(edited.session.stateJson());
         expect(reopened.planJson()).toBe(edited.session.planJson());
@@ -782,11 +783,7 @@ describe('core workflow acceptance (design bible 13.4)', () => {
     });
 
     it('reopens with the same pitch track to within a representation step', () => {
-      const reopened = core.Session.openProject(
-        edited.session.projectJson(''),
-        fixture.samples,
-        fixture.sampleRate,
-      );
+      const reopened = reopenProject(core, edited.session.projectJson(''), fixture.samples);
       try {
         const before = json<TrackJson>(edited.session.trackJson()).frames;
         const after = json<TrackJson>(reopened.trackJson()).frames;
@@ -811,11 +808,7 @@ describe('core workflow acceptance (design bible 13.4)', () => {
     });
 
     it('renders bit-identically after a save and reopen round trip', () => {
-      const reopened = core.Session.openProject(
-        edited.session.projectJson(''),
-        fixture.samples,
-        fixture.sampleRate,
-      );
+      const reopened = reopenProject(core, edited.session.projectJson(''), fixture.samples);
       try {
         expectSameSamples(renderAll(reopened), edited.render, 'the round-tripped render');
       } finally {
@@ -827,9 +820,7 @@ describe('core workflow acceptance (design bible 13.4)', () => {
       const projectText = edited.session.projectJson('');
       const different = fixture.samples.slice();
       different[0] = (different[0] ?? 0) + 0.5;
-      expect(() =>
-        core.Session.openProject(projectText, different, fixture.sampleRate),
-      ).toThrowError();
+      expect(() => reopenProject(core, projectText, different)).toThrowError();
     });
 
     it('writes a document the reader accepts', () => {
@@ -853,7 +844,7 @@ describe('core workflow acceptance (design bible 13.4)', () => {
         'Malformed project: payload does not match its contract',
       );
 
-      const taken = core.Session.openProject(older, fixture.samples, fixture.sampleRate);
+      const taken = reopenProject(core, older, fixture.samples);
       taken.free();
     });
   });

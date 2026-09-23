@@ -2,12 +2,18 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { amplitude, DEFAULT_MIXER, mixLevels, vocalMonitor } from './mixer.js';
-import type { MixerSettings } from '../core/types.js';
-
-function desk(patch: Partial<MixerSettings> = {}): MixerSettings {
-  return { ...DEFAULT_MIXER, ...patch };
-}
+import {
+  amplitude,
+  clipLevels,
+  clipStrips,
+  DEFAULT_MIXER,
+  mixLevels,
+  referenceLevel,
+  UNITY_STRIP,
+  vocalMonitor,
+  withClipStrip,
+  withReferenceStrip,
+} from './mixer.js';
 
 describe('amplitude', () => {
   it('reads unity at zero and silence at the floor', () => {
@@ -24,43 +30,49 @@ describe('amplitude', () => {
 });
 
 describe('mixLevels', () => {
-  it('starts on the processed take with the original muted', () => {
+  it('starts every clip on the processed take with the original muted', () => {
     const levels = mixLevels(DEFAULT_MIXER);
-    expect(levels.processed.audible).toBe(true);
-    expect(levels.original.audible).toBe(false);
+    const clip = clipLevels(levels, 3);
+    expect(clip.processed.audible).toBe(true);
+    expect(clip.original.audible).toBe(false);
     expect(levels.click.audible).toBe(true);
-    expect(levels.click.left).toBeLessThan(levels.processed.left);
+    expect(levels.click.left).toBeLessThan(clip.processed.left);
+    expect(referenceLevel(levels, 0).audible).toBe(true);
   });
 
   it('holds loudness across the stereo field rather than dipping through the middle', () => {
-    const centre = mixLevels(DEFAULT_MIXER).processed;
-    const left = mixLevels(desk({ processed: { ...DEFAULT_MIXER.processed, pan: -1 } })).processed;
+    const centre = clipLevels(mixLevels(DEFAULT_MIXER), 0).processed;
+    const panned = withClipStrip(DEFAULT_MIXER, 0, 'processed', { ...UNITY_STRIP, pan: -1 });
+    const left = clipLevels(mixLevels(panned), 0).processed;
     expect(centre.left).toBeCloseTo(centre.right, 12);
     expect(left.right).toBeCloseTo(0, 12);
     const power = (l: number, r: number): number => l * l + r * r;
     expect(power(centre.left, centre.right)).toBeCloseTo(power(left.left, left.right), 12);
   });
 
-  it('silences every strip a solo leaves out, muted or not', () => {
-    const levels = mixLevels(desk({ click: { ...DEFAULT_MIXER.click, solo: true } }));
-    expect(levels.click.audible).toBe(true);
-    expect(levels.processed.audible).toBe(false);
+  it('silences every strip a solo leaves out, including sources with no entry yet', () => {
+    const desk = withReferenceStrip(DEFAULT_MIXER, 1, { ...UNITY_STRIP, solo: true });
+    const levels = mixLevels(desk);
+    expect(referenceLevel(levels, 1).audible).toBe(true);
+    expect(referenceLevel(levels, 2).audible).toBe(false);
+    expect(clipLevels(levels, 0).processed.audible).toBe(false);
+    expect(levels.click.audible).toBe(false);
   });
 
-  it('treats a closed fader as silence', () => {
-    const levels = mixLevels(desk({ processed: { ...DEFAULT_MIXER.processed, gainDb: -60 } }));
-    expect(levels.processed.audible).toBe(false);
+  it('keeps each clip on its own strips', () => {
+    const desk = withClipStrip(DEFAULT_MIXER, 1, 'processed', { ...UNITY_STRIP, gainDb: -60 });
+    const levels = mixLevels(desk);
+    expect(clipLevels(levels, 1).processed.audible).toBe(false);
+    expect(clipLevels(levels, 0).processed.audible).toBe(true);
+    expect(clipStrips(desk, 1).original.mute).toBe(true);
   });
 });
 
 describe('vocalMonitor', () => {
-  it('names what is being heard', () => {
-    expect(vocalMonitor(DEFAULT_MIXER)).toBe('processed');
-    expect(vocalMonitor(desk({ original: { ...DEFAULT_MIXER.original, mute: false } }))).toBe(
-      'both',
-    );
-    expect(vocalMonitor(desk({ processed: { ...DEFAULT_MIXER.processed, mute: true } }))).toBe(
-      'neither',
-    );
+  it('names what is being heard from one clip', () => {
+    expect(vocalMonitor(DEFAULT_MIXER, 0)).toBe('processed');
+    const both = withClipStrip(DEFAULT_MIXER, 0, 'original', UNITY_STRIP);
+    expect(vocalMonitor(both, 0)).toBe('both');
+    expect(vocalMonitor(both, 1)).toBe('processed');
   });
 });

@@ -10,9 +10,18 @@
 
 import { savePreferences } from './preferences.js';
 import { selectionSpan } from './selection.js';
+import { projectEnd, projectRate } from './store.js';
 import type { AppState, AppStore } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
-import type { Blob, EditOp, ExportPreview, MappingProposal, TimelineMap } from '../core/types.js';
+import { clipOf } from '../core/types.js';
+import type {
+  Blob,
+  ClipId,
+  EditOp,
+  ExportPreview,
+  MappingProposal,
+  TimelineMap,
+} from '../core/types.js';
 import type { EditorController } from '../editor/interaction.js';
 import { outputToSource } from '../editor/layers/blobs.js';
 import { fitView, isVisible, snapViewTo, Viewport } from '../editor/view.js';
@@ -115,6 +124,19 @@ export interface Workspace {
   importMidi(): Promise<void>;
 
   /**
+   * Asks for a vocal and puts it on the lane of the open project, or starts a project with it.
+   *
+   * @remarks One undo step. The clip goes after the last one on the lane.
+   */
+  importClip(): Promise<void>;
+
+  /**
+   * Asks for a reference and imports it: a MIDI file becomes the guide, and audio a reference
+   * track heard beside the vocal.
+   */
+  importReference(): Promise<void>;
+
+  /**
    * Measures what exporting an output range would produce, before any file is written.
    *
    * @remarks `null` when there is no session, or when the core could not measure the range.
@@ -205,6 +227,11 @@ function grouped(ops: readonly EditOp[]): EditOp {
 function selectedBlobs(state: AppState): Blob[] {
   const wanted = new Set(state.selection.blobs);
   return state.blobs.filter((blob) => wanted.has(blob.id));
+}
+
+/** The clips the selected blobs, or the blob under the playhead, belong to. */
+function targetClips(state: AppState): ClipId[] {
+  return [...new Set(targetBlobs(state).map((blob) => clipOf(blob.id)))];
 }
 
 /** The blob under the playhead, or `undefined` when the playhead sits in a gap. */
@@ -325,7 +352,7 @@ function zoomBy(store: AppStore, factor: number): void {
 
 function fitToContent(store: AppStore): void {
   const state = store.state;
-  const end = state.blobs.at(-1)?.end ?? state.source?.duration ?? 10;
+  const end = state.blobs.at(-1)?.end ?? (projectEnd(state) || 10);
   const start = state.blobs[0]?.start ?? 0;
   let low = Number.POSITIVE_INFINITY;
   let high = Number.NEGATIVE_INFINITY;
@@ -444,15 +471,27 @@ export function buildCommands(): Command[] {
       },
     },
     {
-      // Its own button rather than one more thing behind Open: a guide is imported into an open
-      // project instead of replacing it, which is the opposite of what Open does.
-      id: 'file.importMidi',
-      label: 'Import MIDI',
+      // Its own button rather than one more thing behind Open: a reference is imported into an
+      // open project instead of replacing it, which is the opposite of what Open does. One
+      // command for a MIDI guide and for audio, because both are placed against the vocal
+      // rather than edited.
+      id: 'file.importReference',
+      label: 'Import Reference',
       group: 'File',
       shortcut: 'Ctrl+I',
       enabled: (ctx) => ready(ctx) && !ctx.workspace.importing,
       run: async (ctx) => {
-        await ctx.workspace.importMidi();
+        await ctx.workspace.importReference();
+      },
+    },
+    {
+      id: 'file.importClip',
+      label: 'Import Vocal',
+      group: 'File',
+      shortcut: 'Ctrl+Shift+I',
+      enabled: (ctx) => !ctx.workspace.importing,
+      run: async (ctx) => {
+        await ctx.workspace.importClip();
       },
     },
     {
@@ -472,7 +511,7 @@ export function buildCommands(): Command[] {
                   start: ctx.workspace.outputAt(selection.start),
                   end: ctx.workspace.outputAt(selection.end),
                 },
-          sourceRate: state.source?.sampleRate ?? 48_000,
+          sourceRate: projectRate(state) ?? 48_000,
           preview: (range) => ctx.workspace.exportPreview(range),
           onExport: (choice) => {
             void ctx.workspace.exportWav(choice);
@@ -628,6 +667,35 @@ export function buildCommands(): Command[] {
           .filter((blob) => blob.excluded !== excluded)
           .map((blob): EditOp => ({ type: 'setExcluded', blob: blob.id, excluded }));
         if (ops.length > 0) ctx.workspace.apply(grouped(ops));
+      },
+    },
+
+    {
+      // A deleted blob takes the audio under it with it, and Reset Range brings both back.
+      id: 'edit.deleteBlobs',
+      label: 'Delete Blob(s)',
+      group: 'Edit',
+      shortcut: 'Delete',
+      altShortcut: 'Backspace',
+      enabled: (ctx) => editable(ctx) && selectedBlobs(ctx.store.state).length > 0,
+      run: (ctx) => {
+        const blobs = selectedBlobs(ctx.store.state).map((blob) => blob.id);
+        if (blobs.length === 0) return;
+        ctx.workspace.apply({ type: 'deleteBlobs', blobs });
+        ctx.editor.clearSelection();
+      },
+    },
+    {
+      id: 'edit.deleteClip',
+      label: 'Delete Clip',
+      group: 'Edit',
+      shortcut: 'Shift+Delete',
+      enabled: (ctx) => editable(ctx) && targetClips(ctx.store.state).length > 0,
+      run: (ctx) => {
+        const clips = targetClips(ctx.store.state);
+        if (clips.length === 0) return;
+        ctx.workspace.apply(grouped(clips.map((clip): EditOp => ({ type: 'removeClip', clip }))));
+        ctx.editor.clearSelection();
       },
     },
 

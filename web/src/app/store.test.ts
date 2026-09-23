@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AppStore, batchUpdate, initialState } from './store.js';
+import { projectEnd, projectRate, AppStore, batchUpdate, initialState } from './store.js';
 import type { AppState } from './store.js';
 import type { RenderPlan } from '../core/types.js';
 
@@ -35,7 +35,8 @@ describe('initialState', () => {
     const state = initialState();
     expect(state.phase).toBe('empty');
     expect(state.message).toBeNull();
-    expect(state.source).toBeNull();
+    expect(projectEnd(state)).toBe(0);
+    expect(projectRate(state)).toBeNull();
     expect(state.track).toBeNull();
     expect(state.blobs).toEqual([]);
     expect(state.conflicts).toEqual([]);

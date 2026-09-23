@@ -11,7 +11,13 @@
 
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 
-import { analyseFixture, loadTestCore, readMidiFixture, type TestCore } from './helpers/core';
+import {
+  analyseFixture,
+  loadTestCore,
+  readMidiFixture,
+  reopenProject,
+  type TestCore,
+} from './helpers/core';
 
 /** One frame of `Session.trackJson`, as `axys_core::analysis::f0::PitchFrame` serialises. */
 interface TrackFrameJson {
@@ -63,7 +69,11 @@ interface StripJson {
 
 /** The part of `Session.stateJson` these tests read. */
 interface StateJson {
-  mixer: { processed: StripJson; original: StripJson; click: StripJson };
+  mixer: {
+    clips: { clip: number; processed: StripJson; original: StripJson }[];
+    references: unknown[];
+    click: StripJson;
+  };
 }
 
 /** `Session.historyJson`. */
@@ -251,7 +261,8 @@ describe('wasm boundary', () => {
   it('exposes state, blobs, plan, track, conflicts and history as parseable JSON', () => {
     const state = JSON.parse(session.stateJson()) as Record<string, unknown>;
     for (const key of [
-      'blobs',
+      'clips',
+      'references',
       'scale',
       'modulation',
       'formant',
@@ -380,23 +391,30 @@ describe('wasm boundary', () => {
     let reopened: TestCore['Session']['prototype'] | null = null;
     try {
       const before = (JSON.parse(scoped.stateJson()) as StateJson).mixer;
-      expect(before.original.mute).toBe(true);
+      // A clip with no entry on the desk reads as its starting track.
+      expect(before.clips).toEqual([]);
       expect(before.click.gainDb).toBeCloseTo(-11, 6);
 
+      const strip = { gainDb: 0, pan: 0, mute: false, solo: false };
       const mixer = {
         ...before,
-        processed: { ...before.processed, gainDb: -4.5, pan: -0.5 },
-        original: { ...before.original, mute: false, solo: true },
+        clips: [
+          {
+            clip: 0,
+            processed: { ...strip, gainDb: -4.5, pan: -0.5 },
+            original: { ...strip, solo: true },
+          },
+        ],
       };
       scoped.applyEdit(JSON.stringify({ type: 'setMixer', mixer }));
       expect((JSON.parse(scoped.historyJson()) as HistoryJson).undo).toBe('Set Mixer');
 
       const document = scoped.projectJson('');
-      reopened = core.Session.openProject(document, samples, sampleRate);
-      const saved = (JSON.parse(reopened.stateJson()) as StateJson).mixer;
-      expect(saved.processed.gainDb).toBeCloseTo(-4.5, 6);
-      expect(saved.processed.pan).toBeCloseTo(-0.5, 6);
-      expect(saved.original.solo).toBe(true);
+      reopened = reopenProject(core, document, samples);
+      const saved = (JSON.parse(reopened.stateJson()) as StateJson).mixer.clips[0];
+      expect(saved?.processed.gainDb).toBeCloseTo(-4.5, 6);
+      expect(saved?.processed.pan).toBeCloseTo(-0.5, 6);
+      expect(saved?.original.solo).toBe(true);
 
       // The desk is monitoring, so it must not reach the render plan.
       const plain = core.Session.create(samples, sampleRate, 'mixer', analysis, '');
@@ -427,7 +445,7 @@ describe('wasm boundary', () => {
       expect(parsed.schemaVersion).toBe(core.schemaVersion());
       expect(parsed.name).toBe('project');
 
-      reopened = core.Session.openProject(document, samples, sampleRate);
+      reopened = reopenProject(core, document, samples);
       // Reopening must reproduce the edit state and the compiled plan exactly, or a saved
       // project does not sound like the session that saved it.
       expect(reopened.stateJson()).toBe(scoped.stateJson());
@@ -444,13 +462,13 @@ describe('wasm boundary', () => {
     const scoped = core.Session.create(samples, sampleRate, 'project', analysis, '');
     try {
       const document = scoped.projectJson('');
-      expect(() => core.Session.openProject(document, other.samples, other.sampleRate)).toThrow(
-        /not the file the project was made from/,
+      expect(() => reopenProject(core, document, other.samples)).toThrow(
+        /which the project was made from/,
       );
       // Same audio with one sample changed: the fingerprint, not the length, is the check.
       const tampered = samples.slice();
       tampered[0] = at(tampered, 0) + 0.5;
-      expect(() => core.Session.openProject(document, tampered, sampleRate)).toThrow();
+      expect(() => reopenProject(core, document, tampered)).toThrow();
     } finally {
       scoped.free();
     }
@@ -577,16 +595,13 @@ describe('wasm boundary', () => {
     try {
       const document = JSON.parse(scoped.projectJson('')) as Record<string, unknown>;
       document['schemaVersion'] = core.schemaVersion() + 1;
-      expect(() => core.Session.openProject(JSON.stringify(document), samples, sampleRate)).toThrow(
-        /newer than/i,
-      );
+      expect(() => core.Session.openProject(JSON.stringify(document))).toThrow(/newer than/i);
 
       // A document missing required fields is malformed rather than unsupported, and must
       // still be an error and not a panic.
-      expect(() => core.Session.openProject('{"schemaVersion":1}', samples, sampleRate)).toThrow(
-        /malformed/i,
-      );
-      expect(() => core.Session.openProject('not json', samples, sampleRate)).toThrow();
+      expect(() => core.Session.openProject('{"schemaVersion":2}')).toThrow(/malformed/i);
+      expect(() => core.Session.openProject('{"schemaVersion":1}')).toThrow(/no source/i);
+      expect(() => core.Session.openProject('not json')).toThrow();
     } finally {
       scoped.free();
     }

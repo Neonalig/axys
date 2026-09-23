@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
-/* The mixer: a bottom panel of desk strips, opened from the footer. */
-
 /* The mixer: a bottom panel of desk strips, opened from the footer */
 
 .axys-mixer {
@@ -25,6 +23,51 @@
   border-top-width: 0;
 }
 
+/*
+ * Every source on the desk is one outlined box: a clip's track holds its two strips under the
+ * clip's name, and a reference or the metronome is a box of one.
+ */
+
+.axys-mixer-track,
+.axys-mixer-strip.is-standalone {
+  flex: 0 0 auto;
+  border: 1px solid var(--axys-border);
+  border-radius: var(--axys-radius);
+  background: var(--axys-surface-sunken);
+}
+
+.axys-mixer-track {
+  display: flex;
+  flex-direction: column;
+  gap: var(--axys-space-1);
+  min-height: 0;
+  padding: 6px 0 0;
+}
+
+.axys-mixer-track-name {
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 0 var(--axys-space-2);
+  font-size: var(--axys-size-sm);
+  font-weight: var(--axys-weight-strong);
+  color: var(--axys-text);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.axys-mixer-track-strips {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The two strips of a track are divided by a hairline rather than boxed apart */
+
+.axys-mixer-track-strips > .axys-mixer-strip + .axys-mixer-strip {
+  border-left: 1px solid var(--axys-border);
+}
+
 .axys-mixer-strip {
   display: flex;
   flex: 0 0 auto;
@@ -33,9 +76,6 @@
   align-items: center;
   width: 92px;
   padding: 6px;
-  border: 1px solid var(--axys-border);
-  border-radius: var(--axys-radius);
-  background: var(--axys-surface-sunken);
 }
 
 /* Only the fader grows; everything else keeps the height it asks for */

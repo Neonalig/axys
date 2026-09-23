@@ -188,8 +188,11 @@ function summarise(id: string, document: Project, updated: number): ProjectSumma
     id,
     name: document.name,
     updated,
-    sourceName: document.source.name,
-    duration: document.source.duration,
+    sourceName: document.edits.clips[0]?.source.name ?? document.name,
+    duration: Math.max(
+      0,
+      ...document.edits.clips.map((clip) => clip.position + clip.source.duration),
+    ),
   };
 }
 

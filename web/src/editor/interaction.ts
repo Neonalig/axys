@@ -8,15 +8,17 @@ import {
   withRange,
 } from '../app/selection.js';
 import type { TimeRange } from '../app/selection.js';
+import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
-import { MIN_BLOB_SECONDS } from '../core/types.js';
+import { clipOf, MIN_BLOB_SECONDS, sourceTitle } from '../core/types.js';
 import {
   blobOutputEnd,
   blobOutputStart,
   blobPitchExtent,
   outputToSource,
   sourceToOutput,
+  titleRect,
 } from './layers/blobs.js';
 import { MARQUEE_CURSOR } from './cursors.js';
 import { noteNameWithCents } from '../core/notes.js';
@@ -41,6 +43,7 @@ import {
   describeHit,
   EDGE_GRIP,
   FINE_FACTOR,
+  freePosition,
   gestureAnchors,
   modifiersOf,
   moveBezierHandle,
@@ -89,7 +92,19 @@ type Gesture =
   | { kind: 'edge'; blob: BlobId; edge: Edge; sourceTime: number; scale: number | null }
   | { kind: 'audition'; start: number; end: number }
   | { kind: 'pan'; from: ViewState }
-  | { kind: 'split'; blob: BlobId; time: number };
+  | { kind: 'split'; blob: BlobId; time: number }
+  | {
+      kind: 'clip';
+      clip: number;
+      /** Where the clip sat when it was picked up, in project seconds. */
+      from: number;
+      /** How far into the clip the pointer took hold, so the clip does not jump to it. */
+      grab: number;
+      duration: number;
+      /** Every other clip's span, which the dragged clip may not land over. */
+      others: [number, number][];
+      position: number;
+    };
 
 const WHEEL_ZOOM = 0.002;
 
@@ -101,6 +116,7 @@ const BEZIER_SAMPLE_PIXELS = 6;
 
 /** Most samples one committed Bezier carries. */
 const BEZIER_MAX_SAMPLES = 96;
+
 const KEY_ZOOM = 1.3;
 
 /**
@@ -240,6 +256,21 @@ export class EditorController {
             midi: anchor.midi,
           };
         }
+      }
+    }
+
+    // The tab over a blob names its clip and is where the clip is picked up, so it answers
+    // before the blob under it does.
+    for (const blob of state.blobs) {
+      const rect = titleRect(blob, state.track, viewport);
+      if (
+        rect !== null &&
+        x >= rect.x &&
+        x <= rect.x + rect.width &&
+        y >= rect.y &&
+        y <= rect.y + rect.height
+      ) {
+        return { ...base, kind: 'clipTitle', blob: blob.id };
       }
     }
 
@@ -506,7 +537,7 @@ export class EditorController {
     }
     if (!Number.isFinite(start) || !Number.isFinite(end)) {
       start = 0;
-      end = state.source?.duration ?? 10;
+      end = projectEnd(state) || 10;
     }
     if (!Number.isFinite(low) || !Number.isFinite(high)) {
       low = 48;
@@ -755,6 +786,17 @@ export class EditorController {
       return { kind: 'rulerDrag', anchorTime: hit.time, drawing: false };
     }
 
+    if (
+      hit.kind === 'clipTitle' &&
+      hit.blob !== null &&
+      this.#bezierHandleAt(this.#origin) === null
+    ) {
+      const gesture = this.#beginClipDrag(state, hit.blob, hit.time);
+      if (gesture !== null) {
+        return gesture;
+      }
+    }
+
     switch (state.tool) {
       case 'select':
         // Ctrl adds a region of its own, Shift stretches the existing one: the pair every
@@ -815,6 +857,57 @@ export class EditorController {
       }
       default:
         return this.#beginScrub(hit);
+    }
+  }
+
+  /** Picks up the clip a blob belongs to, by the point under the pointer. */
+  #beginClipDrag(state: AppState, blob: BlobId, time: number): Gesture | null {
+    const id = clipOf(blob);
+    const clip = state.edits?.clips.find((entry) => entry.id === id);
+    if (clip === undefined) {
+      return null;
+    }
+    const others = (state.edits?.clips ?? [])
+      .filter((entry) => entry.id !== id)
+      .map((entry): [number, number] => [entry.position, entry.position + entry.source.duration]);
+    return {
+      kind: 'clip',
+      clip: id,
+      from: clip.position,
+      grab: time - clip.position,
+      duration: clip.source.duration,
+      others,
+      position: clip.position,
+    };
+  }
+
+  /**
+   * Shows where audio dragged in from outside would land, and returns that time.
+   *
+   * @remarks Client coordinates, as a drag event carries them. `null` when the pointer is not over
+   * the canvas, which also takes the marker away.
+   */
+  previewDrop(clientX: number, clientY: number): number | null {
+    const rect = this.#canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+      this.endDrop();
+      return null;
+    }
+    const time = Math.max(0, this.#snapTime(this.viewport.xToTime(x), NO_MODIFIERS));
+    this.#renderer?.setPreview({
+      kind: 'drop',
+      time,
+      label: `Drop Vocal ${formatClock(time, 0.001)}`,
+    });
+    return time;
+  }
+
+  /** Takes the drop marker away. */
+  endDrop(): void {
+    if (this.#gesture === null) {
+      this.#updatePreview();
     }
   }
 
@@ -973,6 +1066,11 @@ export class EditorController {
         );
         break;
       }
+      case 'clip': {
+        const wanted = this.#snapTime(time - gesture.grab, modifiers);
+        gesture.position = freePosition(gesture.others, gesture.duration, wanted);
+        break;
+      }
       case 'rubberBand':
         break;
     }
@@ -1048,6 +1146,15 @@ export class EditorController {
           time: gesture.time,
           label: `Split Blob ${formatClock(gesture.time, 0.001)}`,
         };
+      case 'clip':
+        return this.#moved
+          ? {
+              kind: 'clipDrag',
+              clip: gesture.clip,
+              position: gesture.position,
+              label: `Move Clip ${formatClock(gesture.position, 0.001)}`,
+            }
+          : null;
       case 'pan':
         return null;
       case 'audition':
@@ -1163,6 +1270,18 @@ export class EditorController {
       case 'pan':
         this.#applyCursor(this.#hover);
         break;
+      case 'clip':
+        if (this.#moved) {
+          if (gesture.position !== gesture.from) {
+            this.#commit(
+              { type: 'moveClip', clip: gesture.clip, position: gesture.position },
+              `Move Clip ${formatClock(gesture.position, 0.001)}`,
+            );
+          }
+        } else {
+          this.#selectClip(gesture.clip);
+        }
+        break;
       case 'scrub':
       case 'loop':
         break;
@@ -1210,6 +1329,27 @@ export class EditorController {
     const selection = selectionForRanges(blobs, ranges);
     this.#setSelection(selection);
     this.#announce(`${String(selection.blobs.length)} selected`);
+  }
+
+  /** Selects every blob of one clip, which is what a click on its title means. */
+  #selectClip(clip: number): void {
+    const state = this.#store.state;
+    const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);
+    const first = blobs[0];
+    if (first === undefined) {
+      return;
+    }
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const blob of blobs) {
+      start = Math.min(start, blobOutputStart(blob));
+      end = Math.max(end, blobOutputEnd(blob));
+    }
+    this.#selectSpan(start, end);
+    const name = state.edits?.clips.find((entry) => entry.id === clip)?.source.name;
+    if (name !== undefined) {
+      this.#announce(`${sourceTitle(name)} selected`);
+    }
   }
 
   /** Replaces the selection with the blobs and anchors a span of output time covers. */
@@ -1382,7 +1522,7 @@ export class EditorController {
   /** End of the material, which is the source when there is one and the last blob otherwise. */
   #projectEnd(): number {
     const state = this.#store.state;
-    return state.source?.duration ?? state.blobs.at(-1)?.end ?? 0;
+    return projectEnd(state);
   }
 
   #scrubTo(seconds: number): void {
@@ -1634,6 +1774,9 @@ function crossPoint(a: GesturePoint, b: GesturePoint, at: number): GesturePoint 
   const t = span === 0 ? 0 : (at - a.time) / span;
   return { time: at, midi: a.midi + (b.midi - a.midi) * t };
 }
+
+/** A gesture with no modifier held. */
+const NO_MODIFIERS: Modifiers = { constrain: false, fine: false, snap: false };
 
 /** One edit when there is one, and one group when there are several. */
 function grouped(ops: readonly EditOp[]): EditOp {

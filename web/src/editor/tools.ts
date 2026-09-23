@@ -108,7 +108,8 @@ export function toolDefinition(id: ToolId): ToolDefinition {
 }
 
 /** What kind of object a pointer position lands on. */
-export type HitKind = 'empty' | 'ruler' | 'loopEdge' | 'blob' | 'blobEdge' | 'anchor' | 'conflict';
+export type HitKind =
+  'empty' | 'ruler' | 'loopEdge' | 'blob' | 'blobEdge' | 'anchor' | 'conflict' | 'clipTitle';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -137,7 +138,7 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   if (hit.kind === 'conflict') {
     return 'help';
   }
-  if (hit.kind === 'anchor') {
+  if (hit.kind === 'anchor' || hit.kind === 'clipTitle') {
     return 'grab';
   }
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
@@ -167,6 +168,8 @@ export function describeHit(hit: Hit, state: AppState): string {
       return hit.edge === 'start' ? `Blob Start ${clock}` : `Blob End ${clock}`;
     case 'blob':
       return `Blob ${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
+    case 'clipTitle':
+      return 'Move Clip';
     case 'conflict': {
       const conflict = hit.conflict;
       if (conflict === null) {
@@ -390,6 +393,33 @@ export function gestureAnchors(points: readonly GesturePoint[], interp: Interp):
   return anchors;
 }
 
+/**
+ * The position nearest `wanted` at which a clip of `duration` overlaps no other clip.
+ *
+ * @remarks Mirrors `axys_core::clip::free_position`, so a dragged clip previews where the core
+ * will put it: where it was asked when it fits, and otherwise against the nearer edge of the
+ * neighbour it would have overlapped. `others` are the other clips' `[start, end]` spans.
+ */
+export function freePosition(
+  others: readonly (readonly [number, number])[],
+  duration: number,
+  wanted: number,
+): number {
+  const asked = Number.isFinite(wanted) ? Math.max(0, wanted) : 0;
+  const length = Math.max(0, duration);
+  const fits = (at: number): boolean =>
+    at >= 0 && others.every(([start, end]) => at + length <= start + 1e-9 || at >= end - 1e-9);
+  if (fits(asked)) {
+    return asked;
+  }
+  let best: number | null = null;
+  for (const candidate of [0, ...others.flatMap(([start, end]) => [end, start - length])]) {
+    if (!fits(candidate)) continue;
+    if (best === null || Math.abs(candidate - asked) < Math.abs(best - asked)) best = candidate;
+  }
+  return best ?? Math.max(0, ...others.map(([, end]) => end));
+}
+
 /** A point of a {@link BezierCurve} that can be dragged. */
 export type BezierHandle = 'from' | 'c1' | 'c2' | 'to';
 
@@ -515,4 +545,6 @@ export type EditorPreview =
       label: string;
     }
   | { kind: 'span'; blob: BlobId | null; start: number; end: number; label: string }
+  | { kind: 'clipDrag'; clip: number; position: number; label: string }
+  | { kind: 'drop'; time: number; label: string }
   | { kind: 'split'; blob: BlobId; time: number; label: string };

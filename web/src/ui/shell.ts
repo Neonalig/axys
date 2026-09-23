@@ -18,6 +18,7 @@ import {
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
+import { projectEnd } from '../app/store.js';
 import type { AppState, FollowMode, ToolId } from '../app/store.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport } from '../audio/engine.js';
@@ -152,7 +153,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'file.newProject': 'New',
   'file.saveProject': 'Save',
   'file.exportWav': 'Export',
-  'file.importMidi': 'Import',
+  'file.importReference': 'Import',
   'edit.joinBlobs': 'Join',
   'edit.reset': 'Reset',
   'edit.excludeBlob': 'Exclude',
@@ -205,16 +206,26 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
       },
     ],
   },
-  'file.importMidi': {
+  'file.importReference': {
     hint: 'Choose what to import',
     onPress: true,
     entries: (shell) => [
       {
-        label: 'MIDI Guide',
-        icon: 'openMidi',
-        enabled: shell.can('file.importMidi'),
+        label: 'Import Vocal',
+        icon: 'openAudio',
+        key: 'Ctrl+Shift+I',
+        enabled: shell.can('file.importClip'),
         run: () => {
-          shell.run('file.importMidi');
+          shell.run('file.importClip');
+        },
+      },
+      {
+        label: 'Import Reference',
+        icon: 'openMidi',
+        key: 'Ctrl+I',
+        enabled: shell.can('file.importReference'),
+        run: () => {
+          shell.run('file.importReference');
         },
       },
     ],
@@ -297,6 +308,11 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'view.toggleMixer',
   // Where a save goes is a variation on Save, so it lives in that button's own menu.
   'file.saveProjectAs',
+  // A second vocal is one of the things Import offers, so it lives in that button's menu.
+  'file.importClip',
+  // Deleting is done to what is under the hand: the key, or the menu over the blob.
+  'edit.deleteBlobs',
+  'edit.deleteClip',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
@@ -338,7 +354,10 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   Open: 'openProject',
   'Save Project': 'save',
   'Save As': 'save',
-  'Import MIDI': 'openMidi',
+  'Import Reference': 'openMidi',
+  'Import Vocal': 'openAudio',
+  'Delete Blob(s)': 'delete',
+  'Delete Clip': 'delete',
   'Export Audio': 'export',
   Undo: 'undo',
   Redo: 'redo',
@@ -966,7 +985,7 @@ export class AppShell {
 
     this.#canvas.setAttribute(
       'aria-label',
-      state.source === null ? 'Pitch Editor' : `Pitch Editor: ${state.source.name}`,
+      state.projectName === null ? 'Pitch Editor' : `Pitch Editor: ${state.projectName}`,
     );
 
     const mixerOpen = !state.mixerCollapsed;
@@ -1002,7 +1021,7 @@ export class AppShell {
     this.#resizer.setAttribute('aria-valuenow', String(state.inspectorWidth));
     this.#resizer.hidden = state.inspectorCollapsed;
     this.#view = state.view;
-    const duration = state.source?.duration ?? 0;
+    const duration = projectEnd(state);
     this.#timeBar.update({
       min: Math.min(0, state.view.visibleStart),
       max: Math.max(duration, state.view.visibleEnd),
