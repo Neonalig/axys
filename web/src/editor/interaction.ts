@@ -1616,6 +1616,14 @@ export class EditorController {
                 : formatSemitones(gesture.semitones)
             }`,
           );
+          // The selection goes with the line, so it names what was just moved.
+          if (gesture.horizontal) {
+            const ranges = gesture.ranges.map((range) => ({
+              start: range.start + gesture.seconds,
+              end: range.end + gesture.seconds,
+            }));
+            this.#setSelection(selectionForRanges(this.#store.state.blobs, ranges));
+          }
         }
         break;
       }

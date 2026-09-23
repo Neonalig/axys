@@ -770,6 +770,60 @@ its media, its lane in both edit states, and its track on the desk, including th
 recorded `setMixer` operations so an undo in a migrated project replays the desk it had. The web
 side reads project files through the core's `migrateProject`, so the migration lives in one place.
 
+### Three edit modes
+
+Blob and Pitch is the editor as it was: a blob is its audio, its pitch and its edits, and moving it
+moves all three. Blob edits the segmentation alone: the Time tool slides a blob along the audio
+(`ShiftBlob`) and both of its edges move over the audio, so a blob can be made to cover what it
+should have covered without anything heard moving. Pitch edits the pitch line alone: the Pitch and
+Time tools move the heard line across the selection, and the audio stays. Tools a mode leaves
+alone place the playhead. The mode is a session setting on `Q` and on the toolbar, and every
+project opens in Blob and Pitch, so a project behaves as it did until a mode is chosen.
+
+Decided where the backlog left it open:
+
+- **Blob mode leaves drawn pitch with the audio.** A slid blob's curve is cut to its new span the
+  way a moved boundary cuts it, its offset stays with the blob, and its detected centre is read
+  again from the audio it now covers. The same rule as resizing, so the two cannot disagree.
+- **Pasted pitch replaces what it lands on.** No blend at the edges: the span sounds the copied
+  line and the rest of the blob sounds as it did. Each blob is given the part of the line over it.
+- **Cut pitch leaves the sung pitch by default.** Cut Pitch in the inspector chooses Sung Pitch or
+  Flat Line, a device preference.
+- **Editing pitch outside blobs makes a blob.** A drag, a stroke or a paste over pitch outside every
+  blob adds a blob over that stretch carrying the edit, in the same undo step. The alternative, a
+  curve belonging to the clip rather than to a blob, would have been a second way for pitch to be
+  edited with its own rendering, selection and reset rules.
+- **A trimmed clip keeps its hidden audio.** `Clip::window` narrows what is heard and nothing else,
+  so the blobs over the hidden audio and their edits come back with Reset Trim.
+- **A pasted clip carries its edits and analysis.** It is the same audio, so analysing it again
+  would only cost time and throw away the edits that were copied.
+
+### Pitch is replaced a span at a time
+
+`ReplacePitch` sets what a blob sounds across a span and leaves the rest of the blob as it sounded.
+A drawn curve held its first and last values across the whole blob, so a curve over part of a blob
+used to flatten the rest of it. `Interp::Release` marks a stretch between anchors, or before the
+first or after the last, where the blob follows its own pitch instead, and the plan reads it with
+`PitchCurve::drawn_at`. A curve without a release anchor evaluates exactly as it did, so nothing
+drawn before changes. The Draw tool still writes ordinary anchors.
+
+### Clips are copied whole and trimmed
+
+A copied part of a clip is the clip as it was copied and the span taken from it. Pasting makes a new
+clip over the same audio with its own id, a copy of the runtime's samples and track, and the
+window set to the span; it lands at the playhead over whatever is there and is edited like any
+other clip. Cutting inside a clip trims it and adds the tail as a new clip, so one clip becomes two
+in one undo step. A clip's lane span is its window placed at its position, so a trimmed clip moves,
+layers and overlaps by what is heard, and its position may be negative when its window starts late.
+The original strip in the worklet and the export both stop at the window.
+
+Limitation: a selection is output time and a clip part is source time, so copying a part of a clip
+whose blobs have been moved in time takes the source span under the selection rather than the
+material drawn there.
+
+Limitation: clips are trimmed from the playhead with Trim Start and Trim End; there is no edge on
+screen to drag, because a clip is drawn as its blobs rather than as a box of its own.
+
 ## Timeline and musical time
 
 ### Bars and beats are computed in TypeScript for drawing

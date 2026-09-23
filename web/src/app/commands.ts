@@ -1093,7 +1093,7 @@ export function buildCommands(): Command[] {
       id: 'view.toggleOutsidePitch',
       label: 'Outside Pitch',
       group: 'View',
-      shortcut: 'O',
+      shortcut: 'Shift+O',
       enabled: () => true,
       run: (ctx) => {
         const on = !ctx.store.state.outsidePitch;

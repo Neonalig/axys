@@ -1041,7 +1041,7 @@ export class AppShell {
     this.#setFace('view.toggleOutsidePitch', {
       icon: 'outsidePitch',
       label: 'Outside',
-      tooltip: state.outsidePitch ? 'Hide Outside Pitch (O)' : 'Show Outside Pitch (O)',
+      tooltip: state.outsidePitch ? 'Hide Outside Pitch (Shift+O)' : 'Show Outside Pitch (Shift+O)',
       pressed: state.outsidePitch,
     });
 
