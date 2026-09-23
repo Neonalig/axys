@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Message contract shared by the analysis and render workers and their main-thread clients.
+ * Message contract shared by the analysis, span and render workers and the clients that drive them.
  *
  * Every request carries an id; every response quotes it, so several jobs may be in flight on one
  * worker and a late reply to a cancelled job is recognisable. Large buffers travel as transfers,
@@ -61,6 +61,49 @@ export interface AnalysisResult {
   samples: Float32Array;
   sampleRate: number;
   name: string;
+}
+
+/** Measures pitch candidates and energy for one span of an analysis's frames. */
+export interface ObserveSpanRequest {
+  type: 'observeSpan';
+  id: RequestId;
+  /** Source samples from `offset`, covering every sample the span's frames read. */
+  window: Float32Array;
+  offset: number;
+  /** Samples in the whole source buffer. */
+  len: number;
+  sampleRate: number;
+  /** The core's analysis parameter document. */
+  paramsJson: string;
+  /** First frame of the span. */
+  first: number;
+  /** One past the last frame of the span. */
+  end: number;
+}
+
+/**
+ * Pitch candidates and energy for a span of frames, as the core's flat arrays.
+ *
+ * @remarks `counts` holds the pitch candidates per frame; `freq`, `dprime` and `cost` hold every
+ * frame's candidates back to back. `rms` is per pitch window and `energyRms` per energy window.
+ * `flux` is not yet normalised over the whole take.
+ */
+export interface SpanMeasures {
+  freq: Float64Array;
+  dprime: Float64Array;
+  cost: Float64Array;
+  counts: Uint32Array;
+  rms: Float32Array;
+  energyRms: Float32Array;
+  flux: Float32Array;
+  zcr: Float32Array;
+}
+
+/** A finished span. */
+export interface ObservedMessage {
+  type: 'observed';
+  id: RequestId;
+  measures: SpanMeasures;
 }
 
 /** Renders a span of the plan's output at offline quality. */
@@ -161,6 +204,9 @@ export interface CancelledMessage {
 export type AnalysisResponse =
   ProgressMessage<AnalysisStage> | AnalysedMessage | FailedMessage | CancelledMessage;
 
+/** Everything a span worker posts back. */
+export type SpanResponse = ObservedMessage | FailedMessage;
+
 /** Everything the render worker posts back. */
 export type RenderResponse =
   | ProgressMessage<RenderStage>
@@ -184,6 +230,11 @@ export class WorkerCancelled extends Error {
 /** Buffers to transfer alongside an {@link AnalysisResult}. */
 export function analysisTransfers(result: AnalysisResult): Transferable[] {
   return [result.times, result.midi, result.confidence, result.rms, result.samples].map(bufferOf);
+}
+
+/** Buffers to transfer alongside {@link SpanMeasures}. */
+export function measureTransfers(measures: SpanMeasures): Transferable[] {
+  return Object.values(measures).map(bufferOf);
 }
 
 /** Buffers to transfer alongside a {@link RenderedRange}. */

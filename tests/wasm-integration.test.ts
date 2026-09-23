@@ -487,6 +487,61 @@ describe('wasm boundary', () => {
     }
   });
 
+  it('analyses a take measured in spans exactly as in one call', () => {
+    const whole = core.analyse(samples, sampleRate, '');
+    const len = samples.length;
+    const frames = core.analysisFrameCount(len, sampleRate, '');
+    const spans: ReturnType<typeof core.observeSpan>[] = [];
+    for (let first = 0; first < frames; first += 300) {
+      const end = Math.min(frames, first + 300);
+      const [start = 0, stop = 0] = core.spanSamples(len, sampleRate, '', first, end);
+      spans.push(
+        core.observeSpan(samples.slice(start, stop), start, len, sampleRate, '', first, end),
+      );
+    }
+    const join = <T extends Float32Array | Float64Array | Uint32Array>(
+      pick: (span: (typeof spans)[number]) => T,
+      make: (length: number) => T,
+    ): T => {
+      const views = spans.map(pick);
+      const out = make(views.reduce((total, view) => total + view.length, 0));
+      let at = 0;
+      for (const view of views) {
+        out.set(view, at);
+        at += view.length;
+      }
+      return out;
+    };
+    const f64 = (length: number) => new Float64Array(length);
+    const f32 = (length: number) => new Float32Array(length);
+    const split = core.analyseSpans(
+      len,
+      sampleRate,
+      '',
+      join((span) => span.freq(), f64),
+      join((span) => span.dprime(), f64),
+      join((span) => span.cost(), f64),
+      join(
+        (span) => span.counts(),
+        (length) => new Uint32Array(length),
+      ),
+      join((span) => span.rms(), f32),
+      join((span) => span.energyRms(), f32),
+      join((span) => span.flux(), f32),
+      join((span) => span.zcr(), f32),
+    );
+    try {
+      expect(spans.length).toBeGreaterThan(1);
+      expect(split.trackJson()).toBe(whole.trackJson());
+      expect(split.energyJson()).toBe(whole.energyJson());
+      expect(split.blobsJson()).toBe(whole.blobsJson());
+    } finally {
+      for (const span of spans) span.free();
+      split.free();
+      whole.free();
+    }
+  });
+
   it('frees every wasm object without error', () => {
     const freshAnalysis = core.analyse(samples.subarray(0, sampleRate), sampleRate, '');
     const freshSession = core.Session.create(samples, sampleRate, 'freeing', freshAnalysis, '');

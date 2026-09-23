@@ -56,8 +56,17 @@ and offline export run in Web Workers.
 ### No `SharedArrayBuffer`, no cross-origin isolation requirement
 
 The worklet owns its own copy of the source PCM, so nothing needs shared memory and the app works
-without COOP/COEP headers. `_headers` ships the isolation headers commented out, documented as an
-optional optimisation only. WASM threading is not used.
+without COOP/COEP headers. `_headers` sends them anyway, for the isolation from other sites'
+windows and resources. WASM threading is not used.
+
+### Analysis parallelises across workers, not WASM threads
+
+WASM threads need a nightly toolchain. Instead the analysis worker splits a long take into frame
+spans across a pool of span workers, each with its own core instance, measuring YIN candidates and
+energy per span. Both are per frame, bar spectral flux, which recomputes the frame before a span.
+The spans join into exactly what a single run measures; the Viterbi pass, flux normalisation and
+segmentation then run once. A short take, or a browser that cannot start the pool, is analysed in
+one call.
 
 ### Single canonical interpretation of edits
 
