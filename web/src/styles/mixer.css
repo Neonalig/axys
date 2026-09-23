@@ -72,10 +72,24 @@
 
 .axys-mixer-track,
 .axys-mixer-strip.is-reference {
+  /* Inside a source's box its colour is the accent: fills, meters, pressed switches and focus
+     rings */
+  --axys-accent: var(--axys-source);
+  --axys-meter-fill: color-mix(in srgb, var(--axys-source) 45%, black);
+}
+
+/* The metronome and the master have no source colour, so they take the theme's accent */
+
+.axys-mixer-strip.is-standalone:not(.is-reference) {
+  --axys-source: var(--axys-accent);
+}
+
+.axys-mixer-track,
+.axys-mixer-strip.is-standalone {
   border-color: var(--axys-source, var(--axys-border));
 }
 
-.axys-mixer-strip.is-reference {
+.axys-mixer-strip.is-standalone {
   overflow: hidden;
 }
 
@@ -90,11 +104,10 @@
    the way a blob's header is. Trimmed to the capital height, so equal padding centres it */
 
 .axys-mixer-track-name,
-.axys-mixer-strip.is-reference > .axys-mixer-name {
+.axys-mixer-strip.is-standalone > .axys-mixer-name {
   flex: 0 0 auto;
   overflow: hidden;
   padding: 5px var(--axys-space-2);
-  cursor: pointer;
   background: var(--axys-source);
   font-size: var(--axys-size-sm);
   font-weight: var(--axys-weight-strong);
@@ -104,15 +117,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   text-box: trim-both cap alphabetic;
-}
-
-/* The standalone strip's padding would inset its header, so the header reaches back over it */
-
-.axys-mixer-strip.is-standalone.is-reference > .axys-mixer-name {
-  box-sizing: border-box;
-  width: calc(100% + 12px);
-  max-width: none;
-  margin: -6px -6px 0;
 }
 
 .axys-mixer-track-strips {
@@ -164,6 +168,22 @@
 .axys-mixer-strip.is-standalone > .axys-mixer-name {
   contain: inline-size;
   width: 100%;
+}
+
+/* A name that opens or renames its source says so */
+
+.axys-mixer-track-name,
+.axys-mixer-strip.is-reference > .axys-mixer-name {
+  cursor: pointer;
+}
+
+/* The standalone strip's padding would inset its header, so the header reaches back over it */
+
+.axys-mixer-strip.is-standalone > .axys-mixer-name {
+  box-sizing: border-box;
+  width: calc(100% + 12px);
+  max-width: none;
+  margin: -6px -6px 0;
 }
 
 .axys-marquee {
@@ -300,7 +320,7 @@
 
 .axys-mixer-switch[aria-pressed='true'].is-mute {
   color: var(--axys-bg);
-  background: var(--axys-warning);
+  background: var(--axys-accent);
 }
 
 .axys-mixer-switch[aria-pressed='true'].is-solo {
