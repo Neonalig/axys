@@ -360,6 +360,7 @@ export class MixerPanel {
         title,
         true,
       );
+      strip.classList.add('is-reference');
       this.#references.set(strip, reference.source.fingerprint);
       const head = strip.querySelector<HTMLElement>('.axys-mixer-name');
       if (head !== null) {
