@@ -139,6 +139,7 @@ const CONFLICT_KINDS = ['overlap', 'gap'] as const;
 const GUIDE_MODES = ['visualOnly', 'pitchOnly', 'timingOnly', 'combined'] as const;
 const TIME_DISPLAYS = ['seconds', 'barsBeats'] as const;
 const OTHERS_VIEWS = ['show', 'dim', 'hide'] as const;
+const F0_METHOD_NAMES = ['yin', 'pyin', 'swipe'] as const;
 const ACCIDENTAL_STYLES = ['sharps', 'flats'] as const;
 
 /** Accepts one curve anchor. */
@@ -250,7 +251,10 @@ function isF0Params(value: unknown): value is F0Params {
     isNumber(value.frameSeconds) &&
     isNumber(value.hopSeconds) &&
     isNumber(value.threshold) &&
-    isNumber(value.voicedRmsFloor)
+    isNumber(value.voicedRmsFloor) &&
+    (value.method === undefined || isLiteral(F0_METHOD_NAMES, value.method)) &&
+    (value.strength === undefined || isNumber(value.strength)) &&
+    (value.autoThreshold === undefined || typeof value.autoThreshold === 'boolean')
   );
 }
 

@@ -167,6 +167,13 @@ controls rather than one blunt amount.
   silence. Viterbi costs are 0.08 per semitone of transition, 0.15 per voicing switch and an
   unvoiced observation cost of twice the YIN threshold; these are tuned against the fixture battery,
   not taken from the paper.
+- **Three estimators, one decoder.** YIN, pYIN and SWIPE' each observe per-frame candidates with
+  a cost and, for pYIN and SWIPE', an unvoiced cost of their own: pYIN's is the probability the
+  frame is voiced, SWIPE's is one less its strength threshold. The same Viterbi pass decodes them
+  all. SWIPE' measures each frame from its own window, decimated to 16 kHz, with 32 candidates an
+  octave and a 0.2 ERB grid, which keeps it within about three times YIN's cost. On a commercial
+  acapella MP3, YIN with the automatic threshold voiced 88% of sung frames, SWIPE' 58% at its
+  default strength and 86% at 0.1, and pYIN 15% at its textbook mean of 0.15 and 74% at 0.6.
 - **The voicing threshold suits the clip.** A dry vocal dips below YIN's 0.15 on nearly every sung
   frame; a reverberant, compressed, doubled or lossy one sits between 0.15 and 0.6, and with a fixed
   threshold most of it decoded unvoiced and got no blobs. A commercial acapella MP3 voiced 36% of

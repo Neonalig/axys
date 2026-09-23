@@ -18,6 +18,7 @@ import {
   reopenProject,
   type TestCore,
 } from './helpers/core';
+import { DEFAULT_F0 } from '../web/src/core/types';
 
 /** One frame of `Session.trackJson`, as `axys_core::analysis::f0::PitchFrame` serialises. */
 interface TrackFrameJson {
@@ -472,6 +473,36 @@ describe('wasm boundary', () => {
     }
   });
 
+  it('analyses a fresh import again, and refuses once it is edited', () => {
+    const scoped = core.Session.create(samples, sampleRate, 'again', analysis, '');
+    try {
+      const clip = scoped.addClip(
+        samples,
+        'second.wav',
+        analysis.trackJson(),
+        analysis.blobsJson(),
+        '',
+        100,
+        false,
+        true,
+      );
+      const params = JSON.stringify({ f0: { ...DEFAULT_F0, method: 'swipe' } });
+      const swipe = core.analyse(samples, sampleRate, params);
+      try {
+        scoped.reanalyse(clip, swipe.trackJson(), swipe.blobsJson(), params);
+        const first = 2 ** 20 * clip;
+        scoped.applyEdit(JSON.stringify({ type: 'movePitch', blobs: [first], semitones: 1 }));
+        expect(() => scoped.reanalyse(clip, swipe.trackJson(), swipe.blobsJson(), params)).toThrow(
+          /edits/,
+        );
+      } finally {
+        swipe.free();
+      }
+    } finally {
+      scoped.free();
+    }
+  });
+
   it('puts a second clip on the lane as one undo step and exports both', () => {
     const scoped = core.Session.create(samples, sampleRate, 'lane', analysis, '');
     try {
@@ -678,6 +709,7 @@ describe('wasm boundary', () => {
         (length) => new Uint32Array(length),
       ),
       join((span) => span.rms(), f32),
+      join((span) => span.unvoiced(), f64),
       join((span) => span.energyRms(), f32),
       join((span) => span.flux(), f32),
       join((span) => span.zcr(), f32),

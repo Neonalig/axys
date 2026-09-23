@@ -32,12 +32,18 @@ pub struct F0Params {
     pub max_hz: f64,        // default 1000.0
     pub frame_seconds: f64, // default 0.0464 (analysis window)
     pub hop_seconds: f64,   // default 0.005  (5 ms frames)
-    pub threshold: f64,     // default 0.15, YIN absolute threshold
+    pub method: F0Method,   // default Yin
+    pub threshold: f64,     // default 0.15, YIN absolute threshold, or pYIN's threshold mean
+    pub strength: f64,      // default 0.25, SWIPE strength a voiced frame reaches
     pub voiced_rms_floor: f32, // default 0.0015
     /// Raises `threshold` to suit the clip. Default true; false for analyses stored before it.
     pub auto_threshold: bool,
 }
 impl Default for F0Params { /* the values above */ }
+
+/// YIN with an absolute threshold, pYIN over a Beta threshold distribution, or SWIPE' in
+/// `analysis/swipe.rs`. Each observes per-frame candidates and an unvoiced cost for one decoder.
+pub enum F0Method { Yin, Pyin, Swipe }
 
 /// One analysis frame of detected pitch.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

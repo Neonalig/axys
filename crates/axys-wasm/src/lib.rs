@@ -303,6 +303,11 @@ impl AnalysisSpan {
         self.candidates.rms().to_vec()
     }
 
+    /// Each frame's unvoiced cost, negative where the threshold sets it.
+    pub fn unvoiced(&self) -> Vec<f64> {
+        self.candidates.unvoiced().to_vec()
+    }
+
     /// RMS of each frame's energy window.
     #[wasm_bindgen(js_name = energyRms)]
     pub fn energy_rms(&self) -> Vec<f32> {
@@ -414,13 +419,15 @@ pub fn analyse_spans(
     cost: Vec<f64>,
     counts: &[u32],
     rms: Vec<f32>,
+    unvoiced: Vec<f64>,
     energy_rms: Vec<f32>,
     flux: Vec<f32>,
     zcr: Vec<f32>,
 ) -> Result<Analysis, JsValue> {
     let params = AnalysisParams::from_json(params_json)?;
     let layouts = Layouts::new(len, sample_rate, &params)?;
-    let candidates = F0Candidates::from_parts(freq, dprime, cost, counts, rms).map_err(to_js)?;
+    let candidates =
+        F0Candidates::from_parts(freq, dprime, cost, counts, rms, unvoiced).map_err(to_js)?;
     let track = decode_f0(&layouts.f0, &params.f0, &candidates).map_err(to_js)?;
     let frames = EnergyFrames::from_parts(energy_rms, flux, zcr).map_err(to_js)?;
     let energy = layouts.energy.finish(frames).map_err(to_js)?;
@@ -854,6 +861,93 @@ impl Session {
             return Err(error);
         }
         Ok(id.0)
+    }
+
+    /// Replaces a clip's analysis with a new one, as though it had been imported with it.
+    ///
+    /// The clip's blobs are replaced where the clip came in, in the base state or in its
+    /// `addClip`, and the history is replayed over them. Refused once any later edit touches the
+    /// clip, since those edits name blobs the new analysis does not have. `track_json`,
+    /// `blobs_json` and `params_json` are as [`Session::add_clip`] takes them.
+    #[wasm_bindgen]
+    pub fn reanalyse(
+        &mut self,
+        clip: u32,
+        track_json: &str,
+        blobs_json: &str,
+        params_json: &str,
+    ) -> Result<(), JsValue> {
+        let id = ClipId(clip);
+        let params = AnalysisParams::from_json(params_json)?;
+        let track: PitchTrack = parse(track_json)?;
+        let blobs: Vec<Blob> = parse(blobs_json)?;
+        let blobs = BlobSet::from_blobs(blobs).map_err(to_js)?;
+        let runtime = self.runtime(id)?;
+        let frames = runtime
+            .samples
+            .as_ref()
+            .map_or(runtime.source.frames, Vec::len);
+        check_fits_audio(&track, &blobs, self.sample_rate, frames)
+            .map_err(|message| JsValue::from_str(&message))?;
+        let mut analysed = renumber(&blobs, id).map_err(to_js)?;
+        fit_to_source(&mut analysed, runtime.source.duration);
+
+        let applied = self.history.applied();
+        let introduced = applied
+            .iter()
+            .position(|op| matches!(op, EditOp::AddClip { clip, .. } if clip.id == id));
+        let later = introduced.map_or(0, |index| index + 1);
+        if applied[later..].iter().any(|op| op.touches_clip(id)) {
+            return Err(JsValue::from_str(
+                "clip has edits. Undo them to analyse it again",
+            ));
+        }
+        let (base, history) = (self.base.clone(), self.history.clone());
+        let previous = (
+            runtime.track.clone(),
+            runtime.analysed.clone(),
+            runtime.analysis.clone(),
+            runtime.needs_track,
+        );
+        match introduced {
+            Some(index) => {
+                if let EditOp::AddClip { clip, .. } = &mut self.history.applied_mut()[index] {
+                    clip.blobs = analysed.clone();
+                    clip.silenced.clear();
+                }
+            }
+            None => {
+                let Some(entry) = self.base.clips.iter_mut().find(|entry| entry.id == id) else {
+                    return Err(JsValue::from_str(&format!(
+                        "the project has no clip {clip}"
+                    )));
+                };
+                entry.blobs = analysed.clone();
+                entry.silenced.clear();
+            }
+        }
+        if let Some(runtime) = self.clips.iter_mut().find(|runtime| runtime.id == id) {
+            runtime.track = track;
+            runtime.analysed = analysed;
+            runtime.analysis = analysis_info(&params);
+            runtime.needs_track = false;
+            runtime.renderers.clear();
+        }
+        if let Err(error) = self.replay() {
+            self.base = base;
+            self.history = history;
+            if let Some(runtime) = self.clips.iter_mut().find(|runtime| runtime.id == id) {
+                (
+                    runtime.track,
+                    runtime.analysed,
+                    runtime.analysis,
+                    runtime.needs_track,
+                ) = previous;
+            }
+            self.replay()?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Brings in a reference as one undoable edit, returning its id.
@@ -1994,6 +2088,29 @@ mod analysis_handoff_tests {
 
     fn json(text: String) -> serde_json::Value {
         serde_json::from_str(&text).expect("json")
+    }
+
+    #[test]
+    fn a_fresh_import_is_analysed_again() {
+        let (mut session, clip) = two_clips(3.0);
+        let samples = tone();
+        let swipe = r#"{"f0":{"minHz":65,"maxHz":1000,"frameSeconds":0.0464,"hopSeconds":0.005,"method":"swipe","threshold":0.15,"strength":0.25,"voicedRmsFloor":0.0015}}"#;
+        let analysis = analyse(&samples, SAMPLE_RATE, swipe).expect("analysis");
+        let track = analysis.track_json().expect("track");
+        let blobs = analysis.blobs_json().expect("blobs");
+        session
+            .reanalyse(clip, &track, &blobs, swipe)
+            .expect("reanalysed");
+        session.reanalyse(0, &track, &blobs, swipe).expect("first clip");
+        assert!(session.undo().expect("undo"));
+        assert!(session.redo().expect("redo"));
+        let state = json(session.state_json().expect("state"));
+        assert_eq!(
+            state["clips"][1]["blobs"]["blobs"].as_array().map(Vec::len),
+            serde_json::from_str::<Vec<serde_json::Value>>(&blobs)
+                .ok()
+                .map(|b| b.len())
+        );
     }
 
     #[test]

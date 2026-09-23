@@ -401,6 +401,44 @@ pub struct History {
     undone: Vec<EditOp>,
 }
 
+impl EditOp {
+    /// Whether the operation reads or changes a clip or any of its blobs.
+    ///
+    /// A range reset touches every clip, since it reaches whatever lies under its span.
+    pub fn touches_clip(&self, clip: ClipId) -> bool {
+        let one = |blob: &BlobId| clip_of(*blob) == clip;
+        match self {
+            EditOp::SplitBlob { blob, .. }
+            | EditOp::MoveBoundary { blob, .. }
+            | EditOp::SetVoicing { blob, .. }
+            | EditOp::SetPitchOffset { blob, .. }
+            | EditOp::SetTimeScale { blob, .. }
+            | EditOp::AddAnchor { blob, .. }
+            | EditOp::MoveAnchor { blob, .. }
+            | EditOp::RemoveAnchor { blob, .. }
+            | EditOp::DrawSpan { blob, .. }
+            | EditOp::SmoothSpan { blob, .. }
+            | EditOp::ResetSpan { blob, .. }
+            | EditOp::ResetBlob { blob }
+            | EditOp::SetExcluded { blob, .. }
+            | EditOp::SetGain { blob, .. } => one(blob),
+            EditOp::JoinBlobs { first, second } => one(first) || one(second),
+            EditOp::MovePitch { blobs, .. }
+            | EditOp::MoveTime { blobs, .. }
+            | EditOp::DeleteBlobs { blobs } => blobs.iter().any(one),
+            EditOp::SetMapping { mapping } => one(&mapping.blob),
+            EditOp::SetMappings { mappings } => mappings.iter().any(|m| one(&m.blob)),
+            EditOp::ResetRange { .. } => true,
+            EditOp::AddClip { clip: added, .. } => added.id == clip,
+            EditOp::MoveClip { clip: moved, .. }
+            | EditOp::RemoveClip { clip: moved }
+            | EditOp::RenameClip { clip: moved, .. } => *moved == clip,
+            EditOp::Group { ops } => ops.iter().any(|op| op.touches_clip(clip)),
+            _ => false,
+        }
+    }
+}
+
 impl History {
     /// Creates an empty history.
     pub fn new() -> Self {
@@ -424,6 +462,11 @@ impl History {
     /// True when at least one undone operation can be replayed.
     pub fn can_redo(&self) -> bool {
         !self.undone.is_empty()
+    }
+
+    /// The applied operations, oldest first, for rewriting in place.
+    pub fn applied_mut(&mut self) -> &mut [EditOp] {
+        &mut self.applied
     }
 
     /// Removes and returns the newest applied op, moving it to the redo stack.

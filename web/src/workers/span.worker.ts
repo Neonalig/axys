@@ -54,6 +54,7 @@ async function run(request: ObserveSpanRequest): Promise<void> {
         cost: span.cost(),
         counts: span.counts(),
         rms: span.rms(),
+        unvoiced: span.unvoiced(),
         energyRms: span.energyRms(),
         flux: span.flux(),
         zcr: span.zcr(),

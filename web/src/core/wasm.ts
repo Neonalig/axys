@@ -407,6 +407,22 @@ export class Session {
     );
   }
 
+  /**
+   * Replaces a clip's analysis, as though it had been imported with the new one.
+   *
+   * @remarks Refused once an edit touches the clip. The caller reloads the clip's audio in the
+   * engine afterwards, since its pitch track has changed.
+   */
+  reanalyse(
+    clip: ClipId,
+    input: { trackJson: string; blobsJson: string; f0?: F0Params; segment?: SegmentParams },
+  ): void {
+    const params = paramsJson(input.f0, input.segment);
+    call('Analyse Clip', () =>
+      this.#alive().reanalyse(clip, input.trackJson, input.blobsJson, params),
+    );
+  }
+
   /** Brings in a reference as one undoable edit, returning its id. */
   addReference(source: SourceInfo, position: number): ReferenceId {
     const json = JSON.stringify(source);

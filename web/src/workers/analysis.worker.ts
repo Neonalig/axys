@@ -212,6 +212,10 @@ async function analyseAcrossPool(
       f32,
     ),
     joined(
+      parts.map((part) => part.unvoiced),
+      f64,
+    ),
+    joined(
       parts.map((part) => part.energyRms),
       f32,
     ),

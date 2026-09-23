@@ -96,6 +96,7 @@ export interface ObserveSpanRequest {
  *
  * @remarks `counts` holds the pitch candidates per frame; `freq`, `dprime` and `cost` hold every
  * frame's candidates back to back. `rms` is per pitch window and `energyRms` per energy window.
+ * `unvoiced` is each frame's unvoiced cost, negative where the threshold sets it.
  * `flux` is not yet normalised over the whole take.
  */
 export interface SpanMeasures {
@@ -104,6 +105,7 @@ export interface SpanMeasures {
   cost: Float64Array;
   counts: Uint32Array;
   rms: Float32Array;
+  unvoiced: Float64Array;
   energyRms: Float32Array;
   flux: Float32Array;
   zcr: Float32Array;

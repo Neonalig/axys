@@ -85,11 +85,36 @@ export interface F0Params {
   frameSeconds: number;
   /** Frame spacing in seconds. */
   hopSeconds: number;
-  /** YIN absolute threshold. */
+  /** Which estimator turns audio into pitch candidates; absent is `yin`. */
+  method?: F0Method;
+  /** YIN's absolute threshold, or pYIN's threshold mean. */
   threshold: number;
+  /** SWIPE strength above which a frame is voiced, from -1 to 1. */
+  strength?: number;
   /** RMS below which a frame cannot be voiced. */
   voicedRmsFloor: number;
+  /** Raises YIN's threshold to suit the clip. */
+  autoThreshold?: boolean;
 }
+
+/** A pitch estimator: YIN, pYIN or SWIPE. */
+export type F0Method = 'yin' | 'pyin' | 'swipe';
+
+/** Every {@link F0Method}, in the order they are offered. */
+export const F0_METHODS: readonly F0Method[] = ['yin', 'pyin', 'swipe'];
+
+/** The estimator defaults the core uses, for a first import. */
+export const DEFAULT_F0: F0Params = {
+  minHz: 65,
+  maxHz: 1000,
+  frameSeconds: 0.0464,
+  hopSeconds: 0.005,
+  method: 'yin',
+  threshold: 0.15,
+  strength: 0.25,
+  voicedRmsFloor: 0.0015,
+  autoThreshold: true,
+};
 
 /** Short-time energy and onset evidence on the pitch track's hop grid. */
 export interface EnergyTrack {
