@@ -742,6 +742,24 @@ the settings on the device for the next import, closing the panel keeps the impo
 takes it back. A clip is analysed again only while no edit touches it, since later edits name
 blobs the new analysis does not have.
 
+### Import Audio is one panel in two steps
+
+The question and the analysis were two panels under one title, the second opened once the audio
+had loaded. They shared a remembered position, so the second appeared where the first had been
+and read as the question skipped, and a panel that arrives after a wait is one the hand is already
+reaching past. One panel now holds both steps and changes its content in place: Vocal turns it
+into the analysis step at once, with its settings held until the audio is in, and Back takes the
+import back and asks again. Back waits for the audio, since a second answer while the first import
+runs would race it. Dropping audio with nothing open still goes straight to the analysis step,
+because a first source can only be a vocal.
+
+### A click on a clip's tab selects the blob under it
+
+The tab is drawn as the top of each blob, so a click there that selected every blob of the clip
+read as the blob refusing to be selected on its own. A click on the tab now selects the blob it sits
+on, with Ctrl and Shift as on the blob. The tab still picks the clip up when dragged, and a
+double-click on it selects the whole clip.
+
 ### A dropped file shows where it lands once it is read
 
 A browser does not let a page read a dragged file until it is dropped: during the drag only its

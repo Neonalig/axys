@@ -142,6 +142,11 @@ type Gesture =
   | {
       kind: 'clip';
       clip: number;
+      /** The blob whose tab was pressed, which a click without a drag selects. */
+      blob: BlobId;
+      /** Whether that click adds to the selection or stretches it, as on the blob itself. */
+      additive: boolean;
+      extend: boolean;
       /** Where the clip sat when it was picked up, in project seconds. */
       from: number;
       /** How far into the clip the pointer took hold, so the clip does not jump to it. */
@@ -818,18 +823,23 @@ export class EditorController {
   };
 
   /**
-   * Clears the loop when the ruler is double-clicked.
+   * Selects a whole clip when its title is double-clicked, and clears the loop when the ruler is.
    *
    * @remarks A loop is drawn by dragging across the ruler, so it is undrawn where it was drawn.
-   * Double-clicking elsewhere is left alone, because a loop is not what is under the cursor
+   * Double-clicking anywhere else is left alone, because a loop is not what is under the cursor
    * there.
    */
   #onDoubleClick = (event: MouseEvent): void => {
+    const point = this.#pointOf(event);
+    const hit = this.hitTest(point.x, point.y);
+    if (hit.kind === 'clipTitle' && hit.blob !== null) {
+      event.preventDefault();
+      this.#selectClip(clipOf(hit.blob));
+      return;
+    }
     if (this.#store.state.transport.loop === null) {
       return;
     }
-    const point = this.#pointOf(event);
-    const hit = this.hitTest(point.x, point.y);
     if (hit.kind !== 'ruler' && hit.kind !== 'loopEdge') {
       return;
     }
@@ -965,7 +975,7 @@ export class EditorController {
       hit.blob !== null &&
       this.#bezierHandleAt(this.#origin) === null
     ) {
-      const gesture = this.#beginClipDrag(state, hit.blob, hit.time);
+      const gesture = this.#beginClipDrag(state, hit.blob, hit.time, modifiers);
       if (gesture !== null) {
         return gesture;
       }
@@ -1136,7 +1146,12 @@ export class EditorController {
   }
 
   /** Picks up the clip a blob belongs to, by the point under the pointer. */
-  #beginClipDrag(state: AppState, blob: BlobId, time: number): Gesture | null {
+  #beginClipDrag(
+    state: AppState,
+    blob: BlobId,
+    time: number,
+    modifiers: Modifiers,
+  ): Gesture | null {
     const id = clipOf(blob);
     const clip = state.edits?.clips.find((entry) => entry.id === id);
     if (clip === undefined) {
@@ -1145,6 +1160,9 @@ export class EditorController {
     return {
       kind: 'clip',
       clip: id,
+      blob,
+      additive: modifiers.snap,
+      extend: modifiers.constrain,
       from: clip.position,
       grab: time - clip.position,
       duration: clip.source.duration,
@@ -1713,7 +1731,16 @@ export class EditorController {
             );
           }
         } else {
-          this.#selectClip(gesture.clip);
+          // The tab reads as the blob's own header, so a click on it selects the blob beneath.
+          // The whole clip is a double-click.
+          const blob = this.#blob(gesture.blob);
+          if (blob !== undefined) {
+            this.#selectRange(
+              { start: blobOutputStart(blob), end: blobOutputEnd(blob) },
+              gesture.additive,
+              gesture.extend,
+            );
+          }
         }
         break;
       case 'scrub':
@@ -1765,7 +1792,7 @@ export class EditorController {
     this.#announce(`${String(selection.blobs.length)} selected`);
   }
 
-  /** Selects every blob of one clip, which is what a click on its title means. */
+  /** Selects every blob of one clip, which is what a double-click on its title means. */
   #selectClip(clip: number): void {
     const state = this.#store.state;
     const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);

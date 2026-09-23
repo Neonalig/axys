@@ -466,7 +466,8 @@ range, hover readout, drag preview).
 - `hitTest(x, y)` returns what is under the cursor, so the cursor and tooltip can reflect it.
 - Every blob carries a tab naming its clip, where the clip is picked up with any tool and
   dragged along the lane, previewing as a band with the clip's waveform and its blobs as ghosts
-  where it would land. A click on the tab selects the clip. A clip lands exactly where it is let
+  where it would land. A click on the tab selects the blob under it, as a click on the blob does,
+  and a double-click selects the whole clip. A clip lands exactly where it is let
   go, over any clip there, snapping to the grid but not to blob edges. Ctrl puts a dragged clip
   or reference at the start. Shift inserts a dragged or dropped vocal instead, moving every clip
   after it later, and the two stack.

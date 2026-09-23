@@ -79,7 +79,7 @@ function clipAt(
  * The part of every layer clip each selected span reaches, in project seconds.
  *
  * @remarks A span reaching every blob a clip has takes the whole clip, silence at its ends
- * included, which is what selecting a clip by its title asks for.
+ * included, which is what double-clicking a clip's title asks for.
  */
 function clipSpans(state: AppState): { clip: ClipId; start: number; end: number }[] {
   const spans: { clip: ClipId; start: number; end: number }[] = [];

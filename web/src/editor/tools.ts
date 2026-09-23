@@ -209,7 +209,7 @@ export function describeHit(hit: Hit, state: AppState): string {
     case 'pitchLine':
       return `Pitch ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
-      return 'Move Clip  Ctrl Start  Shift Insert';
+      return 'Move Clip  Ctrl Start  Shift Insert  Double-Click Select';
     case 'reference':
       return 'Move Reference  Ctrl Start';
     case 'conflict': {
