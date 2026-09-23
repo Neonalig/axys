@@ -19,7 +19,12 @@ import { drawPitch } from './layers/pitch.js';
 import { CHIP_HEIGHT, chipWidth, drawHintChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { drawWaveform, fillEnvelope } from './layers/waveform.js';
-import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
+import {
+  drawReferenceBand,
+  drawReferences,
+  REFERENCE_BAND,
+  referenceTitleAt,
+} from './layers/references.js';
 import { othersOf } from '../app/sources.js';
 import { clipEnd, clipOf, clipStart, clipWindow } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
@@ -228,10 +233,17 @@ export class EditorRenderer {
       hover === null ? null : { blob: hover.id, elapsed: performance.now() - hover.since };
     const preview = this.#preview;
     const dragged = preview?.kind === 'clipDrag' ? this.#splitFor(state, preview.clip) : null;
+    const pointer = this.#hover;
+    // The reference name tab under the pointer is drawn faint, so the waveform shows through it.
+    const hoveredTitle =
+      pointer === null || this.#ctx === null
+        ? -1
+        : referenceTitleAt(this.#ctx, state, viewport, pointer);
     const key = baseKey(state, viewport, theme, this.#ratio, [
       hover?.id ?? -1,
       this.#scrolling && marquee !== null ? marquee.elapsed : 0,
       dragged === null ? -1 : dragged.clip,
+      hoveredTitle,
     ]);
     if (this.#baseKey !== null && sameBaseKey(this.#baseKey, key)) {
       return base;
@@ -260,7 +272,7 @@ export class EditorRenderer {
     const blobAlpha = state.editMode === 'pitch' ? DISABLED_ALPHA : 1;
     const pitchAlpha = state.editMode === 'blob' ? DISABLED_ALPHA : 1;
     drawMidi(ctx, state, viewport, theme);
-    drawReferences(ctx, state, viewport, theme);
+    drawReferences(ctx, state, viewport, theme, hoveredTitle);
     this.#scrolling = this.#faint(ctx, blobAlpha, (layer) => {
       drawWaveform(layer, state, viewport, theme);
       return drawBlobs(layer, state, viewport, theme, marquee);
