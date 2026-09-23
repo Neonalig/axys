@@ -190,7 +190,7 @@ export function initialState(): AppState {
     },
     analysis: { running: false, progress: 0, stage: '' },
     follow: true,
-    followMode: 'page',
+    followMode: 'centre',
     toolbarLabels: false,
     inspectorCollapsed: false,
     mixerCollapsed: true,

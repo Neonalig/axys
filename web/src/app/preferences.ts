@@ -64,7 +64,7 @@ export function defaultPreferences(): Preferences {
   return {
     theme: 'system',
     accent: DEFAULT_ACCENT,
-    followMode: 'page',
+    followMode: 'centre',
     timeDisplay: 'seconds',
     toolbarLabels: false,
     inspectorCollapsed: false,
