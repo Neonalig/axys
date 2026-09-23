@@ -20,6 +20,7 @@ import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
 import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js';
 import { AppStore, endLeniency, initialState } from './app/store.js';
+import type { PitchCutFill } from './app/clipboard.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
 import { referencePeaksKey } from './editor/layers/references.js';
@@ -1822,6 +1823,10 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
     },
   });
   return [
+    item('edit.cut', 'Cut', 'cut', false),
+    item('edit.copy', 'Copy', 'copy', false),
+    item('edit.paste', 'Paste', 'paste', false),
+    { separator: true },
     item('edit.reset', 'Reset to Origin', 'reset'),
     item('edit.joinBlobs', 'Join Blobs', 'join'),
     { separator: true },
@@ -1829,6 +1834,10 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
     { separator: true },
     item('edit.deleteBlobs', 'Delete Blobs', 'delete'),
     item('edit.deleteClip', 'Delete Clip', 'delete'),
+    { separator: true },
+    item('edit.trimStart', 'Trim Start', 'trimStart', false),
+    item('edit.trimEnd', 'Trim End', 'trimEnd', false),
+    item('edit.resetTrim', 'Reset Trim', 'reset'),
     { separator: true },
     item('transport.loopSelection', 'Loop Selection', 'loop', false),
     item('file.exportWav', 'Export Audio', 'export', false),
@@ -2270,6 +2279,10 @@ function buildHooks(
     setFollowMode(mode: FollowMode): void {
       savePreferences({ followMode: mode });
       store.update({ followMode: mode });
+    },
+    setPitchCutFill(fill: PitchCutFill): void {
+      savePreferences({ pitchCutFill: fill });
+      store.update({ pitchCutFill: fill });
     },
     setSpan(seconds: number): void {
       const view = store.state.view;

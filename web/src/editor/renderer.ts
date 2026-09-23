@@ -359,6 +359,18 @@ export class EditorRenderer {
         }
         labelAt(ctx, viewport, theme, preview.label, ghostAnchor(state, viewport, preview.blobs));
         break;
+      case 'blobShift':
+        for (const blob of blobsOf(state, preview.blobs)) {
+          const moved = {
+            ...blob,
+            start: blob.start + preview.seconds,
+            end: blob.end + preview.seconds,
+          };
+          drawBlobGhost(ctx, state, viewport, theme, moved, 0, 0);
+          drawCoveredPitch(ctx, state, viewport, theme, moved);
+        }
+        labelAt(ctx, viewport, theme, preview.label, ghostAnchor(state, viewport, preview.blobs));
+        break;
       case 'edgeDrag':
         drawEdgePreview(ctx, state, viewport, theme, preview.blob, preview.edge, preview.time);
         labelAt(ctx, viewport, theme, preview.label, {
@@ -532,6 +544,8 @@ function baseKey(
     ],
     numbers: [
       state.tool,
+      state.editMode,
+      state.outsidePitch ? 1 : 0,
       viewport.width,
       viewport.height,
       ratio,
@@ -705,6 +719,47 @@ function drawBlobGhost(
     Math.round(Math.max(2, x1 - x0)),
     Math.round(Math.max(2, bottom - top)),
   );
+  ctx.restore();
+}
+
+/**
+ * Draws the detected pitch a blob slid along the audio would cover, where it will sit.
+ *
+ * @remarks The audio does not move, so the line is the audio's own under the blob's new span.
+ */
+function drawCoveredPitch(
+  ctx: CanvasRenderingContext2D,
+  state: AppState,
+  viewport: Viewport,
+  theme: Theme,
+  blob: Blob,
+): void {
+  const track = state.track;
+  if (track === null) {
+    return;
+  }
+  ctx.save();
+  ctx.strokeStyle = theme.pitchDetected;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([3, 2]);
+  ctx.beginPath();
+  let open = false;
+  for (let i = 0; i < track.times.length; i += 1) {
+    const time = track.times[i] ?? 0;
+    if (time < blob.start) continue;
+    if (time > blob.end) break;
+    const midi = track.midi[i] ?? Number.NaN;
+    if (!Number.isFinite(midi)) {
+      open = false;
+      continue;
+    }
+    const x = viewport.timeToX(blob.start + blob.timeOffset + (time - blob.start) * blob.timeScale);
+    const y = viewport.midiToY(midi);
+    if (open) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+    open = true;
+  }
+  ctx.stroke();
   ctx.restore();
 }
 

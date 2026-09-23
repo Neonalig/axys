@@ -8,11 +8,27 @@ import {
   withRange,
 } from '../app/selection.js';
 import type { TimeRange } from '../app/selection.js';
+import {
+  liftRunOps,
+  movePitchOps,
+  outsideRunAt,
+  outsideRuns,
+  samplePitch,
+  shiftPoints,
+} from '../app/clipboard.js';
+import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
 import { othersOf } from '../app/sources.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
-import { clipEnd, clipOf, clipStart, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
+import {
+  CLIP_ID_BITS,
+  clipEnd,
+  clipOf,
+  clipStart,
+  displayTitle,
+  MIN_BLOB_SECONDS,
+} from '../core/types.js';
 import {
   blobOutputEnd,
   blobOutputStart,
@@ -25,6 +41,7 @@ import {
 } from './layers/blobs.js';
 import { MARQUEE_CURSOR } from './cursors.js';
 import { referenceRect } from './layers/references.js';
+import { detectedAt } from './layers/pitch.js';
 import { noteNameWithCents } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
 import type { EditorRenderer } from './renderer.js';
@@ -98,6 +115,27 @@ type Gesture =
   | { kind: 'bezierHandle'; handle: BezierHandle }
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
   | { kind: 'edge'; blob: BlobId; edge: Edge; sourceTime: number; scale: number | null }
+  /** Blob mode: blobs slid along the audio, held between `lower` and `upper` seconds. */
+  | { kind: 'shift'; blobs: BlobId[]; seconds: number; lower: number; upper: number }
+  /** Pitch mode: the pitch line across `ranges` moved, audio left where it is. */
+  | {
+      kind: 'contour';
+      ranges: TimeRange[];
+      points: PitchPoint[];
+      seconds: number;
+      semitones: number;
+      /** Whether the drag moves the line in time rather than in pitch. */
+      horizontal: boolean;
+    }
+  /** Pitch outside every blob picked up, to become a blob of its own when let go. */
+  | {
+      kind: 'lift';
+      run: OutsideRun;
+      points: PitchPoint[];
+      seconds: number;
+      semitones: number;
+      horizontal: boolean;
+    }
   | { kind: 'audition'; start: number; end: number }
   | { kind: 'pan'; from: ViewState }
   | { kind: 'split'; blob: BlobId; time: number }
@@ -127,6 +165,9 @@ const BEZIER_SAMPLE_PIXELS = 6;
 const BEZIER_MAX_SAMPLES = 96;
 
 const KEY_ZOOM = 1.3;
+
+/** Grab distance in pixels above and below a pitch line outside every blob. */
+const PITCH_LINE_GRIP = 6;
 
 /**
  * Owns pointer, wheel and view keyboard handling for the editor canvas.
@@ -329,6 +370,20 @@ export class EditorController {
         return { ...base, kind: 'blobEdge', blob: blob.id, edge: 'end', sourceTime };
       }
       return { ...base, kind: 'blob', blob: blob.id, sourceTime };
+    }
+
+    // Pitch outside every blob answers only while it is shown, and is where it was sung.
+    if (state.outsidePitch && state.track !== null) {
+      const detected = detectedAt(state.track, time);
+      const owned = state.blobs.some((blob) => time >= blob.start && time < blob.end);
+      if (
+        detected !== null &&
+        !owned &&
+        Math.abs(viewport.midiToY(detected) - y) <= PITCH_LINE_GRIP &&
+        outsideRunAt(state, time) !== null
+      ) {
+        return { ...base, kind: 'pitchLine', midi: detected };
+      }
     }
 
     // Reported only over its strip along the top of the plot, where no blob covers it.
@@ -907,13 +962,43 @@ export class EditorController {
       }
     }
 
+    const mode = state.editMode;
+    // Blob mode edits blobs alone, so the tools that edit pitch only place the playhead there.
+    if (
+      mode === 'blob' &&
+      (state.tool === 'pitch' || state.tool === 'pen' || state.tool === 'bezier')
+    ) {
+      return this.#beginScrub(hit);
+    }
+    if (mode === 'pitch' && (state.tool === 'pitch' || state.tool === 'time')) {
+      if (
+        state.tool === 'pitch' &&
+        hit.kind === 'anchor' &&
+        hit.blob !== null &&
+        hit.anchor !== null
+      ) {
+        return {
+          kind: 'anchor',
+          blob: hit.blob,
+          index: hit.anchor,
+          time: hit.sourceTime,
+          midi: hit.midi,
+        };
+      }
+      return this.#beginContour(state, hit, state.tool === 'time') ?? this.#beginScrub(hit);
+    }
+    if (hit.kind === 'pitchLine' && (state.tool === 'pitch' || state.tool === 'time')) {
+      return this.#beginLift(state, hit, state.tool === 'time') ?? this.#beginScrub(hit);
+    }
+
     switch (state.tool) {
       case 'select':
         // Ctrl adds a region of its own, Shift stretches the existing one: the pair every
         // editor with a multi-selection uses, and the pair Melodyne uses.
         return { kind: 'rubberBand', additive: modifiers.snap, extend: modifiers.constrain };
       case 'split':
-        return hit.blob === null
+        // Splitting is a blob edit, which Pitch mode leaves alone.
+        return hit.blob === null || mode === 'pitch'
           ? this.#beginScrub(hit)
           : { kind: 'split', blob: hit.blob, time: hit.sourceTime };
       case 'pitch': {
@@ -965,11 +1050,80 @@ export class EditorController {
             scale: hit.edge === 'end' ? blob.timeScale : null,
           };
         }
+        if (mode === 'blob') {
+          return this.#beginShift(state, this.#dragSet(hit.blob));
+        }
         return { kind: 'time', blobs: this.#dragSet(hit.blob), seconds: 0 };
       }
       default:
         return this.#beginScrub(hit);
     }
+  }
+
+  /**
+   * Picks up blobs to slide along the audio, with the distance they can go before one meets a
+   * blob outside the set or the edge of its clip.
+   */
+  #beginShift(state: AppState, ids: readonly BlobId[]): Gesture {
+    const set = new Set(ids);
+    let lower = Number.NEGATIVE_INFINITY;
+    let upper = Number.POSITIVE_INFINITY;
+    for (const blob of state.blobs) {
+      if (!set.has(blob.id)) continue;
+      const clip = state.edits?.clips.find((entry) => entry.id === clipOf(blob.id));
+      if (clip !== undefined) {
+        lower = Math.max(lower, clipStart(clip) - blob.start);
+        upper = Math.min(upper, clipEnd(clip) - blob.end);
+      }
+      for (const other of state.blobs) {
+        if (set.has(other.id) || clipOf(other.id) !== clipOf(blob.id)) continue;
+        if (other.end <= blob.start + 1e-9) lower = Math.max(lower, other.end - blob.start);
+        if (other.start >= blob.end - 1e-9) upper = Math.min(upper, other.start - blob.end);
+      }
+    }
+    return {
+      kind: 'shift',
+      blobs: [...ids],
+      seconds: 0,
+      lower: Math.min(0, lower),
+      upper: Math.max(0, upper),
+    };
+  }
+
+  /**
+   * Picks up the pitch line under the pointer: the selection when the pointer is inside it, else
+   * the blob or the outside run it is over, which becomes the selection.
+   */
+  #beginContour(state: AppState, hit: Hit, horizontal: boolean): Gesture | null {
+    let ranges =
+      state.selection.ranges.filter((range) => hit.time >= range.start && hit.time <= range.end)
+        .length > 0
+        ? [...state.selection.ranges]
+        : [];
+    if (ranges.length === 0) {
+      const blob = hit.blob === null ? undefined : this.#blob(hit.blob);
+      const run = hit.kind === 'pitchLine' ? outsideRunAt(state, hit.time) : null;
+      const span =
+        blob !== undefined
+          ? { start: blobOutputStart(blob), end: blobOutputEnd(blob) }
+          : run === null
+            ? null
+            : { start: run.start, end: run.end };
+      if (span === null) return null;
+      this.#setSelection(selectionForRange(state.blobs, span));
+      ranges = [span];
+    }
+    const points = samplePitch(this.#store.state, ranges, state.outsidePitch);
+    if (points.length < 2) return null;
+    return { kind: 'contour', ranges, points, seconds: 0, semitones: 0, horizontal };
+  }
+
+  /** Picks up pitch outside every blob, to become a blob of its own. */
+  #beginLift(state: AppState, hit: Hit, horizontal: boolean): Gesture | null {
+    const run = outsideRunAt(state, hit.time);
+    if (run === null) return null;
+    const points = samplePitch(state, [{ start: run.start, end: run.end }], true);
+    return { kind: 'lift', run, points, seconds: 0, semitones: 0, horizontal };
   }
 
   /** Picks up the clip a blob belongs to, by the point under the pointer. */
@@ -1140,12 +1294,39 @@ export class EditorController {
         gesture.seconds = this.#quantiseTimeDelta(gesture.blobs, raw, modifiers);
         break;
       }
+      case 'shift': {
+        const scale = modifiers.fine ? FINE_FACTOR : 1;
+        const raw = (this.#current.x - this.#origin.x) * viewport.secondsPerPixel * scale;
+        gesture.seconds = clamp(raw, gesture.lower, gesture.upper);
+        break;
+      }
+      case 'contour':
+      case 'lift': {
+        const scale = modifiers.fine ? FINE_FACTOR : 1;
+        if (gesture.horizontal) {
+          gesture.seconds = (this.#current.x - this.#origin.x) * viewport.secondsPerPixel * scale;
+        } else {
+          const raw =
+            (viewport.yToMidi(this.#current.y) - viewport.yToMidi(this.#origin.y)) * scale;
+          gesture.semitones = modifiers.constrain ? Math.round(raw) : raw;
+        }
+        break;
+      }
       case 'edge': {
         const blob = this.#blob(gesture.blob);
         if (blob === undefined) {
           break;
         }
         const target = this.#snapTime(time, modifiers);
+        // Blob mode moves the end the way it moves the start: over the audio, never stretching it.
+        if (gesture.edge === 'end' && this.#store.state.editMode === 'blob') {
+          gesture.scale = null;
+          gesture.sourceTime = Math.max(
+            blob.start + MIN_BLOB_SECONDS,
+            outputToSource(blob, target),
+          );
+          break;
+        }
         if (gesture.edge === 'start') {
           gesture.sourceTime = clamp(outputToSource(blob, target), 0, blob.end - MIN_BLOB_SECONDS);
         } else {
@@ -1235,9 +1416,29 @@ export class EditorController {
           time: gesture.sourceTime,
           label:
             gesture.scale === null
-              ? `Start ${formatClock(gesture.sourceTime, 0.001)}`
+              ? `${gesture.edge === 'start' ? 'Start' : 'End'} ${formatClock(gesture.sourceTime, 0.001)}`
               : `Stretch ${Math.round(gesture.scale * 100)}%`,
         };
+      case 'shift':
+        return {
+          kind: 'blobShift',
+          blobs: gesture.blobs,
+          seconds: gesture.seconds,
+          label: `Move Blob ${formatMilliseconds(gesture.seconds)}`,
+        };
+      case 'contour':
+      case 'lift':
+        return this.#moved
+          ? {
+              kind: 'curve',
+              points: shiftPoints(gesture.points, gesture.seconds, gesture.semitones),
+              label: `Move Pitch ${
+                gesture.horizontal
+                  ? formatMilliseconds(gesture.seconds)
+                  : formatSemitones(gesture.semitones)
+              }`,
+            }
+          : null;
       case 'anchor':
         return {
           kind: 'anchorDrag',
@@ -1374,12 +1575,78 @@ export class EditorController {
           );
         }
         break;
+      case 'shift':
+        if (gesture.seconds !== 0) {
+          // Slid one at a time from the leading edge, so a blob never meets one of its own set.
+          const order = gesture.blobs
+            .map((id) => this.#blob(id))
+            .filter((blob): blob is Blob => blob !== undefined)
+            .sort((a, b) => (gesture.seconds > 0 ? b.start - a.start : a.start - b.start));
+          this.#commit(
+            grouped(
+              order.map((blob): EditOp => ({
+                type: 'shiftBlob',
+                blob: blob.id,
+                seconds: gesture.seconds,
+              })),
+            ),
+            `Move Blob ${formatMilliseconds(gesture.seconds)}`,
+          );
+        }
+        break;
+      case 'contour': {
+        if (!this.#moved) {
+          break;
+        }
+        const state = this.#store.state;
+        const ops = movePitchOps(
+          state,
+          gesture.ranges,
+          gesture.seconds,
+          gesture.semitones,
+          state.pitchCutFill,
+          state.outsidePitch,
+        );
+        if (ops.length > 0) {
+          this.#commit(
+            grouped(ops),
+            `Move Pitch ${
+              gesture.horizontal
+                ? formatMilliseconds(gesture.seconds)
+                : formatSemitones(gesture.semitones)
+            }`,
+          );
+        }
+        break;
+      }
+      case 'lift': {
+        if (!this.#moved || (gesture.seconds === 0 && gesture.semitones === 0)) {
+          break;
+        }
+        const ops = gesture.horizontal
+          ? liftRunOps(gesture.run, 0, gesture.seconds)
+          : liftRunOps(gesture.run, gesture.semitones, 0);
+        this.#commit(
+          grouped(ops),
+          gesture.horizontal
+            ? `Move Time ${formatMilliseconds(gesture.seconds)}`
+            : `Move Pitch ${formatSemitones(gesture.semitones)}`,
+        );
+        break;
+      }
       case 'edge': {
         const blob = this.#blob(gesture.blob);
         if (blob === undefined) {
           break;
         }
-        if (gesture.edge === 'start') {
+        if (gesture.edge === 'end' && gesture.scale === null) {
+          if (gesture.sourceTime !== blob.end) {
+            this.#commit(
+              { type: 'moveBoundary', blob: blob.id, edge: 'end', time: gesture.sourceTime },
+              `Blob End ${formatClock(gesture.sourceTime, 0.001)}`,
+            );
+          }
+        } else if (gesture.edge === 'start') {
           if (gesture.sourceTime !== blob.start) {
             this.#commit(
               { type: 'moveBoundary', blob: blob.id, edge: 'start', time: gesture.sourceTime },
@@ -1529,6 +1796,13 @@ export class EditorController {
       });
       return;
     }
+    if (hit.kind === 'pitchLine') {
+      const run = outsideRunAt(this.#store.state, hit.time);
+      if (run !== null) {
+        this.#selectRange({ start: run.start, end: run.end }, additive, extend);
+        return;
+      }
+    }
     if (hit.blob === null) {
       this.#setSelection(emptySelection());
       this.#scrubTo(hit.time);
@@ -1571,6 +1845,32 @@ export class EditorController {
         continue;
       }
       ops.push({ type: 'drawSpan', blob: blob.id, anchors });
+    }
+    // Over pitch outside every blob, shown and so editable, the stroke makes a blob of its own.
+    const state = this.#store.state;
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (state.outsidePitch && first !== undefined && last !== undefined) {
+      const created: Blob[] = [];
+      for (const run of outsideRuns(state, first.time, last.time)) {
+        const inside = clipToSpan(points, run.start, run.end);
+        const anchors = gestureAnchors(inside, interp);
+        if (anchors.length < 2) continue;
+        created.push({
+          id: run.clip * 2 ** CLIP_ID_BITS,
+          start: run.start,
+          end: run.end,
+          detectedCenter: 0,
+          pitchOffset: 0,
+          timeOffset: 0,
+          timeScale: 1,
+          subregions: [],
+          curve: { anchors },
+          excluded: false,
+          gainDb: 0,
+        });
+      }
+      if (created.length > 0) ops.push({ type: 'addBlobs', blobs: created });
     }
     if (ops.length === 0) {
       return;
@@ -1772,7 +2072,8 @@ export class EditorController {
    */
   #applyCursor(hit: Hit | null): void {
     const tool = this.#store.state.tool;
-    this.#canvas.style.cursor = hit === null ? 'default' : cursorFor(tool, hit);
+    this.#canvas.style.cursor =
+      hit === null ? 'default' : cursorFor(tool, hit, this.#store.state.editMode);
   }
 
   #releasePointer(pointerId: number): void {

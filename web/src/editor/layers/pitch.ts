@@ -2,6 +2,7 @@
 
 import type { AppState } from '../../app/store.js';
 import type { Blob, PitchTrackArrays, RenderPlan } from '../../core/types.js';
+import { clipEnd, clipStart } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import {
@@ -178,6 +179,12 @@ export function drawPitch(
     drawUnvoiced(ctx, columns, viewport, theme);
     drawUncertainty(ctx, columns, viewport, theme);
     drawDetected(ctx, columns, viewport, theme);
+  }
+  if (state.outsidePitch) {
+    const outside = outsideTrack(state);
+    if (outside !== null) {
+      drawDetected(ctx, collect(outside, viewport), viewport, theme, OUTSIDE_STYLE);
+    }
   }
   drawBridges(ctx, state.track, state.blobs, viewport, theme);
   drawTarget(ctx, state, viewport, theme);
@@ -380,11 +387,74 @@ function bandFor(confidence: number): number {
   return Math.min(ALPHA_BANDS.length - 1, Math.max(0, index));
 }
 
+/** How a detected line is stroked. */
+interface LineStyle {
+  colour: (theme: Theme) => string;
+  width: number;
+  dash: readonly number[];
+  /** Multiplier on every confidence band's opacity. */
+  alpha: number;
+}
+
+/** The detected line inside blobs, which is the one edited by default. */
+const DETECTED_STYLE: LineStyle = {
+  colour: (theme) => theme.pitchDetected,
+  width: 2,
+  dash: [3, 2],
+  alpha: 1,
+};
+
+/** Detected pitch outside every blob: finer, sparser and muted, so it is never read as a blob's. */
+const OUTSIDE_STYLE: LineStyle = {
+  colour: (theme) => theme.textMuted,
+  width: 1.5,
+  dash: [1, 3],
+  alpha: 0.8,
+};
+
+/**
+ * The frames of the layer's track outside every blob and inside the clip heard there.
+ *
+ * @remarks Where it was sung, since only a blob moves pitch in time. Kept per track, blob list
+ * and clip list, which every edit replaces.
+ */
+function outsideTrack(state: AppState): PitchTrackArrays | null {
+  const track = state.track;
+  if (track === null) return null;
+  const clips = state.edits?.clips ?? null;
+  const known = OUTSIDE.get(track);
+  if (known !== undefined && known.blobs === state.blobs && known.clips === clips) {
+    return known.outside;
+  }
+  const layer = new Set(state.layer);
+  const heard = (clips ?? []).filter((clip) => layer.has(clip.id));
+  const midi = new Float32Array(track.midi.length).fill(Number.NaN);
+  let next = 0;
+  for (let i = 0; i < track.times.length; i += 1) {
+    const time = track.times[i] ?? 0;
+    while (next < state.blobs.length && (state.blobs[next]?.end ?? 0) <= time) next += 1;
+    const blob = state.blobs[next];
+    if (blob !== undefined && time >= blob.start) continue;
+    if (!heard.some((clip) => time >= clipStart(clip) && time < clipEnd(clip))) continue;
+    midi[i] = track.midi[i] ?? Number.NaN;
+  }
+  const outside = { ...track, midi };
+  OUTSIDE.set(track, { blobs: state.blobs, clips, outside });
+  return outside;
+}
+
+/** Each track's outside frames, and the blob and clip lists they were read against. */
+const OUTSIDE = new WeakMap<
+  PitchTrackArrays,
+  { blobs: readonly Blob[]; clips: unknown; outside: PitchTrackArrays }
+>();
+
 function drawDetected(
   ctx: CanvasRenderingContext2D,
   columns: Columns,
   viewport: Viewport,
   theme: Theme,
+  style: LineStyle = DETECTED_STYLE,
 ): void {
   const paths = ALPHA_BANDS.map(() => new Path2D());
   const origin = columns.originX;
@@ -419,16 +489,16 @@ function drawDetected(
   ctx.save();
   // Thicker than the gold target line and dotted against it, so the two are told apart by shape
   // as well as by colour at any zoom.
-  ctx.lineWidth = 2;
+  ctx.lineWidth = style.width;
   ctx.lineCap = 'butt';
-  ctx.setLineDash([3, 2]);
-  ctx.strokeStyle = theme.pitchDetected;
+  ctx.setLineDash([...style.dash]);
+  ctx.strokeStyle = style.colour(theme);
   for (let band = 0; band < paths.length; band += 1) {
     const path = paths[band];
     if (path === undefined) {
       continue;
     }
-    ctx.globalAlpha = ALPHA_BANDS[band] ?? 1;
+    ctx.globalAlpha = (ALPHA_BANDS[band] ?? 1) * style.alpha;
     ctx.stroke(path);
   }
   ctx.setLineDash([]);

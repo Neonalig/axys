@@ -488,16 +488,18 @@ export function movePitchOps(
 }
 
 /**
- * Makes a blob of an outside run, moved in pitch by `semitones`.
+ * Makes a blob of an outside run, moved by `semitones` in pitch and `seconds` in time.
  *
  * @remarks What moving a line outside every blob does: the run becomes a blob like any other, so
- * editing it is one edit and one undo.
+ * the move is one edit and one undo.
  */
-export function liftRunOps(run: OutsideRun, semitones: number): EditOp[] {
+export function liftRunOps(run: OutsideRun, semitones: number, seconds: number): EditOp[] {
   return [
     {
       type: 'addBlobs',
-      blobs: [newBlob(run.clip, run.start, run.end, { pitchOffset: semitones })],
+      blobs: [
+        newBlob(run.clip, run.start, run.end, { pitchOffset: semitones, timeOffset: seconds }),
+      ],
     },
   ];
 }

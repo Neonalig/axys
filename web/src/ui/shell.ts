@@ -18,8 +18,9 @@ import {
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
-import { projectEnd } from '../app/store.js';
-import type { AppState, FollowMode, ToolId } from '../app/store.js';
+import { editModeLabel, projectEnd } from '../app/store.js';
+import type { AppState, EditMode, FollowMode, ToolId } from '../app/store.js';
+import type { PitchCutFill } from '../app/clipboard.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport, MeterReport } from '../audio/engine.js';
 import type { AccidentalStyle, ClipId, EditOp, MixerSettings, ViewState } from '../core/types.js';
@@ -77,6 +78,8 @@ export interface ShellHooks {
   setTool(tool: ToolId): void;
   /** Chooses how the view keeps up with a playing playhead. */
   setFollowMode(mode: FollowMode): void;
+  /** Chooses what cutting pitch leaves in the span it came from. */
+  setPitchCutFill(fill: PitchCutFill): void;
   /** Zooms the time axis to a visible span in seconds, about the centre of the view. */
   setSpan(seconds: number): void;
   /** Hands the engine a desk that has not been committed yet, so a dragged fader is audible. */
@@ -148,6 +151,18 @@ const TOOLS: readonly ToolEntry[] = [
   { id: 'time', label: 'Time Tool', icon: 'time', tooltip: 'Moves and stretches blobs in time' },
 ];
 
+interface ModeEntry {
+  id: EditMode;
+  icon: IconName;
+  tooltip: string;
+}
+
+const MODES: readonly ModeEntry[] = [
+  { id: 'both', icon: 'modeBoth', tooltip: 'Edits audio, blobs and pitch together' },
+  { id: 'blob', icon: 'modeBlob', tooltip: 'Edits blobs without moving audio or pitch' },
+  { id: 'pitch', icon: 'modePitch', tooltip: 'Edits pitch without moving audio' },
+];
+
 /** How long the metronome flash takes to fade, in seconds. */
 const PULSE_SECONDS = 0.12;
 
@@ -176,6 +191,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
   'transport.loopSelection': 'Loop',
   'transport.toggleMetronome': 'Metronome',
   'view.followPlayhead': 'Follow',
+  'view.toggleOutsidePitch': 'Outside',
   'midi.alignGuide': 'Align',
   'view.sources': 'Sources',
   'help.showDiagnostics': 'Help',
@@ -374,6 +390,13 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   // Both live in the Sources button's menu and on their keys.
   'view.previousSource',
   'view.toggleOthers',
+  // The clipboard and trimming act on what is under the hand: the keys, or the canvas menu.
+  'edit.cut',
+  'edit.copy',
+  'edit.paste',
+  'edit.trimStart',
+  'edit.trimEnd',
+  'edit.resetTrim',
 ]);
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
@@ -444,6 +467,17 @@ const LABEL_ICON: Readonly<Record<string, IconName>> = {
   'Keyboard Shortcuts': 'keyboard',
   'Find Command': 'search',
   'Help and Diagnostics': 'help',
+  'Outside Pitch': 'outsidePitch',
+  Cut: 'cut',
+  Copy: 'copy',
+  Paste: 'paste',
+  'Trim Start': 'trimStart',
+  'Trim End': 'trimEnd',
+  'Reset Trim': 'reset',
+  'Next Edit Mode': 'modeBoth',
+  'Blob and Pitch Mode': 'modeBoth',
+  'Blob Mode': 'modeBlob',
+  'Pitch Mode': 'modePitch',
 };
 
 function iconFor(command: ShellCommand): IconName {
@@ -573,6 +607,7 @@ export class AppShell {
 
   readonly #commandButtons = new Map<string, ToolbarButton>();
   readonly #toolButtons = new Map<ToolId, HTMLButtonElement>();
+  readonly #modeButtons = new Map<EditMode, HTMLButtonElement>();
   readonly #header: HTMLElement;
   readonly #footer: HTMLElement;
   readonly #mixerToggle: HTMLButtonElement;
@@ -649,6 +684,7 @@ export class AppShell {
         // The tool palette already presents these, so the commands stay in the
         // registry for shortcuts without being drawn a second time.
         header.append(this.#buildToolGroup());
+        header.append(this.#buildModeGroup());
         continue;
       }
       const commands = (byGroup.get(name) ?? []).filter(
@@ -849,6 +885,9 @@ export class AppShell {
       setFollowMode: (mode) => {
         this.#hooks.setFollowMode(mode);
       },
+      setPitchCutFill: (fill) => {
+        this.#hooks.setPitchCutFill(fill);
+      },
       setToolbarLabels: (on) => {
         this.#hooks.setToolbarLabels(on);
       },
@@ -993,6 +1032,17 @@ export class AppShell {
       label: playing ? 'Pause' : 'Play',
       tooltip: playing ? 'Pause (Space)' : 'Play (Space)',
       pressed: playing,
+    });
+
+    for (const [mode, button] of this.#modeButtons) {
+      button.setAttribute('aria-pressed', String(state.editMode === mode));
+      button.disabled = state.phase !== 'ready';
+    }
+    this.#setFace('view.toggleOutsidePitch', {
+      icon: 'outsidePitch',
+      label: 'Outside',
+      tooltip: state.outsidePitch ? 'Hide Outside Pitch (O)' : 'Show Outside Pitch (O)',
+      pressed: state.outsidePitch,
     });
 
     for (const [tool, button] of this.#toolButtons) {
@@ -1546,6 +1596,29 @@ ${tool.tooltip}`,
         this.announce(`${tool.label} selected`);
       });
       this.#toolButtons.set(tool.id, button);
+      section.append(button);
+    }
+    return section;
+  }
+
+  #buildModeGroup(): HTMLElement {
+    const section = group('Edit Mode');
+    section.classList.add('axys-segmented');
+    for (const mode of MODES) {
+      const label = `${editModeLabel(mode.id)} Mode`;
+      const button = control({
+        icon: mode.icon,
+        label,
+        tooltip: `${label}
+${mode.tooltip}
+Next Edit Mode (Q)`,
+      });
+      button.setAttribute('aria-pressed', 'false');
+      button.addEventListener('click', () => {
+        this.#hooks.runCommand(`tools.editMode.${mode.id}`);
+        this.announce(`${label} selected`);
+      });
+      this.#modeButtons.set(mode.id, button);
       section.append(button);
     }
     return section;

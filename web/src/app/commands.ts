@@ -8,13 +8,25 @@
  * drive the workspace, the audio engine and the editor they are handed.
  */
 
+import {
+  copyBlobs,
+  copyClips,
+  copyPitch,
+  cutBlobOps,
+  cutClipSpans,
+  cutPitchOps,
+  pasteBlobOps,
+  pastePitchOps,
+  placePitch,
+} from './clipboard.js';
+import type { ClipboardContent } from './clipboard.js';
 import { savePreferences } from './preferences.js';
 import { selectionSpan } from './selection.js';
 import { othersOf, stepSource } from './sources.js';
-import { projectEnd, projectRate } from './store.js';
-import type { AppState, AppStore } from './store.js';
+import { EDIT_MODES, editModeLabel, projectEnd, projectRate } from './store.js';
+import type { AppState, AppStore, EditMode } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
-import { clipOf } from '../core/types.js';
+import { clipEnd, clipOf, clipStart, MIN_BLOB_SECONDS } from '../core/types.js';
 import type {
   Blob,
   ClipId,
@@ -392,6 +404,52 @@ function fitToContent(store: AppStore): void {
   });
 }
 
+/** The edit mode a clipboard holding `content` pastes in. */
+function modeFor(content: ClipboardContent): EditMode {
+  return content.kind === 'clips' ? 'both' : content.kind === 'blobs' ? 'blob' : 'pitch';
+}
+
+/** What the clipboard commands act on in a mode, as a message names it. */
+function modeNoun(mode: EditMode): string {
+  return mode === 'pitch' ? 'pitch' : mode === 'blob' ? 'blobs' : 'clips';
+}
+
+/** What Copy takes in the current mode, or `null` when the selection holds none of it. */
+function copyFor(state: AppState): ClipboardContent | null {
+  switch (state.editMode) {
+    case 'blob':
+      return copyBlobs(state);
+    case 'pitch':
+      return copyPitch(state, state.outsidePitch);
+    default:
+      return copyClips(state);
+  }
+}
+
+/** Where the playhead is, playing or not. */
+function playheadOf(state: AppState): number {
+  return state.transport.playing ? state.transport.position : state.view.playhead;
+}
+
+/** The clip of the editor's layer heard at the playhead, when the playhead is inside it. */
+function clipAtPlayhead(state: AppState): NonNullable<AppState['edits']>['clips'][number] | null {
+  const time = playheadOf(state);
+  const layer = new Set(state.layer);
+  return (
+    state.edits?.clips.find(
+      (clip) =>
+        layer.has(clip.id) &&
+        time > clipStart(clip) + MIN_BLOB_SECONDS &&
+        time < clipEnd(clip) - MIN_BLOB_SECONDS,
+    ) ?? null
+  );
+}
+
+/** Sets the edit mode. */
+function setEditMode(ctx: CommandContext, mode: EditMode): void {
+  if (ctx.store.state.editMode !== mode) ctx.store.update({ editMode: mode });
+}
+
 function timelineOf(state: AppState): TimelineMap | null {
   return state.edits?.timeline ?? null;
 }
@@ -564,6 +622,154 @@ export function buildCommands(): Command[] {
       enabled: (ctx) => ready(ctx) && ctx.store.state.blobs.length > 0,
       run: (ctx) => {
         ctx.editor.selectAll();
+      },
+    },
+    {
+      id: 'edit.copy',
+      label: 'Copy',
+      group: 'Edit',
+      shortcut: 'Ctrl+C',
+      enabled: (ctx) => ready(ctx) && ctx.store.state.selection.ranges.length > 0,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const content = copyFor(state);
+        if (content === null) {
+          ctx.toast.warn(`Select ${modeNoun(state.editMode)} to copy`);
+          return;
+        }
+        ctx.store.update({ clipboard: content });
+        ctx.toast.info('Copied');
+      },
+    },
+    {
+      id: 'edit.cut',
+      label: 'Cut',
+      group: 'Edit',
+      shortcut: 'Ctrl+X',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.selection.ranges.length > 0,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const content = copyFor(state);
+        if (content === null) {
+          ctx.toast.warn(`Select ${modeNoun(state.editMode)} to cut`);
+          return;
+        }
+        ctx.store.update({ clipboard: content });
+        if (state.editMode === 'both') {
+          ctx.workspace.cutClips(cutClipSpans(state));
+        } else {
+          const ops =
+            state.editMode === 'blob'
+              ? cutBlobOps(state)
+              : cutPitchOps(state, state.selection.ranges, state.pitchCutFill);
+          if (ops.length > 0) ctx.workspace.apply(grouped(ops));
+        }
+        ctx.editor.clearSelection();
+      },
+    },
+    {
+      // Paste lands at the playhead. Pitch pasted over a selection is fitted to it instead.
+      id: 'edit.paste',
+      label: 'Paste',
+      group: 'Edit',
+      shortcut: 'Ctrl+V',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.clipboard !== null,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const content = state.clipboard;
+        if (content === null) return;
+        const wanted = modeFor(content);
+        if (wanted !== state.editMode) {
+          ctx.toast.warn(`Switch to ${editModeLabel(wanted)} to paste ${modeNoun(wanted)}`);
+          return;
+        }
+        const at = playheadOf(state);
+        if (content.kind === 'clips') {
+          ctx.workspace.pasteClips(content.parts, at);
+          return;
+        }
+        const ops =
+          content.kind === 'blobs'
+            ? pasteBlobOps(state, content, at)
+            : pastePitchOps(
+                state,
+                placePitch(content, selectedRange(state), at),
+                state.outsidePitch,
+              );
+        if (ops.length === 0) {
+          ctx.toast.warn(
+            content.kind === 'blobs'
+              ? 'Move the playhead over a clip to paste blobs'
+              : 'Move the playhead over a blob to paste pitch',
+          );
+          return;
+        }
+        ctx.workspace.apply(grouped(ops));
+      },
+    },
+    {
+      id: 'edit.trimStart',
+      label: 'Trim Start',
+      group: 'Edit',
+      shortcut: 'Alt+[',
+      enabled: (ctx) => editable(ctx) && clipAtPlayhead(ctx.store.state) !== null,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const clip = clipAtPlayhead(state);
+        if (clip === null) {
+          ctx.toast.warn('Move the playhead inside a clip to trim');
+          return;
+        }
+        ctx.workspace.apply({
+          type: 'trimClip',
+          clip: clip.id,
+          start: playheadOf(state),
+          end: clipEnd(clip),
+        });
+      },
+    },
+    {
+      id: 'edit.trimEnd',
+      label: 'Trim End',
+      group: 'Edit',
+      shortcut: 'Alt+]',
+      enabled: (ctx) => editable(ctx) && clipAtPlayhead(ctx.store.state) !== null,
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const clip = clipAtPlayhead(state);
+        if (clip === null) {
+          ctx.toast.warn('Move the playhead inside a clip to trim');
+          return;
+        }
+        ctx.workspace.apply({
+          type: 'trimClip',
+          clip: clip.id,
+          start: clipStart(clip),
+          end: playheadOf(state),
+        });
+      },
+    },
+    {
+      id: 'edit.resetTrim',
+      label: 'Reset Trim',
+      group: 'Edit',
+      enabled: (ctx) =>
+        editable(ctx) &&
+        targetClips(ctx.store.state).some(
+          (id) => ctx.store.state.edits?.clips.find((clip) => clip.id === id)?.window !== undefined,
+        ),
+      run: (ctx) => {
+        const state = ctx.store.state;
+        const targets = new Set(targetClips(state));
+        const ops = (state.edits?.clips ?? [])
+          .filter((clip) => targets.has(clip.id) && clip.window !== undefined)
+          .map((clip): EditOp => ({
+            type: 'trimClip',
+            clip: clip.id,
+            start: clip.position,
+            end: clip.position + clip.source.duration,
+          }));
+        if (ops.length > 0) ctx.workspace.apply(grouped(ops));
       },
     },
     {
@@ -883,6 +1089,38 @@ export function buildCommands(): Command[] {
         ctx.store.update({ follow: true, view });
       },
     },
+    {
+      id: 'view.toggleOutsidePitch',
+      label: 'Outside Pitch',
+      group: 'View',
+      shortcut: 'O',
+      enabled: () => true,
+      run: (ctx) => {
+        const on = !ctx.store.state.outsidePitch;
+        savePreferences({ outsidePitch: on });
+        ctx.store.update({ outsidePitch: on });
+      },
+    },
+    {
+      id: 'tools.nextEditMode',
+      label: 'Next Edit Mode',
+      group: 'Tools',
+      shortcut: 'Q',
+      enabled: ready,
+      run: (ctx) => {
+        const index = EDIT_MODES.indexOf(ctx.store.state.editMode);
+        setEditMode(ctx, EDIT_MODES[(index + 1) % EDIT_MODES.length] ?? 'both');
+      },
+    },
+    ...EDIT_MODES.map((mode): Command => ({
+      id: `tools.editMode.${mode}`,
+      label: `${editModeLabel(mode)} Mode`,
+      group: 'Tools',
+      enabled: ready,
+      run: (ctx) => {
+        setEditMode(ctx, mode);
+      },
+    })),
     {
       id: 'view.toggleBarsBeats',
       label: 'Toggle Bars and Beats',

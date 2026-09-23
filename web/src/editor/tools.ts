@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { AppState, ToolId } from '../app/store.js';
+import type { AppState, EditMode, ToolId } from '../app/store.js';
 import { PEN_CURSOR } from './cursors.js';
 import type {
   Anchor,
@@ -117,7 +117,8 @@ export type HitKind =
   | 'anchor'
   | 'conflict'
   | 'clipTitle'
-  | 'reference';
+  | 'reference'
+  | 'pitchLine';
 
 /** What lies under a pointer position. */
 export interface Hit {
@@ -138,8 +139,18 @@ export interface Hit {
   midi: number;
 }
 
-/** Cursor shape for a tool over a given target. */
-export function cursorFor(tool: ToolId, hit: Hit): string {
+/** Cursor shape for a tool over a given target, in an edit mode. */
+export function cursorFor(tool: ToolId, hit: Hit, mode: EditMode = 'both'): string {
+  // A tool the mode leaves alone only places the playhead, which is the plain arrow.
+  const idle =
+    (mode === 'blob' && (tool === 'pitch' || tool === 'pen' || tool === 'bezier')) ||
+    (mode === 'pitch' && tool === 'split');
+  if (idle && hit.kind !== 'ruler' && hit.kind !== 'loopEdge') {
+    return 'default';
+  }
+  if (mode === 'pitch' && tool === 'time' && hit.kind === 'blobEdge') {
+    return 'ew-resize';
+  }
   // A boundary is dragged, not resized in place, and `col-resize` is the shape every editor uses
   // for a divider between two things that share a span. Only the Time tool drags a blob's edges
   // and only the Pitch tool drags an anchor; under any other tool they are part of the blob.
@@ -162,6 +173,14 @@ export function cursorFor(tool: ToolId, hit: Hit): string {
   }
   if (hit.kind === 'empty' && (tool === 'pitch' || tool === 'time' || tool === 'split')) {
     return 'default';
+  }
+  // Pitch outside every blob is picked up by the tools that move pitch, and selected by the rest.
+  if (hit.kind === 'pitchLine') {
+    return tool === 'pitch'
+      ? 'ns-resize'
+      : tool === 'time'
+        ? 'ew-resize'
+        : toolDefinition(tool).cursor;
   }
   return toolDefinition(tool).cursor;
 }
@@ -187,6 +206,8 @@ export function describeHit(hit: Hit, state: AppState): string {
       return hit.edge === 'start' ? `Blob Start ${clock}` : `Blob End ${clock}`;
     case 'blob':
       return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
+    case 'pitchLine':
+      return `Pitch ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
       return 'Move Clip  Ctrl Start  Shift Insert';
     case 'reference':
@@ -633,6 +654,7 @@ export type EditorPreview =
   | { kind: 'pitchDrag'; blobs: readonly BlobId[]; semitones: number; label: string }
   | { kind: 'timeDrag'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'edgeDrag'; blob: BlobId; edge: Edge; time: number; label: string }
+  | { kind: 'blobShift'; blobs: readonly BlobId[]; seconds: number; label: string }
   | { kind: 'anchorDrag'; blob: BlobId; index: number; time: number; midi: number; label: string }
   | { kind: 'curve'; points: readonly GesturePoint[]; label: string }
   | {

@@ -28,6 +28,7 @@ import { musicMarkup } from './music.js';
 import type { MusicGlyph } from './music.js';
 import type { IconName } from './icons.js';
 import { setTooltip } from './tooltip.js';
+import type { PitchCutFill } from '../app/clipboard.js';
 import type { AppState, FollowMode } from '../app/store.js';
 import { MAX_GAIN_DB, MIN_GAIN_DB } from '../core/types.js';
 import { scopeText } from './source-picker.js';
@@ -52,6 +53,8 @@ export interface InspectorHooks {
   setView(patch: Partial<ViewState>): void;
   /** Chooses how the view keeps up with a playing playhead. */
   setFollowMode(mode: FollowMode): void;
+  /** Chooses what cutting pitch leaves in the span it came from. */
+  setPitchCutFill(fill: PitchCutFill): void;
   /** Shows or hides the names beside the toolbar icons. */
   setToolbarLabels(on: boolean): void;
   /** Sets the concert reference in Hz. */
@@ -317,6 +320,7 @@ export class Inspector {
   readonly #snap: SelectElement;
   readonly #timeDisplay: SelectElement;
   readonly #followMode: SelectElement;
+  readonly #pitchCutFill: SelectElement;
   readonly #toolbarLabels: HTMLInputElement;
 
   readonly #guidePanel: HTMLElement;
@@ -494,6 +498,10 @@ export class Inspector {
       { value: 'page', label: 'Page Ahead' },
       { value: 'centre', label: 'Keep Centred' },
     ]);
+    this.#pitchCutFill = selectInput([
+      { value: 'sung', label: 'Sung Pitch' },
+      { value: 'flat', label: 'Flat Line' },
+    ]);
     this.#toolbarLabels = checkboxInput();
 
     displayPanel.append(
@@ -502,6 +510,7 @@ export class Inspector {
       field('Snap Division', this.#snap, 'Snap grid resolution'),
       field('Time Display', this.#timeDisplay, 'Ruler in clock time or bars and beats'),
       field('Follow Mode', this.#followMode, 'Page ahead or keep the playhead centred'),
+      field('Cut Pitch', this.#pitchCutFill, 'What cutting pitch leaves behind'),
       field('Button Names', this.#toolbarLabels, 'Show names beside toolbar icons'),
     );
     project.append(displayPanel);
@@ -792,6 +801,7 @@ export class Inspector {
     setValue(this.#snap, String(state.view.snapDivision));
     setValue(this.#timeDisplay, state.view.timeDisplay);
     setValue(this.#followMode, state.followMode);
+    setValue(this.#pitchCutFill, state.pitchCutFill);
     setChecked(this.#toolbarLabels, state.toolbarLabels);
   }
 
@@ -1032,6 +1042,9 @@ export class Inspector {
     });
     this.#followMode.addEventListener('change', () => {
       this.#hooks.setFollowMode(this.#followMode.value === 'centre' ? 'centre' : 'page');
+    });
+    this.#pitchCutFill.addEventListener('change', () => {
+      this.#hooks.setPitchCutFill(this.#pitchCutFill.value === 'flat' ? 'flat' : 'sung');
     });
     this.#toolbarLabels.addEventListener('change', () => {
       this.#hooks.setToolbarLabels(this.#toolbarLabels.checked);
