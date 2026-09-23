@@ -2,7 +2,15 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { bezierAt, freePosition, moveBezierHandle, sampleBezier, straightBezier } from './tools.js';
+import {
+  bezierAt,
+  freePosition,
+  insertPoint,
+  moveBezierHandle,
+  rippleInsert,
+  sampleBezier,
+  straightBezier,
+} from './tools.js';
 import { readoutNoteName } from '../core/notes.js';
 
 describe('freePosition', () => {
@@ -73,5 +81,23 @@ describe('readoutNoteName', () => {
     expect(new Set(readings.map((text) => text.length)).size).toBe(1);
     expect(readoutNoteName(60.03)).toBe('C4   +3c');
     expect(readoutNoteName(61.69)).toBe('D4  -31c');
+  });
+});
+
+describe('rippleInsert', () => {
+  it('matches the core: a drop inside a clip goes to its nearer edge and pushes the rest', () => {
+    expect(insertPoint([[0, 10]], 4)).toBe(0);
+    expect(insertPoint([[0, 10]], 6)).toBe(10);
+    expect(rippleInsert([[0, 10]], 3, 4)).toEqual({ position: 0, shift: 3 });
+    expect(
+      rippleInsert(
+        [
+          [0, 2],
+          [4, 6],
+        ],
+        2,
+        3,
+      ),
+    ).toEqual({ position: 3, shift: 1 });
   });
 });

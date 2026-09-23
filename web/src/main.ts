@@ -49,7 +49,7 @@ import { freePosition, modifiersOf, rippleInsert } from './editor/tools.js';
 import type { PendingClip } from './editor/tools.js';
 import { buildPeaks, clearPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
-import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN } from './editor/view.js';
+import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN, snapViewTo } from './editor/view.js';
 import { Autosave } from './persistence/autosave.js';
 import { PersistenceError, ProjectStore } from './persistence/db.js';
 import type { ProjectSummary } from './persistence/db.js';
@@ -550,7 +550,7 @@ class AxysWorkspace implements Workspace {
         fingerprint: decoded.fingerprint,
         title: sourceTitle(file.name),
       });
-      this.#reveal(at, at + decoded.duration);
+      this.#reveal(at);
       const analysed = await this.#analyse(decoded.mono, rate, decoded.name);
       const clip = session.addClip({
         samples: analysed.samples,
@@ -565,7 +565,7 @@ class AxysWorkspace implements Workspace {
       this.#idle();
       this.#publish();
       const placed = session.state().clips.find((entry) => entry.id === clip);
-      if (placed) this.#reveal(placed.position, placed.position + placed.source.duration);
+      if (placed) this.#reveal(placed.position);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
       return placed === undefined ? null : placed.position + placed.source.duration;
@@ -584,24 +584,16 @@ class AxysWorkspace implements Workspace {
   }
 
   /**
-   * Moves the view to frame the whole lane when a span of it is out of sight.
+   * Scrolls the view to the start of a span when that start is out of sight.
    *
-   * @remarks `start` and `end` are project seconds. A span already on screen leaves the view
-   * alone, so importing beside what is being worked on does not jump it.
+   * @remarks `start` is project seconds. The zoom and the pitch range are left alone, and a start
+   * already on screen leaves the view where it is, so importing beside what is being worked on
+   * does not jump it.
    */
-  #reveal(start: number, end: number): void {
-    const state = this.#store.state;
-    const view = state.view;
-    if (start >= view.visibleStart && end <= view.visibleEnd) return;
-    const blobs = state.blobs;
-    const framed = fitView(
-      view,
-      0,
-      Math.max(laneEnd(state), end, 1),
-      lowestCentre(blobs) - FIT_MARGIN,
-      highestCentre(blobs) + FIT_MARGIN,
-    );
-    this.#store.update({ view: { ...framed, playhead: view.playhead } });
+  #reveal(start: number): void {
+    const view = this.#store.state.view;
+    if (start >= view.visibleStart && start <= view.visibleEnd) return;
+    this.#store.update({ view: snapViewTo(view, start), follow: false });
   }
 
   /**
@@ -723,7 +715,7 @@ class AxysWorkspace implements Workspace {
       );
       this.#idle();
       this.#publish();
-      this.#reveal(position, position + decoded.duration);
+      this.#reveal(position);
       void this.#cacheReference(source, channels);
       this.#toast.info(`Imported ${sourceTitle(file.name)} as a reference`);
     } catch (error) {

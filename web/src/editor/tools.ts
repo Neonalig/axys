@@ -453,18 +453,32 @@ export function rippleInsert(
   duration: number,
   wanted: number,
 ): { position: number; shift: number } {
-  let at = Number.isFinite(wanted) ? Math.max(0, wanted) : 0;
-  const inside = others.find(([start, end]) => at > start + 1e-9 && at < end - 1e-9);
-  if (inside !== undefined) {
-    const [start, end] = inside;
-    at = at - start <= end - at ? start : end;
-  }
+  const at = insertPoint(others, wanted);
   let next = Number.POSITIVE_INFINITY;
   for (const [start] of others) {
     if (start >= at - 1e-9) next = Math.min(next, start);
   }
   const shift = Number.isFinite(next) ? Math.max(0, at + Math.max(0, duration) - next) : 0;
   return { position: at, shift };
+}
+
+/**
+ * Where a clip asked for at `wanted` is inserted: there, or the nearer edge of a clip it is inside.
+ *
+ * @remarks The position {@link rippleInsert} uses, which does not depend on the clip's length, so
+ * a drop can show it before the file is read.
+ */
+export function insertPoint(
+  others: readonly (readonly [number, number])[],
+  wanted: number,
+): number {
+  const at = Number.isFinite(wanted) ? Math.max(0, wanted) : 0;
+  const inside = others.find(([start, end]) => at > start + 1e-9 && at < end - 1e-9);
+  if (inside === undefined) {
+    return at;
+  }
+  const [start, end] = inside;
+  return at - start <= end - at ? start : end;
 }
 
 /** A clip being imported, shown where it will land until the core has its blobs. */

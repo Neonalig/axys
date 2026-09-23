@@ -47,6 +47,7 @@ import {
   FINE_FACTOR,
   freePosition,
   gestureAnchors,
+  insertPoint,
   modifiersOf,
   moveBezierHandle,
   sampleBezier,
@@ -955,10 +956,21 @@ export class EditorController {
       return null;
     }
     const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false });
+    // A vocal cannot land inside another, so the marker goes where it will be inserted. A
+    // reference overlaps freely and lands where it was let go, which the label says when the two
+    // differ.
+    const spans = (this.#store.state.edits?.clips ?? []).map((clip): [number, number] => [
+      clip.position,
+      clip.position + clip.source.duration,
+    ]);
+    const vocal = insertPoint(spans, time);
     this.#renderer?.setPreview({
       kind: 'drop',
-      time,
-      label: `Import At ${formatClock(time, 0.001)}`,
+      time: vocal,
+      label:
+        vocal === time
+          ? `Import At ${formatClock(time, 0.001)}`
+          : `Vocal At ${formatClock(vocal, 0.001)}  Reference At ${formatClock(time, 0.001)}`,
     });
     return time;
   }
