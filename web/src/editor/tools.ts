@@ -393,6 +393,33 @@ export function simplifyGesture(
 }
 
 /**
+ * A freehand stroke with the pointer moved on from `from` to `next`, as points in time order.
+ *
+ * @remarks A stroke may run in either direction. The newest segment replaces every point it
+ * passes back over, so drawing over part of the stroke again redraws that part. A move straight
+ * up or down replaces the point it started from.
+ */
+export function extendStroke(
+  points: readonly GesturePoint[],
+  from: GesturePoint,
+  next: GesturePoint,
+): GesturePoint[] {
+  const low = Math.min(from.time, next.time);
+  const high = Math.max(from.time, next.time);
+  const vertical = high - low < 1e-9;
+  const kept = points.filter((point) => {
+    if (point === from) return !vertical;
+    return (
+      point.time <= low - 1e-9 || point.time >= high + 1e-9 || (vertical && point.time !== low)
+    );
+  });
+  const at = kept.findIndex((point) => point.time > next.time);
+  if (at === -1) kept.push(next);
+  else kept.splice(at, 0, next);
+  return kept;
+}
+
+/**
  * Turns gesture points into curve anchors.
  *
  * @remarks Points that do not advance in time are dropped, so the anchors stay strictly

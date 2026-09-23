@@ -47,6 +47,7 @@ import {
   describeHit,
   EDGE_GRIP,
   FINE_FACTOR,
+  extendStroke,
   gestureAnchors,
   modifiersOf,
   moveBezierHandle,
@@ -90,7 +91,7 @@ type Gesture =
   | { kind: 'rulerDrag'; anchorTime: number; drawing: boolean }
   | { kind: 'pitch'; blobs: BlobId[]; semitones: number }
   | { kind: 'anchor'; blob: BlobId; index: number; time: number; midi: number }
-  | { kind: 'pen'; points: GesturePoint[] }
+  | { kind: 'pen'; points: GesturePoint[]; last: GesturePoint }
   | { kind: 'bezierDraw'; from: GesturePoint; to: GesturePoint }
   | { kind: 'bezierHandle'; handle: BezierHandle }
   | { kind: 'time'; blobs: BlobId[]; seconds: number }
@@ -928,8 +929,10 @@ export class EditorController {
       }
       // Drawing starts wherever the pointer goes down, over a blob or over nothing, and the
       // stroke belongs to whatever it crosses rather than to the blob it happened to start on.
-      case 'pen':
-        return { kind: 'pen', points: [{ time: hit.time, midi: hit.midi }] };
+      case 'pen': {
+        const first = { time: hit.time, midi: hit.midi };
+        return { kind: 'pen', points: [first], last: first };
+      }
       case 'bezier': {
         const handle = this.#bezierHandleAt(this.#origin);
         if (handle !== null) {
@@ -1093,12 +1096,9 @@ export class EditorController {
           this.#pitchSnap(modifiers),
           this.#store.state.edits?.scale ?? null,
         );
-        const last = gesture.points[gesture.points.length - 1];
-        if (last === undefined || time > last.time) {
-          gesture.points.push({ time, midi: value });
-        } else {
-          gesture.points[gesture.points.length - 1] = { time: last.time, midi: value };
-        }
+        const next = { time, midi: value };
+        gesture.points = extendStroke(gesture.points, gesture.last, next);
+        gesture.last = next;
         break;
       }
       case 'bezierDraw': {
