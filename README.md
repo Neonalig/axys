@@ -107,6 +107,6 @@ page loads.
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), and the running application links to its own
 corresponding source under Help then Source Code.
 
-If you fork Axys or host a modified version, set `AXYS_SOURCE_REPOSITORY` and
-`AXYS_SOURCE_REVISION` at build time so that link resolves to your source rather than to this
-repository.
+If you fork Axys or host a modified version, set `repository` in `source.json` to your own public
+repository. Release builds fail until it matches the repository being built, so the link always
+resolves to the source actually deployed. See [docs/deployment.md](docs/deployment.md).

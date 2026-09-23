@@ -8,6 +8,7 @@
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 use serde::{Deserialize, Serialize};
+use std::ops::Range;
 
 use crate::{limits, AxysError, Result};
 
@@ -115,51 +116,226 @@ pub fn analyse_energy(
     frame_seconds: f64,
     hop_seconds: f64,
 ) -> Result<EnergyTrack> {
-    if !sample_rate.is_finite()
-        || sample_rate < f64::from(limits::MIN_SAMPLE_RATE)
-        || sample_rate > f64::from(limits::MAX_SAMPLE_RATE)
-    {
+    let grid = EnergyGrid::new(samples.len(), sample_rate, frame_seconds, hop_seconds)?;
+    let frames = observe_energy(&grid, samples, 0, 0..grid.count())?;
+    grid.finish(frames)
+}
+
+/// Frame layout of one energy analysis over a source buffer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnergyGrid {
+    sample_rate: f64,
+    len: usize,
+    hop_len: usize,
+    win_len: usize,
+    count: usize,
+}
+
+impl EnergyGrid {
+    /// Lays out the frames for a source buffer of `len` samples.
+    ///
+    /// # Errors
+    /// A sample rate, window, hop or duration outside the accepted range.
+    pub fn new(len: usize, sample_rate: f64, frame_seconds: f64, hop_seconds: f64) -> Result<Self> {
+        if !sample_rate.is_finite()
+            || sample_rate < f64::from(limits::MIN_SAMPLE_RATE)
+            || sample_rate > f64::from(limits::MAX_SAMPLE_RATE)
+        {
+            return Err(AxysError::Invalid(format!(
+                "sample rate {sample_rate} outside {}..={}",
+                limits::MIN_SAMPLE_RATE,
+                limits::MAX_SAMPLE_RATE
+            )));
+        }
+        if !frame_seconds.is_finite() || frame_seconds <= 0.0 || frame_seconds > MAX_FRAME_SECONDS {
+            return Err(AxysError::Invalid(format!(
+                "frame seconds {frame_seconds} outside 0..={MAX_FRAME_SECONDS}"
+            )));
+        }
+        if !hop_seconds.is_finite() || hop_seconds <= 0.0 || hop_seconds > MAX_HOP_SECONDS {
+            return Err(AxysError::Invalid(format!(
+                "hop seconds {hop_seconds} outside 0..={MAX_HOP_SECONDS}"
+            )));
+        }
+        if len as f64 / sample_rate > limits::MAX_AUDIO_SECONDS {
+            return Err(AxysError::Invalid(format!(
+                "audio longer than {} seconds",
+                limits::MAX_AUDIO_SECONDS
+            )));
+        }
+        let hop_len = ((hop_seconds * sample_rate).round() as usize).max(1);
+        let win_len = ((frame_seconds * sample_rate).round() as usize).max(2);
+        Ok(Self {
+            sample_rate,
+            len,
+            hop_len,
+            win_len,
+            count: len.div_ceil(hop_len),
+        })
+    }
+
+    /// Frames the buffer yields.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The source samples the frames in `frames` read, including those of the frame before the
+    /// first, whose spectrum the first frame's flux is measured against.
+    pub fn samples_for(&self, frames: Range<usize>) -> Range<usize> {
+        if frames.is_empty() {
+            return 0..0;
+        }
+        let start =
+            (frames.start.saturating_sub(1) * self.hop_len).saturating_sub(self.win_len / 2);
+        let end = ((frames.end - 1) * self.hop_len + self.win_len - self.win_len / 2).min(self.len);
+        start.min(end)..end
+    }
+
+    /// Builds the track from the measurements of every frame, normalising the flux over the run.
+    ///
+    /// # Errors
+    /// Measurements for other than exactly the grid's frames.
+    pub fn finish(&self, frames: EnergyFrames) -> Result<EnergyTrack> {
+        if frames.len() != self.count {
+            return Err(AxysError::Invalid(format!(
+                "{} frames of energy for a run of {} frames",
+                frames.len(),
+                self.count
+            )));
+        }
+        let EnergyFrames { rms, mut flux, zcr } = frames;
+        normalise(&mut flux);
+        Ok(EnergyTrack {
+            hop_seconds: self.hop_len as f64 / self.sample_rate,
+            times: (0..self.count)
+                .map(|frame| (frame * self.hop_len) as f64 / self.sample_rate)
+                .collect(),
+            rms_db: rms.iter().map(|value| to_db(*value)).collect(),
+            rms,
+            spectral_flux: flux,
+            zero_crossing_rate: zcr,
+        })
+    }
+}
+
+/// Energy measurements for a span of frames, before the flux is normalised over the whole run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EnergyFrames {
+    rms: Vec<f32>,
+    flux: Vec<f32>,
+    zcr: Vec<f32>,
+}
+
+impl EnergyFrames {
+    fn with_capacity(frames: usize) -> Self {
+        Self {
+            rms: Vec::with_capacity(frames),
+            flux: Vec::with_capacity(frames),
+            zcr: Vec::with_capacity(frames),
+        }
+    }
+
+    /// Rebuilds measurements from one array per quantity.
+    ///
+    /// # Errors
+    /// Arrays of different lengths, or a non-finite or negative value.
+    pub fn from_parts(rms: Vec<f32>, flux: Vec<f32>, zcr: Vec<f32>) -> Result<Self> {
+        if flux.len() != rms.len() || zcr.len() != rms.len() {
+            return Err(AxysError::Invalid(format!(
+                "{} RMS, {} flux and {} zero-crossing values",
+                rms.len(),
+                flux.len(),
+                zcr.len()
+            )));
+        }
+        if !rms
+            .iter()
+            .chain(&flux)
+            .chain(&zcr)
+            .all(|v| v.is_finite() && *v >= 0.0)
+        {
+            return Err(AxysError::Invalid(
+                "energy contains a non-finite or negative value".into(),
+            ));
+        }
+        Ok(Self { rms, flux, zcr })
+    }
+
+    /// Joins the measurements for the frames that follow this span's last.
+    pub fn append(&mut self, next: EnergyFrames) {
+        self.rms.extend(next.rms);
+        self.flux.extend(next.flux);
+        self.zcr.extend(next.zcr);
+    }
+
+    /// Frame RMS.
+    pub fn rms(&self) -> &[f32] {
+        &self.rms
+    }
+
+    /// Unnormalised half-wave rectified spectral difference from the frame before.
+    pub fn flux(&self) -> &[f32] {
+        &self.flux
+    }
+
+    /// Zero-crossing rate per frame.
+    pub fn zcr(&self) -> &[f32] {
+        &self.zcr
+    }
+
+    /// Frames held.
+    pub fn len(&self) -> usize {
+        self.rms.len()
+    }
+
+    /// True when no frames are held.
+    pub fn is_empty(&self) -> bool {
+        self.rms.is_empty()
+    }
+}
+
+/// Measures the frames in `frames`, before the flux is normalised.
+///
+/// `source` holds source samples starting at sample `offset` and must cover
+/// [`EnergyGrid::samples_for`] of the same frames. Spans measured apart and joined in order with
+/// [`EnergyFrames::append`] finish exactly as one run over the whole buffer.
+///
+/// # Errors
+/// Frames past the grid, a source that does not cover them, or a non-finite sample.
+pub fn observe_energy(
+    grid: &EnergyGrid,
+    source: &[f32],
+    offset: usize,
+    frames: Range<usize>,
+) -> Result<EnergyFrames> {
+    if frames.start > frames.end || frames.end > grid.count {
         return Err(AxysError::Invalid(format!(
-            "sample rate {sample_rate} outside {}..={}",
-            limits::MIN_SAMPLE_RATE,
-            limits::MAX_SAMPLE_RATE
+            "frames {}..{} outside the run's {} frames",
+            frames.start, frames.end, grid.count
         )));
     }
-    if !frame_seconds.is_finite() || frame_seconds <= 0.0 || frame_seconds > MAX_FRAME_SECONDS {
+    let needed = grid.samples_for(frames.clone());
+    if needed.start < offset || needed.end > offset + source.len() {
         return Err(AxysError::Invalid(format!(
-            "frame seconds {frame_seconds} outside 0..={MAX_FRAME_SECONDS}"
+            "samples {}..{} do not cover the {}..{} the frames read",
+            offset,
+            offset + source.len(),
+            needed.start,
+            needed.end
         )));
     }
-    if !hop_seconds.is_finite() || hop_seconds <= 0.0 || hop_seconds > MAX_HOP_SECONDS {
-        return Err(AxysError::Invalid(format!(
-            "hop seconds {hop_seconds} outside 0..={MAX_HOP_SECONDS}"
-        )));
-    }
-    if samples.len() as f64 / sample_rate > limits::MAX_AUDIO_SECONDS {
-        return Err(AxysError::Invalid(format!(
-            "audio longer than {} seconds",
-            limits::MAX_AUDIO_SECONDS
-        )));
-    }
-    if samples.iter().any(|s| !s.is_finite()) {
+    if source.iter().any(|s| !s.is_finite()) {
         return Err(AxysError::Invalid(
             "samples contain a non-finite value".into(),
         ));
     }
 
-    let hop_len = ((hop_seconds * sample_rate).round() as usize).max(1);
-    let win_len = ((frame_seconds * sample_rate).round() as usize).max(2);
-    let realised_hop = hop_len as f64 / sample_rate;
-
-    let mut track = EnergyTrack {
-        hop_seconds: realised_hop,
-        ..EnergyTrack::default()
-    };
-    if samples.is_empty() {
-        return Ok(track);
+    let mut out = EnergyFrames::with_capacity(frames.len());
+    if frames.is_empty() {
+        return Ok(out);
     }
 
-    let frames = samples.len().div_ceil(hop_len);
+    let win_len = grid.win_len;
     let fft_size = win_len.next_power_of_two();
     let window = hann(win_len);
 
@@ -171,14 +347,10 @@ pub fn analyse_energy(
     let mut magnitude = vec![0.0f32; bins];
     let mut previous = vec![0.0f32; bins];
 
-    track.times = Vec::with_capacity(frames);
-    track.rms = Vec::with_capacity(frames);
-    track.rms_db = Vec::with_capacity(frames);
-    track.spectral_flux = Vec::with_capacity(frames);
-    track.zero_crossing_rate = Vec::with_capacity(frames);
-
-    for frame in 0..frames {
-        let centre = frame * hop_len;
+    // The frame before the span is measured only for its spectrum, so the first frame's flux
+    // compares against the same neighbour it would in one run over the whole buffer.
+    for frame in frames.start.saturating_sub(1)..frames.end {
+        let centre = frame * grid.hop_len;
         let start = centre as isize - (win_len / 2) as isize;
 
         let mut sum_squares = 0.0f64;
@@ -187,11 +359,11 @@ pub fn analyse_energy(
         let mut pairs = 0usize;
         let mut last: Option<f32> = None;
 
-        for (offset, slot) in buffer.iter_mut().enumerate().take(win_len) {
-            let index = start + offset as isize;
-            let value = read(samples, index);
-            *slot = Complex::new(value * window[offset], 0.0);
-            if index >= 0 && (index as usize) < samples.len() {
+        for (index, slot) in buffer.iter_mut().enumerate().take(win_len) {
+            let at = start + index as isize;
+            if at >= 0 && (at as usize) < grid.len {
+                let value = source[at as usize - offset];
+                *slot = Complex::new(value * window[index], 0.0);
                 sum_squares += f64::from(value) * f64::from(value);
                 valid += 1;
                 if let Some(prev) = last {
@@ -202,23 +374,13 @@ pub fn analyse_energy(
                 }
                 last = Some(value);
             } else {
+                *slot = Complex::new(0.0, 0.0);
                 last = None;
             }
         }
         for slot in buffer.iter_mut().skip(win_len) {
             *slot = Complex::new(0.0, 0.0);
         }
-
-        let rms = if valid == 0 {
-            0.0f32
-        } else {
-            (sum_squares / valid as f64).sqrt() as f32
-        };
-        let zcr = if pairs == 0 {
-            0.0f32
-        } else {
-            crossings as f32 / pairs as f32
-        };
 
         fft.process_with_scratch(&mut buffer, &mut scratch);
         let mut flux = 0.0f32;
@@ -233,16 +395,25 @@ pub fn analyse_energy(
             }
         }
         previous.copy_from_slice(&magnitude);
+        if frame < frames.start {
+            continue;
+        }
 
-        track.times.push(centre as f64 / sample_rate);
-        track.rms.push(rms);
-        track.rms_db.push(to_db(rms));
-        track.spectral_flux.push(flux);
-        track.zero_crossing_rate.push(zcr);
+        let rms = if valid == 0 {
+            0.0f32
+        } else {
+            (sum_squares / valid as f64).sqrt() as f32
+        };
+        let zcr = if pairs == 0 {
+            0.0f32
+        } else {
+            crossings as f32 / pairs as f32
+        };
+        out.rms.push(rms);
+        out.flux.push(flux);
+        out.zcr.push(zcr);
     }
-
-    normalise(&mut track.spectral_flux);
-    Ok(track)
+    Ok(out)
 }
 
 /// Classifies a frame as likely unvoiced consonant material.
@@ -254,14 +425,6 @@ pub fn is_unvoiced_consonant(rms: f32, zcr: f32, voiced: bool) -> bool {
         return false;
     }
     rms >= CONSONANT_RMS_FLOOR && zcr >= CONSONANT_ZCR_FLOOR
-}
-
-/// Reads `samples` at a signed index, treating out of range as silence.
-fn read(samples: &[f32], index: isize) -> f32 {
-    if index < 0 {
-        return 0.0;
-    }
-    samples.get(index as usize).copied().unwrap_or(0.0)
 }
 
 /// Builds a periodic Hann window of `len` samples.
@@ -303,6 +466,30 @@ mod tests {
     const SR: f64 = 16_000.0;
     const FRAME: f64 = 0.0464;
     const HOP: f64 = 0.005;
+
+    #[test]
+    fn spans_measured_apart_finish_as_one_run() {
+        let mut audio = sine(220.0, 0.6, 0.4);
+        audio.extend(noise(0.3, 0.2));
+        audio.extend(sine(330.0, 0.4, 0.6));
+        let short = sine(220.0, 0.02, 0.4);
+        for audio in [&audio, &short] {
+            let whole = analyse_energy(audio, SR, FRAME, HOP).unwrap();
+            let grid = EnergyGrid::new(audio.len(), SR, FRAME, HOP).unwrap();
+            let count = grid.count();
+            for pieces in [1, 2, 5] {
+                let mut joined = EnergyFrames::default();
+                for piece in 0..pieces {
+                    let frames = count * piece / pieces..count * (piece + 1) / pieces;
+                    let span = grid.samples_for(frames.clone());
+                    joined.append(
+                        observe_energy(&grid, &audio[span.clone()], span.start, frames).unwrap(),
+                    );
+                }
+                assert_eq!(grid.finish(joined).unwrap(), whole, "{pieces} pieces");
+            }
+        }
+    }
 
     fn sine(hz: f64, seconds: f64, amplitude: f32) -> Vec<f32> {
         let n = (seconds * SR) as usize;

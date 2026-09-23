@@ -250,13 +250,14 @@ describe('static deployment', () => {
     expect(headers).toMatch(/\/version\.json\s+Cache-Control: no-cache/);
   });
 
-  it('ships the optional host headers without mandating cross-origin isolation', () => {
+  it('ships the host headers with cross-origin isolation', () => {
     const headers = readFileSync(join(dist, '_headers'), 'utf8');
     expect(headers).toContain('Content-Security-Policy');
     const active = headers
       .split('\n')
       .filter((line) => !line.trimStart().startsWith('#'))
       .join('\n');
-    expect(active).not.toContain('Cross-Origin-Embedder-Policy');
+    expect(active).toContain('Cross-Origin-Opener-Policy: same-origin');
+    expect(active).toContain('Cross-Origin-Embedder-Policy: require-corp');
   });
 });

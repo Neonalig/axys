@@ -130,9 +130,10 @@ export function probeCapabilities(): Promise<Capability[]>;
 export function isSupported(caps: Capability[]): boolean;
 ```
 
-Probe: WebAssembly, `AudioWorklet`, `AudioContext`, IndexedDB, OPFS, OPFS sync access handles,
-secure context, `WebGPU`, `SharedArrayBuffer`, cross-origin isolation, WASM threads,
-`WebCodecs`, and `decodeAudioData` support for wav/flac/mp3/aac/ogg. Optional capabilities that
+Probe: WebAssembly, `AudioWorklet`, `AudioContext`, IndexedDB, OPFS, secure context, File System
+Access pickers, workers and logical cores for parallel analysis, cross-origin isolation, `WebGPU`,
+`WebCodecs`, and `decodeAudioData` support for wav/flac/mp3/aac/ogg. Each result carries the
+reason it was found available or not. Optional capabilities that
 are missing must never block startup.
 
 ## State: `app/store.ts`
@@ -500,7 +501,8 @@ while the mode is Visual Only.
 
 `editor/layers/readout.ts` draws every readout the canvas floats over itself, in a monospaced face
 and sized in whole character columns, so a figure counting up does not resize its own box. `ui/diagnostics.ts` renders the capability probe and the Source Code entry with the
-build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`.
+build version and revision from `__AXYS_VERSION__`, `__AXYS_REVISION__` and `__AXYS_REPOSITORY__`,
+and the build's signature check from `app/provenance.ts`.
 `ui/theme.ts` exports the colour tokens as CSS custom properties with a high-contrast variant.
 
 ## Persistence: `persistence/`

@@ -21,6 +21,7 @@ import type { FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile } from './audio/decode.js';
 import { AudioEngine } from './audio/engine.js';
 import type { EngineReport } from './audio/engine.js';
+import { browserLabel } from './browser.js';
 import { isSupported, probeCapabilities } from './capabilities.js';
 import type { Capability } from './capabilities.js';
 import { isProject, parseJson } from './core/json.js';
@@ -1049,7 +1050,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
   section.append(heading);
 
   const lead = document.createElement('p');
-  lead.textContent = 'Axys needs these capabilities and this browser does not provide them';
+  lead.textContent = `Axys cannot run in ${browserLabel()}. Missing required features:`;
   section.append(lead);
 
   const list = document.createElement('ul');
@@ -1058,13 +1059,13 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
     const item = document.createElement('li');
     const name = document.createElement('strong');
     name.textContent = cap.label;
-    item.append(name, document.createTextNode(`, ${cap.detail}`));
+    item.append(name, document.createTextNode(`\n${cap.reason}`));
     list.append(item);
   }
   section.append(list);
 
   const tail = document.createElement('p');
-  tail.textContent = 'A current desktop Chrome, Edge, Firefox or Safari over HTTPS will run Axys';
+  tail.textContent = 'Supported Browsers: current Chrome, Edge, Firefox and Safari, over HTTPS.';
   section.append(tail);
 
   mount.append(section);
@@ -1100,7 +1101,7 @@ function noteDegradedCapabilities(caps: Capability[], toast: ToastHost): void {
     // A browser that refuses storage shows the notice again next time, which is harmless.
   }
   const names = missing.map((cap) => cap.label).join(', ');
-  toast.warn(`Reduced mode: ${names} unavailable. See Help And Diagnostics.`);
+  toast.warn(`Unavailable Features: ${names}. See Help and Diagnostics for details.`);
 }
 
 /** Resolves with the opened store, or `null` when this browser will not provide it. */

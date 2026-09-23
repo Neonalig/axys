@@ -7,14 +7,18 @@
 //! contract is stable, versionable and testable from TypeScript without generated
 //! struct bindings.
 //!
-//! Three entry points serve three threads: [`analyse`] runs in a worker, [`Session`]
-//! owns edit state on the main thread, and [`PlaybackRenderer`] runs inside the
-//! AudioWorklet.
+//! Three entry points serve three threads: [`analyse`] runs in a worker, or
+//! [`observe_span`] across a pool of workers and [`analyse_spans`] after them, [`Session`] owns
+//! edit state on the main thread, and [`PlaybackRenderer`] runs inside the AudioWorklet.
 
 use wasm_bindgen::prelude::*;
 
-use axys_core::analysis::energy::{analyse_energy, EnergyTrack};
-use axys_core::analysis::f0::{detect_f0, F0Params, PitchTrack};
+use axys_core::analysis::energy::{
+    analyse_energy, observe_energy, EnergyFrames, EnergyGrid, EnergyTrack,
+};
+use axys_core::analysis::f0::{
+    decode_f0, detect_f0, observe_f0, F0Candidates, F0Frames, F0Params, PitchTrack,
+};
 use axys_core::analysis::segment::{segment, SegmentParams};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
@@ -237,12 +241,179 @@ pub fn analyse(samples: &[f32], sample_rate: f64, params_json: &str) -> Result<A
         params.f0.hop_seconds,
     )
     .map_err(to_js)?;
+    finish_analysis(track, energy, &params)
+}
+
+/// Segments a pitch and energy track into provisional blobs.
+fn finish_analysis(
+    track: PitchTrack,
+    energy: EnergyTrack,
+    params: &AnalysisParams,
+) -> Result<Analysis, JsValue> {
     let blobs = segment(&track, &energy, &params.segment).map_err(to_js)?;
     Ok(Analysis {
         track,
         energy,
         blobs,
     })
+}
+
+/// Pitch candidates and energy for one span of analysis frames, measured apart from the rest.
+#[wasm_bindgen]
+pub struct AnalysisSpan {
+    candidates: F0Candidates,
+    energy: EnergyFrames,
+}
+
+#[wasm_bindgen]
+impl AnalysisSpan {
+    /// Candidate frequencies in Hz, every frame's back to back.
+    pub fn freq(&self) -> Vec<f64> {
+        self.candidates.freq().to_vec()
+    }
+
+    /// Normalised difference at each candidate lag.
+    pub fn dprime(&self) -> Vec<f64> {
+        self.candidates.dprime().to_vec()
+    }
+
+    /// Observation cost of each candidate.
+    pub fn cost(&self) -> Vec<f64> {
+        self.candidates.cost().to_vec()
+    }
+
+    /// Candidates per frame.
+    pub fn counts(&self) -> Vec<u32> {
+        self.candidates.counts()
+    }
+
+    /// RMS of each frame's pitch window.
+    pub fn rms(&self) -> Vec<f32> {
+        self.candidates.rms().to_vec()
+    }
+
+    /// RMS of each frame's energy window.
+    #[wasm_bindgen(js_name = energyRms)]
+    pub fn energy_rms(&self) -> Vec<f32> {
+        self.energy.rms().to_vec()
+    }
+
+    /// Unnormalised spectral flux per frame.
+    pub fn flux(&self) -> Vec<f32> {
+        self.energy.flux().to_vec()
+    }
+
+    /// Zero-crossing rate per frame.
+    pub fn zcr(&self) -> Vec<f32> {
+        self.energy.zcr().to_vec()
+    }
+}
+
+/// The pitch and energy frame layouts of one analysis, which share a hop grid.
+struct Layouts {
+    f0: F0Frames,
+    energy: EnergyGrid,
+}
+
+impl Layouts {
+    fn new(len: usize, sample_rate: f64, params: &AnalysisParams) -> Result<Self, JsValue> {
+        let f0 = F0Frames::new(len, sample_rate, &params.f0).map_err(to_js)?;
+        let energy = EnergyGrid::new(
+            len,
+            sample_rate,
+            params.f0.frame_seconds,
+            params.f0.hop_seconds,
+        )
+        .map_err(to_js)?;
+        if f0.count() != energy.count() {
+            return Err(JsValue::from_str(&format!(
+                "{} pitch frames but {} energy frames",
+                f0.count(),
+                energy.count()
+            )));
+        }
+        Ok(Self { f0, energy })
+    }
+}
+
+/// Frames an analysis of `len` source samples yields.
+#[wasm_bindgen(js_name = analysisFrameCount)]
+pub fn analysis_frame_count(
+    len: usize,
+    sample_rate: f64,
+    params_json: &str,
+) -> Result<usize, JsValue> {
+    let params = AnalysisParams::from_json(params_json)?;
+    Ok(Layouts::new(len, sample_rate, &params)?.f0.count())
+}
+
+/// The source samples that analysis frames `first..end` read, as `[start, end]`.
+#[wasm_bindgen(js_name = spanSamples)]
+pub fn span_samples(
+    len: usize,
+    sample_rate: f64,
+    params_json: &str,
+    first: usize,
+    end: usize,
+) -> Result<Vec<u32>, JsValue> {
+    let params = AnalysisParams::from_json(params_json)?;
+    let layouts = Layouts::new(len, sample_rate, &params)?;
+    let pitch = layouts.f0.samples_for(first..end);
+    let energy = layouts.energy.samples_for(first..end);
+    let start = pitch.start.min(energy.start);
+    let stop = pitch.end.max(energy.end);
+    Ok(vec![start as u32, stop as u32])
+}
+
+/// Measures pitch candidates and energy for frames `first..end` of an analysis over `len`
+/// samples.
+///
+/// `window` holds the source from sample `offset` and must cover [`span_samples`] of the same
+/// frames.
+#[wasm_bindgen(js_name = observeSpan)]
+pub fn observe_span(
+    window: &[f32],
+    offset: usize,
+    len: usize,
+    sample_rate: f64,
+    params_json: &str,
+    first: usize,
+    end: usize,
+) -> Result<AnalysisSpan, JsValue> {
+    let params = AnalysisParams::from_json(params_json)?;
+    let layouts = Layouts::new(len, sample_rate, &params)?;
+    let candidates =
+        observe_f0(&layouts.f0, &params.f0, window, offset, first..end).map_err(to_js)?;
+    let energy = observe_energy(&layouts.energy, window, offset, first..end).map_err(to_js)?;
+    Ok(AnalysisSpan { candidates, energy })
+}
+
+/// Finishes an analysis of `len` source samples from spans measured by [`observe_span`] and
+/// joined in frame order.
+///
+/// Produces exactly what [`analyse`] produces for the same audio and settings.
+#[wasm_bindgen(js_name = analyseSpans)]
+#[allow(clippy::too_many_arguments)]
+pub fn analyse_spans(
+    len: usize,
+    sample_rate: f64,
+    params_json: &str,
+    freq: Vec<f64>,
+    dprime: Vec<f64>,
+    cost: Vec<f64>,
+    counts: &[u32],
+    rms: Vec<f32>,
+    energy_rms: Vec<f32>,
+    flux: Vec<f32>,
+    zcr: Vec<f32>,
+) -> Result<Analysis, JsValue> {
+    let params = AnalysisParams::from_json(params_json)?;
+    let layouts = Layouts::new(len, sample_rate, &params)?;
+    let candidates = F0Candidates::from_parts(freq, dprime, cost, counts, rms).map_err(to_js)?;
+    let track = decode_f0(&layouts.f0, &params.f0, &candidates).map_err(to_js)?;
+    let frames = EnergyFrames::from_parts(energy_rms, flux, zcr).map_err(to_js)?;
+    let energy = layouts.energy.finish(frames).map_err(to_js)?;
+    finish_analysis(track, energy, &params)
 }
 
 /// What an export of one output range would produce, measured before encoding.

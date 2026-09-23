@@ -85,3 +85,8 @@
   padding: 24px;
   text-align: left;
 }
+
+.axys-unsupported li {
+  margin-bottom: var(--axys-space-3);
+  white-space: pre-line;
+}

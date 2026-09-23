@@ -823,7 +823,8 @@ export class AppShell {
       footer,
     );
     this.#toasts = new ToastHost(document.body);
-    this.#tooltips = TooltipHost.install(this.#root);
+    // The body rather than the shell root, so dialogs and menus attached to the body get tips too.
+    this.#tooltips = TooltipHost.install(document.body);
   }
 
   /** Builds the chrome inside `root` and returns it. */

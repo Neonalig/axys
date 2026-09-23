@@ -17,6 +17,7 @@
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::ops::Range;
 use std::sync::Arc;
 
 use crate::{limits, AxysError, Result};
@@ -318,48 +319,165 @@ const MAX_FRAMES: usize = 4_000_000;
 /// Frame centres sit at exact multiples of the realised hop, which is `hop_seconds` rounded
 /// to a whole number of samples and reported on the returned track.
 pub fn detect_f0(samples: &[f32], sample_rate: f64, params: &F0Params) -> Result<PitchTrack> {
-    validate(samples, sample_rate, params)?;
+    let layout = F0Frames::new(samples.len(), sample_rate, params)?;
+    let candidates = observe_f0(&layout, params, samples, 0, 0..layout.count())?;
+    decode_f0(&layout, params, &candidates)
+}
 
-    let hop_samples = ((params.hop_seconds * sample_rate).round() as usize).max(1);
-    let hop_seconds = hop_samples as f64 / sample_rate;
-    if samples.is_empty() {
-        return Ok(PitchTrack {
+/// Frame layout of one F0 run over a source buffer.
+///
+/// Frame centres sit at multiples of the realised hop, which is `hop_seconds` rounded to a whole
+/// number of samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct F0Frames {
+    sample_rate: f64,
+    len: usize,
+    hop_samples: usize,
+    frame_len: usize,
+    count: usize,
+}
+
+impl F0Frames {
+    /// Lays out the frames for a source buffer of `len` samples.
+    ///
+    /// # Errors
+    /// Invalid parameters, a sample rate or duration outside the core's limits, or more frames
+    /// than one run may produce.
+    pub fn new(len: usize, sample_rate: f64, params: &F0Params) -> Result<Self> {
+        validate(len, sample_rate, params)?;
+        let hop_samples = ((params.hop_seconds * sample_rate).round() as usize).max(1);
+        let frame_len = ((params.frame_seconds * sample_rate).round() as usize).max(4);
+        let count = len.div_ceil(hop_samples);
+        if count > MAX_FRAMES {
+            return Err(AxysError::Invalid(format!(
+                "analysis would produce {count} frames, over the {MAX_FRAMES} limit"
+            )));
+        }
+        Ok(Self {
             sample_rate,
-            hop_seconds,
-            frames: Vec::new(),
-        });
+            len,
+            hop_samples,
+            frame_len,
+            count,
+        })
     }
 
-    let mut yin = Yin::new(sample_rate, params)?;
-    let frame_count = samples.len().div_ceil(hop_samples);
-    if frame_count > MAX_FRAMES {
+    /// Frames the buffer yields.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Spacing between frame centres, in seconds.
+    pub fn hop_seconds(&self) -> f64 {
+        self.hop_samples as f64 / self.sample_rate
+    }
+
+    /// The source samples the frames in `frames` read.
+    pub fn samples_for(&self, frames: Range<usize>) -> Range<usize> {
+        if frames.is_empty() {
+            return 0..0;
+        }
+        let start = self.window_start(frames.start);
+        let end = (self.window_start(frames.end - 1) + self.frame_len).min(self.len);
+        start..end
+    }
+
+    /// First sample of the window for frame `index`, sliding inside the buffer at the edges.
+    fn window_start(&self, index: usize) -> usize {
+        if self.len >= self.frame_len {
+            (index * self.hop_samples)
+                .saturating_sub(self.frame_len / 2)
+                .min(self.len - self.frame_len)
+        } else {
+            0
+        }
+    }
+}
+
+/// Collects the YIN candidates for the frames in `frames`, before decoding.
+///
+/// `window` holds source samples starting at sample `offset` and must cover
+/// [`F0Frames::samples_for`] of the same frames. Spans collected apart and joined in order with
+/// [`F0Candidates::append`] decode exactly as one run over the whole buffer.
+///
+/// # Errors
+/// Frames past the layout, a window that does not cover them, a non-finite sample, or a frame
+/// too short for the pitch range.
+pub fn observe_f0(
+    layout: &F0Frames,
+    params: &F0Params,
+    window: &[f32],
+    offset: usize,
+    frames: Range<usize>,
+) -> Result<F0Candidates> {
+    if frames.start > frames.end || frames.end > layout.count {
         return Err(AxysError::Invalid(format!(
-            "analysis would produce {frame_count} frames, over the {MAX_FRAMES} limit"
+            "frames {}..{} outside the run's {} frames",
+            frames.start, frames.end, layout.count
         )));
     }
-
-    let mut observations = Observations::with_capacity(frame_count);
-    for index in 0..frame_count {
-        yin.load_window(samples, index * hop_samples);
-        let rms = yin.window_rms();
-        yin.difference();
-        observations.begin_frame(rms);
-        if rms >= params.voiced_rms_floor {
-            yin.collect_candidates(params.threshold, &mut observations);
-        }
-        observations.end_frame();
+    let needed = layout.samples_for(frames.clone());
+    if needed.start < offset || needed.end > offset + window.len() {
+        return Err(AxysError::Invalid(format!(
+            "samples {}..{} do not cover the {}..{} the frames read",
+            offset,
+            offset + window.len(),
+            needed.start,
+            needed.end
+        )));
+    }
+    if window.iter().any(|s| !s.is_finite()) {
+        return Err(AxysError::Invalid(
+            "samples contain a non-finite value".into(),
+        ));
     }
 
-    let states = decode(&observations, params.threshold);
-    let frames = observations.to_frames(&states, hop_seconds);
+    let mut candidates = F0Candidates::with_capacity(frames.len());
+    if frames.is_empty() {
+        return Ok(candidates);
+    }
+    let mut yin = Yin::new(layout, params)?;
+    for index in frames {
+        let start = layout.window_start(index);
+        let end = (start + layout.frame_len).min(layout.len);
+        yin.load_window(&window[start - offset..end - offset]);
+        let rms = yin.window_rms();
+        yin.difference();
+        candidates.begin_frame(rms);
+        if rms >= params.voiced_rms_floor {
+            yin.collect_candidates(params.threshold, &mut candidates);
+        }
+        candidates.end_frame();
+    }
+    Ok(candidates)
+}
+
+/// Decodes the candidates for every frame of a run into its pitch track.
+///
+/// # Errors
+/// Candidates that do not hold exactly one entry per frame of `layout`.
+pub fn decode_f0(
+    layout: &F0Frames,
+    params: &F0Params,
+    candidates: &F0Candidates,
+) -> Result<PitchTrack> {
+    if candidates.len() != layout.count {
+        return Err(AxysError::Invalid(format!(
+            "{} frames of candidates for a run of {} frames",
+            candidates.len(),
+            layout.count
+        )));
+    }
+    let states = decode(candidates, params.threshold);
+    let hop_seconds = layout.hop_seconds();
     Ok(PitchTrack {
-        sample_rate,
+        sample_rate: layout.sample_rate,
         hop_seconds,
-        frames,
+        frames: candidates.to_frames(&states, hop_seconds),
     })
 }
 
-fn validate(samples: &[f32], sample_rate: f64, params: &F0Params) -> Result<()> {
+fn validate(len: usize, sample_rate: f64, params: &F0Params) -> Result<()> {
     if !sample_rate.is_finite()
         || sample_rate < f64::from(limits::MIN_SAMPLE_RATE)
         || sample_rate > f64::from(limits::MAX_SAMPLE_RATE)
@@ -370,12 +488,7 @@ fn validate(samples: &[f32], sample_rate: f64, params: &F0Params) -> Result<()> 
             limits::MAX_SAMPLE_RATE
         )));
     }
-    if samples.iter().any(|s| !s.is_finite()) {
-        return Err(AxysError::Invalid(
-            "samples contain a non-finite value".into(),
-        ));
-    }
-    let duration = samples.len() as f64 / sample_rate;
+    let duration = len as f64 / sample_rate;
     if duration > limits::MAX_AUDIO_SECONDS {
         return Err(AxysError::Invalid(format!(
             "audio of {duration} s is over the {} s limit",
@@ -494,8 +607,9 @@ struct Yin {
 }
 
 impl Yin {
-    fn new(sample_rate: f64, params: &F0Params) -> Result<Self> {
-        let frame_len = ((params.frame_seconds * sample_rate).round() as usize).max(4);
+    fn new(layout: &F0Frames, params: &F0Params) -> Result<Self> {
+        let sample_rate = layout.sample_rate;
+        let frame_len = layout.frame_len;
         let max_lag = (sample_rate / params.min_hz).ceil() as usize;
         let min_lag = ((sample_rate / params.max_hz).floor() as usize).max(2);
         // Two periods of the lowest frequency must fit, or the range is silently narrowed.
@@ -523,25 +637,12 @@ impl Yin {
         })
     }
 
-    /// Fills the window with the audio centred on `centre`, sliding inside the buffer at the edges.
-    fn load_window(&mut self, samples: &[f32], centre: usize) {
-        let start = if samples.len() >= self.frame_len {
-            centre
-                .saturating_sub(self.frame_len / 2)
-                .min(samples.len() - self.frame_len)
-        } else {
-            0
-        };
-        self.valid = 0;
-        for (index, slot) in self.window.iter_mut().enumerate() {
-            match samples.get(start + index) {
-                Some(value) => {
-                    *slot = *value;
-                    self.valid += 1;
-                }
-                None => *slot = 0.0,
-            }
-        }
+    /// Fills the window from `source`, zero-padding past its end.
+    fn load_window(&mut self, source: &[f32]) {
+        let valid = source.len().min(self.frame_len);
+        self.window[..valid].copy_from_slice(&source[..valid]);
+        self.window[valid..].fill(0.0);
+        self.valid = valid;
     }
 
     fn window_rms(&self) -> f32 {
@@ -598,7 +699,7 @@ impl Yin {
     }
 
     /// Pushes the best local minima of the normalised difference into the observation store.
-    fn collect_candidates(&self, threshold: f64, out: &mut Observations) {
+    fn collect_candidates(&self, threshold: f64, out: &mut F0Candidates) {
         let lo = self.min_lag.max(2);
         let hi = self.max_lag.saturating_sub(1);
         if lo > hi {
@@ -654,8 +755,9 @@ impl Yin {
     }
 }
 
-/// Per-frame candidate lists in flat arrays, so no frame allocates.
-struct Observations {
+/// YIN candidate lags per frame in flat arrays, collected before Viterbi decoding.
+#[derive(Debug, Clone, PartialEq)]
+pub struct F0Candidates {
     freq: Vec<f64>,
     dprime: Vec<f64>,
     cost: Vec<f64>,
@@ -663,7 +765,104 @@ struct Observations {
     rms: Vec<f32>,
 }
 
-impl Observations {
+impl F0Candidates {
+    /// Rebuilds candidates from their flat arrays: `counts` holds the candidates per frame, and
+    /// `freq`, `dprime` and `cost` hold every frame's candidates back to back.
+    ///
+    /// # Errors
+    /// Arrays whose lengths disagree, a frame with more candidates than one frame may hold, or a
+    /// non-finite or negative value.
+    pub fn from_parts(
+        freq: Vec<f64>,
+        dprime: Vec<f64>,
+        cost: Vec<f64>,
+        counts: &[u32],
+        rms: Vec<f32>,
+    ) -> Result<Self> {
+        if counts.len() != rms.len() {
+            return Err(AxysError::Invalid(format!(
+                "{} candidate counts for {} frames",
+                counts.len(),
+                rms.len()
+            )));
+        }
+        let mut offsets = Vec::with_capacity(counts.len() + 1);
+        let mut total = 0usize;
+        offsets.push(total);
+        for &count in counts {
+            let count = count as usize;
+            if count > MAX_CANDIDATES {
+                return Err(AxysError::Invalid(format!(
+                    "a frame holds {count} candidates, over the {MAX_CANDIDATES} limit"
+                )));
+            }
+            total += count;
+            offsets.push(total);
+        }
+        if freq.len() != total || dprime.len() != total || cost.len() != total {
+            return Err(AxysError::Invalid(format!(
+                "{total} candidates counted, but {} frequencies, {} depths and {} costs",
+                freq.len(),
+                dprime.len(),
+                cost.len()
+            )));
+        }
+        let finite = freq.iter().all(|f| f.is_finite() && *f > 0.0)
+            && dprime.iter().chain(&cost).all(|v| v.is_finite())
+            && rms.iter().all(|r| r.is_finite() && *r >= 0.0);
+        if !finite {
+            return Err(AxysError::Invalid(
+                "candidates contain a non-finite or negative value".into(),
+            ));
+        }
+        Ok(Self {
+            freq,
+            dprime,
+            cost,
+            offsets,
+            rms,
+        })
+    }
+
+    /// Joins the candidates for the frames that follow this span's last.
+    pub fn append(&mut self, next: F0Candidates) {
+        let base = self.freq.len();
+        self.freq.extend(next.freq);
+        self.dprime.extend(next.dprime);
+        self.cost.extend(next.cost);
+        self.offsets
+            .extend(next.offsets.iter().skip(1).map(|offset| base + offset));
+        self.rms.extend(next.rms);
+    }
+
+    /// Candidate frequencies in Hz, every frame's back to back.
+    pub fn freq(&self) -> &[f64] {
+        &self.freq
+    }
+
+    /// Normalised difference at each candidate lag.
+    pub fn dprime(&self) -> &[f64] {
+        &self.dprime
+    }
+
+    /// Observation cost of each candidate.
+    pub fn cost(&self) -> &[f64] {
+        &self.cost
+    }
+
+    /// Candidates per frame.
+    pub fn counts(&self) -> Vec<u32> {
+        self.offsets
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]) as u32)
+            .collect()
+    }
+
+    /// Window RMS per frame.
+    pub fn rms(&self) -> &[f32] {
+        &self.rms
+    }
+
     fn with_capacity(frames: usize) -> Self {
         let mut offsets = Vec::with_capacity(frames + 1);
         offsets.push(0);
@@ -690,8 +889,14 @@ impl Observations {
         self.offsets.push(self.freq.len());
     }
 
-    fn len(&self) -> usize {
+    /// Frames held.
+    pub fn len(&self) -> usize {
         self.rms.len()
+    }
+
+    /// True when no frames are held.
+    pub fn is_empty(&self) -> bool {
+        self.rms.is_empty()
     }
 
     fn range(&self, frame: usize) -> std::ops::Range<usize> {
@@ -741,7 +946,7 @@ impl Observations {
 ///
 /// Returns the chosen state index per frame; an index equal to the frame's candidate count
 /// means the unvoiced state.
-fn decode(obs: &Observations, threshold: f64) -> Vec<usize> {
+fn decode(obs: &F0Candidates, threshold: f64) -> Vec<usize> {
     let frames = obs.len();
     let mut chosen = vec![0usize; frames];
     if frames == 0 {
@@ -821,6 +1026,64 @@ mod tests {
     use super::*;
 
     const SR: f64 = 48_000.0;
+
+    /// Collects `audio` in `pieces` spans, each reading only its own samples, and decodes the join.
+    fn detect_in_pieces(audio: &[f32], params: &F0Params, pieces: usize) -> PitchTrack {
+        let layout = F0Frames::new(audio.len(), SR, params).unwrap();
+        let count = layout.count();
+        let mut joined = F0Candidates::with_capacity(count);
+        for piece in 0..pieces {
+            let frames = count * piece / pieces..count * (piece + 1) / pieces;
+            let span = layout.samples_for(frames.clone());
+            let part =
+                observe_f0(&layout, params, &audio[span.clone()], span.start, frames).unwrap();
+            joined.append(part);
+        }
+        decode_f0(&layout, params, &joined).unwrap()
+    }
+
+    #[test]
+    fn spans_collected_apart_decode_as_one_run() {
+        let params = F0Params::default();
+        let long = swept(1.3, 0.5, |t| 180.0 + 90.0 * t);
+        let short = sine(220.0, 0.03, 0.5);
+        for audio in [&long, &short] {
+            let whole = serde_json::to_string(&detect_f0(audio, SR, &params).unwrap()).unwrap();
+            for pieces in [1, 2, 3, 7] {
+                let split =
+                    serde_json::to_string(&detect_in_pieces(audio, &params, pieces)).unwrap();
+                assert_eq!(split, whole, "{pieces} pieces of {} samples", audio.len());
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_short_of_its_frames_is_rejected() {
+        let params = F0Params::default();
+        let audio = sine(220.0, 0.5, 0.5);
+        let layout = F0Frames::new(audio.len(), SR, &params).unwrap();
+        let span = layout.samples_for(10..20);
+        let short = &audio[span.start + 1..span.end];
+        assert!(observe_f0(&layout, &params, short, span.start + 1, 10..20).is_err());
+    }
+
+    #[test]
+    fn candidates_survive_their_flat_arrays() {
+        let params = F0Params::default();
+        let audio = sine(220.0, 0.2, 0.5);
+        let layout = F0Frames::new(audio.len(), SR, &params).unwrap();
+        let candidates = observe_f0(&layout, &params, &audio, 0, 0..layout.count()).unwrap();
+        let rebuilt = F0Candidates::from_parts(
+            candidates.freq().to_vec(),
+            candidates.dprime().to_vec(),
+            candidates.cost().to_vec(),
+            &candidates.counts(),
+            candidates.rms().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt, candidates);
+        assert!(F0Candidates::from_parts(vec![220.0], vec![], vec![], &[1], vec![0.1]).is_err());
+    }
 
     fn sine(freq: f64, seconds: f64, amp: f32) -> Vec<f32> {
         let n = (seconds * SR) as usize;

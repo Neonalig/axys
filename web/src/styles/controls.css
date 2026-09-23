@@ -80,7 +80,8 @@ button.axys-icon {
   white-space: nowrap;
 }
 
-.is-labelled button.axys-icon {
+.is-labelled button.axys-icon,
+button.axys-icon.is-labelled {
   /* `width` alone is not enough: a flex item still shrinks past its content unless it is told
      not to, which is what clipped the zoom buttons' names. */
   flex: none;

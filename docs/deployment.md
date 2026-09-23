@@ -6,7 +6,20 @@ The production build is ordinary static files. Nothing runs server-side, so any 
 `npm run build` writes `dist/` and that directory is the whole deployment.
 
 Cloudflare Pages is the target. `.github/workflows/deploy.yml` checks, builds and uploads `dist/`
-on every push to `main`; `.github/workflows/ci.yml` validates pull requests on Linux and Windows.
+for every version tag on `main`; `.github/workflows/ci.yml` validates pull requests on Linux and
+Windows.
+
+## Releasing
+
+1. Merge the pull request to `main`.
+2. Tag the merge commit with the new version and push the tag:
+   `git tag v1.2.0 origin/main && git push origin v1.2.0`.
+
+The deploy workflow refuses a tag that is not on `main` or not semantic versioning. It stamps the
+tag's version into `package.json`, `Cargo.toml` and their lockfiles with
+`node scripts/set-version.mjs`, so the version in the repository is only a placeholder between
+releases and never needs a manual bump. Every version string in the app and the core is read from
+those two manifests; `node scripts/set-version.mjs --check`, run in CI, fails when they disagree.
 
 ## Build facts every host needs
 
@@ -34,15 +47,34 @@ the HTML, JavaScript, WASM and worker assets from each.
 
 ## Non-secret build variables
 
-| Variable                 | Purpose                                                             |
-| ------------------------ | ------------------------------------------------------------------- |
-| `AXYS_BASE`              | Overrides the asset base path. Default `./`.                        |
-| `AXYS_SOURCE_REPOSITORY` | Repository the in-app Source Code entry links to.                   |
-| `AXYS_SOURCE_REVISION`   | Commit the build was made from. Falls back to `git rev-parse HEAD`. |
+| Variable                | Purpose                                                             |
+| ----------------------- | ------------------------------------------------------------------- |
+| `AXYS_BASE`             | Overrides the asset base path. Default `./`.                        |
+| `AXYS_SOURCE_REVISION`  | Commit the build was made from. Falls back to `git rev-parse HEAD`. |
+| `AXYS_BUILD_REPOSITORY` | Repository being built, where neither CI nor Git can say.           |
 
-A fork or third-party host must set the last two so the AGPL Source Code entry resolves to their
-own corresponding source rather than to the upstream repository. `GITHUB_SHA` and
-`CF_PAGES_COMMIT_SHA` are picked up automatically when present.
+`GITHUB_SHA` and `CF_PAGES_COMMIT_SHA` are picked up automatically when present.
+
+## Source link and the source check
+
+`source.json` names the public repository the in-app Source Code entry links to. The AGPL requires
+the source of every deployed copy to be public, so `npm run build` fails when that repository is
+not the one being built, read from `GITHUB_SERVER_URL` and `GITHUB_REPOSITORY`, GitLab's
+`CI_PROJECT_URL`, `AXYS_BUILD_REPOSITORY` or the `origin` remote, in that order. The development
+server only warns. A fork sets `repository` to its own URL and builds as normal.
+
+## Release signing
+
+Official release builds are signed so the Help dialog can show Verified Source. The deploy workflow
+signs the repository, revision and version with the Ed25519 key in the `AXYS_SIGNING_KEY` Actions
+secret; the matching public key is `official.publicKey` in `source.json`. Any other build shows
+Unofficial Build next to its own source link. A build fails when the key does not match the public
+key, and an `AXYS_RELEASE` build of the official repository fails without one.
+
+To create or replace the key pair, run `node scripts/signing-key.mjs --gh`. It writes the public
+key to `source.json`, to be committed, and stores the private key in the secret through the GitHub
+CLI without printing it. Replacing the key makes builds signed with the old one show Signature
+Invalid.
 
 ## Cloudflare Pages
 
@@ -56,10 +88,10 @@ keeps the Cloudflare project free of build settings that could drift from the re
    one account, plus the account id. Both go in the repository as the `CLOUDFLARE_API_TOKEN` and
    `CLOUDFLARE_ACCOUNT_ID` secrets. The token is a secret; the account id is not, and is a secret
    only to keep the workflow free of account identifiers.
-3. **Deploys.** `.github/workflows/deploy.yml` runs `npm run doctor`, `npm run check` and
-   `npm run build`, then `wrangler pages deploy dist`. `AXYS_SOURCE_REPOSITORY` and
-   `AXYS_SOURCE_REVISION` come from the workflow, so the AGPL Source Code entry resolves to the
-   repository and commit the build was made from.
+3. **Deploys.** `.github/workflows/deploy.yml` runs on a version tag: it stamps the version, runs
+   `npm run doctor`, `npm run check` and a signed `npm run build`, then `wrangler pages deploy
+dist`. `AXYS_SOURCE_REVISION` comes from the workflow, so the AGPL Source Code entry resolves to
+   the commit the build was made from.
 4. **Preview deployments.** A branch other than `main` passed to `--branch` lands on its own
    preview origin, which is a good place to test the subpath-free root case.
 5. **Custom domain.** Pages, the project, Custom domains, Set up a domain. Cloudflare issues the
@@ -89,12 +121,11 @@ the tab is focused again, and offers a reload rather than taking one.
 ### `_headers`
 
 `web/public/_headers` is copied into `dist/` and applied by Cloudflare Pages. It sets a strict
-Content-Security-Policy, `nosniff`, `no-referrer` and the cache rules above.
+Content-Security-Policy, `nosniff`, `no-referrer`, cross-origin isolation (COOP, COEP and CORP)
+and the cache rules above. The Vite dev and preview servers send the same isolation headers.
 
-Cross-origin isolation headers are present but **commented out**. Axys does not use
-`SharedArrayBuffer` or WASM threads, works without isolation, and enabling it would block
-non-CORP cross-origin subresources for no current benefit. Uncomment only to measure a future
-threaded path.
+Axys works without isolation. A host that cannot send it loses only the isolation itself;
+`require-corp` blocks cross-origin subresources without a CORP header, and Axys loads none.
 
 Netlify reads `_headers` in the same format. Other hosts need the equivalent expressed their own
 way; the file is the reference.

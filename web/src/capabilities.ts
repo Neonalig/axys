@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { browserLabel } from './browser.js';
+
 /** One probed browser capability. */
 export interface Capability {
   id: string;
   label: string;
   available: boolean;
   required: boolean;
+  /** What having or lacking the capability means for Axys. */
   detail: string;
+  /** Why the probe found it available or not in this browser. */
+  reason: string;
 }
 
 interface GpuAdapterRequest {
@@ -17,52 +22,46 @@ interface FormatProbe {
   id: string;
   label: string;
   mimes: string[];
-  affected: string;
+  /** The format as named in a sentence, such as "FLAC" or "AAC and M4A". */
+  format: string;
 }
+
+/** Most span workers parallel analysis starts, matching the analysis worker's pool. */
+const MAX_ANALYSIS_THREADS = 8;
 
 /** Milliseconds any single asynchronous probe may take before it is treated as unavailable. */
 const PROBE_TIMEOUT_MS = 1500;
-
-/**
- * Minimal WebAssembly module using shared memory and an atomic instruction.
- * Validates only where the threads proposal is implemented.
- */
-const THREADS_PROBE = new Uint8Array([
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03, 0x02,
-  0x01, 0x00, 0x05, 0x04, 0x01, 0x03, 0x01, 0x01, 0x0a, 0x0b, 0x01, 0x09, 0x00, 0x41, 0x00, 0xfe,
-  0x10, 0x02, 0x00, 0x1a, 0x0b,
-]);
 
 const FORMAT_PROBES: readonly FormatProbe[] = [
   {
     id: 'decode-wav',
     label: 'WAV Decoding',
     mimes: ['audio/wav', 'audio/wave', 'audio/x-wav', 'audio/vnd.wave'],
-    affected: 'WAV',
+    format: 'WAV',
   },
   {
     id: 'decode-flac',
     label: 'FLAC Decoding',
     mimes: ['audio/flac', 'audio/x-flac'],
-    affected: 'FLAC',
+    format: 'FLAC',
   },
   {
     id: 'decode-mp3',
     label: 'MP3 Decoding',
     mimes: ['audio/mpeg', 'audio/mp3'],
-    affected: 'MP3',
+    format: 'MP3',
   },
   {
     id: 'decode-aac',
     label: 'AAC Decoding',
     mimes: ['audio/aac', 'audio/mp4; codecs="mp4a.40.2"', 'audio/mp4'],
-    affected: 'AAC and M4A',
+    format: 'AAC and M4A',
   },
   {
     id: 'decode-ogg',
     label: 'Ogg Decoding',
     mimes: ['audio/ogg; codecs=vorbis', 'audio/ogg; codecs=opus', 'audio/ogg'],
-    affected: 'Ogg Vorbis and Opus',
+    format: 'Ogg Vorbis and Opus',
   },
 ];
 
@@ -116,15 +115,19 @@ async function safeAsync(probe: () => Promise<boolean>): Promise<boolean> {
   }
 }
 
+/** Text for a capability that is available, then for one that is not. */
+type Either = readonly [whenAvailable: string, whenMissing: string];
+
 function capability(
   id: string,
   label: string,
   required: boolean,
   available: boolean,
-  whenAvailable: string,
-  whenMissing: string,
+  detail: Either,
+  reason: Either,
 ): Capability {
-  return { id, label, available, required, detail: available ? whenAvailable : whenMissing };
+  const pick = available ? 0 : 1;
+  return { id, label, available, required, detail: detail[pick], reason: reason[pick] };
 }
 
 function probeWasm(): boolean {
@@ -165,10 +168,6 @@ async function probeOpfs(): Promise<boolean> {
   });
 }
 
-function probeOpfsSync(): boolean {
-  return hasPrototypeMember('FileSystemFileHandle', 'createSyncAccessHandle');
-}
-
 function probeFilePickers(): boolean {
   return (
     typeof globalRecord()['showOpenFilePicker'] === 'function' &&
@@ -195,26 +194,26 @@ async function probeWebGpu(): Promise<boolean> {
   });
 }
 
-function probeSharedArrayBuffer(): boolean {
-  return hasGlobal('SharedArrayBuffer');
-}
-
 function probeCrossOriginIsolated(): boolean {
   return safe(() => globalThis.crossOriginIsolated === true);
 }
 
-function probeWasmThreads(): boolean {
-  return (
-    probeSharedArrayBuffer() &&
-    safe(() => typeof WebAssembly.validate === 'function' && WebAssembly.validate(THREADS_PROBE))
-  );
+/** Logical cores the device reports, or 1 when it does not say. */
+function logicalCores(): number {
+  try {
+    const cores = globalThis.navigator?.hardwareConcurrency;
+    return typeof cores === 'number' && cores > 0 ? cores : 1;
+  } catch {
+    return 1;
+  }
 }
 
 function probeWebCodecs(): boolean {
   return hasGlobal('AudioDecoder') && hasGlobal('AudioData');
 }
 
-function probeFormat(mimes: readonly string[]): boolean {
+/** The first of `mimes` the browser reports it can decode, or `null` for none. */
+function probeFormat(mimes: readonly string[]): string | null {
   const mediaSource = globalRecord()['MediaSource'];
   if (typeof mediaSource === 'function') {
     const isTypeSupported = (mediaSource as { isTypeSupported?: (mime: string) => boolean })
@@ -222,25 +221,25 @@ function probeFormat(mimes: readonly string[]): boolean {
     if (typeof isTypeSupported === 'function') {
       for (const mime of mimes) {
         if (safe(() => isTypeSupported.call(mediaSource, mime))) {
-          return true;
+          return mime;
         }
       }
     }
   }
   if (typeof document === 'undefined') {
-    return false;
+    return null;
   }
   const element = safeCreateAudioElement();
   if (element === null) {
-    return false;
+    return null;
   }
   for (const mime of mimes) {
     const verdict = safe(() => element.canPlayType(mime) !== '');
     if (verdict) {
-      return true;
+      return mime;
     }
   }
-  return false;
+  return null;
 }
 
 function safeCreateAudioElement(): HTMLAudioElement | null {
@@ -251,9 +250,52 @@ function safeCreateAudioElement(): HTMLAudioElement | null {
   }
 }
 
+/** A tooltip section listing browsers, one per line. */
+function browserList(heading: string, browsers: readonly string[]): string {
+  return `${heading}:\n${browsers.map((browser) => `- ${browser}`).join('\n')}`;
+}
+
+/** Reasons for a browser feature: supported, or not supported with the browsers that are. */
+function support(
+  feature: string,
+  browser: string,
+  browsers: readonly string[],
+  note?: string,
+): Either {
+  const missing = [
+    `${feature} is not supported by ${browser}.`,
+    browserList('Supported Browsers', browsers),
+  ];
+  if (note !== undefined) missing.push(note);
+  return [`${feature} is supported by ${browser}.`, missing.join('\n\n')];
+}
+
+/** Reasons for a feature a supporting browser can still switch off. */
+function availability(
+  feature: string,
+  browser: string,
+  browsers: readonly string[],
+  cause: string,
+): Either {
+  return [
+    `${feature} is available in ${browser}.`,
+    [
+      `${feature} is not available in ${browser}.`,
+      cause,
+      browserList('Supported Browsers', browsers),
+    ].join('\n\n'),
+  ];
+}
+
 /** Probes every capability Axys cares about. Never throws. */
 export async function probeCapabilities(): Promise<Capability[]> {
   const [opfs, webgpu] = await Promise.all([probeOpfs(), probeWebGpu()]);
+  const browser = browserLabel();
+  const secure = probeSecureContext();
+  const insecure = 'Requires a secure context. Serve Axys over HTTPS or from localhost.';
+  const workers = hasGlobal('Worker');
+  const cores = logicalCores();
+  const threads = Math.min(MAX_ANALYSIS_THREADS, cores);
 
   const caps: Capability[] = [
     capability(
@@ -261,124 +303,170 @@ export async function probeCapabilities(): Promise<Capability[]> {
       'WebAssembly',
       true,
       probeWasm(),
-      'The analysis, edit and render core runs here',
-      'Axys cannot analyse, edit or render audio in this browser',
+      ['Runs the audio core', 'Required to analyse, edit and render audio'],
+      support(
+        'WebAssembly',
+        browser,
+        ['Chrome 57+', 'Edge 16+', 'Firefox 52+', 'Safari 11+'],
+        'Lockdown and enhanced security modes can disable WebAssembly.',
+      ),
     ),
     capability(
       'audio-context',
       'Web Audio',
       true,
       probeAudioContext(),
-      'Audio decoding and playback are available',
-      'Audio cannot be decoded or played in this browser',
+      ['Decodes and plays audio', 'Required to decode and play audio'],
+      support('Web Audio API', browser, ['Chrome 35+', 'Edge 12+', 'Firefox 25+', 'Safari 14.1+']),
     ),
     capability(
       'audio-worklet',
       'Audio Worklet',
       true,
       probeAudioWorklet(),
-      'Processed playback runs on the realtime audio thread',
-      'Processed playback is unavailable without AudioWorklet',
+      ['Plays processed audio in real time', 'Required for processed playback'],
+      support(
+        'AudioWorklet',
+        browser,
+        ['Chrome 66+', 'Edge 79+', 'Firefox 76+', 'Safari 14.1+'],
+        secure ? undefined : insecure,
+      ),
     ),
     capability(
       'secure-context',
       'Secure Context',
       true,
-      probeSecureContext(),
-      'The page is served over HTTPS or localhost',
-      'Serve Axys over HTTPS or localhost; audio worklets and local storage need a secure context',
+      secure,
+      ['Enables worklets, storage and offline install', 'Required for worklets and storage'],
+      [
+        safe(() => globalThis.location.protocol === 'https:')
+          ? 'Page is served over HTTPS.'
+          : 'Page is served from localhost.',
+        'Page is served over insecure HTTP.\n\nServe Axys over HTTPS or from localhost.',
+      ],
     ),
     capability(
       'indexed-db',
       'Project Storage',
       true,
       probeIndexedDb(),
-      'Projects are saved on this device',
-      'Projects cannot be saved; export a project file before closing the tab',
+      ['Saves projects on this device', 'Projects cannot be saved. Export before closing.'],
+      availability(
+        'IndexedDB',
+        browser,
+        ['Chrome 24+', 'Edge 12+', 'Firefox 16+', 'Safari 10+'],
+        'Private browsing or blocked site data can disable it.',
+      ),
     ),
     capability(
       'opfs',
       'Media Storage',
       false,
       opfs,
-      'Decoded audio is cached between sessions',
-      'Decoded audio is not cached, so reopening a project decodes the source file again',
+      ['Caches decoded audio between sessions', 'Source audio is decoded again on every open'],
+      availability(
+        'Origin Private File System',
+        browser,
+        ['Chrome 86+', 'Edge 86+', 'Firefox 111+', 'Safari 15.2+'],
+        'Private browsing or blocked site data can disable it.',
+      ),
     ),
     capability(
       'service-worker',
       'Offline Install',
       false,
       probeServiceWorker(),
-      'Axys runs with no network after one visit, and can be installed as an app',
-      'Axys needs the network on every visit and cannot be installed as an app',
+      ['Runs offline and installs as an app', 'Requires a connection on every visit'],
+      availability(
+        'Service Workers',
+        browser,
+        ['Chrome 40+', 'Edge 17+', 'Firefox 44+', 'Safari 11.1+'],
+        secure ? 'Private browsing can disable them.' : insecure,
+      ),
     ),
     capability(
       'file-pickers',
       'File Pickers',
       false,
       probeFilePickers(),
-      'Saving asks where the file goes and writes there again without asking',
-      'Every save downloads to the browser download folder; Save As cannot offer a picker',
+      ['Save and Save As write to a chosen file', 'Saves go to the Downloads folder'],
+      support('File System Access API', browser, [
+        'Chrome 86+',
+        'Edge 86+',
+        'Opera 72+',
+        'Brave (requires flag: brave://flags/#file-system-access-api)',
+      ]),
     ),
     capability(
-      'opfs-sync',
-      'Sync File Access',
+      'parallel-analysis',
+      'Parallel Analysis',
       false,
-      probeOpfsSync(),
-      'Cached audio is written with fast sync access handles',
-      'Cached audio is written through the slower streaming path',
-    ),
-    capability(
-      'webgpu',
-      'WebGPU',
-      false,
-      webgpu,
-      'A GPU adapter is available for renderer measurements',
-      'The editor draws with Canvas 2D, which is the default renderer either way',
-    ),
-    capability(
-      'shared-array-buffer',
-      'Shared Memory',
-      false,
-      probeSharedArrayBuffer(),
-      'Shared memory is available to the analysis core',
-      'Analysis runs single-threaded, which is slower on long takes',
+      workers && cores > 1,
+      [`Analyses long takes on ${threads} threads`, 'Analyses on one thread'],
+      workers
+        ? [
+            `${browser} reports ${cores} logical processors.`,
+            `${browser} reports 1 logical processor.\n\nParallel analysis requires 2 or more.`,
+          ]
+        : support('Web Workers', browser, ['Chrome 4+', 'Edge 12+', 'Firefox 3.5+', 'Safari 4+']),
     ),
     capability(
       'cross-origin-isolated',
       'Cross-Origin Isolation',
       false,
       probeCrossOriginIsolated(),
-      'The page is cross-origin isolated, so threading can be used',
-      'Without the isolation headers threading stays off and analysis is slower',
+      ['Isolated from other sites', 'Not isolated from other sites'],
+      [
+        'Cross-origin isolation is enabled.',
+        secure
+          ? `Cross-origin isolation is not enabled.\n\n${browserList('Required Headers', [
+              'Cross-Origin-Opener-Policy: same-origin',
+              'Cross-Origin-Embedder-Policy: require-corp',
+            ])}`
+          : `Cross-origin isolation is not enabled.\n\n${insecure}`,
+      ],
     ),
     capability(
-      'wasm-threads',
-      'WASM Threads',
+      'webgpu',
+      'WebGPU',
       false,
-      probeWasmThreads(),
-      'The core can analyse audio on several threads',
-      'The core analyses audio on one thread, which is slower on long takes',
+      webgpu,
+      ['Available for renderer measurements', 'Not used by the current renderer'],
+      support(
+        'WebGPU',
+        browser,
+        ['Chrome 113+', 'Edge 113+', 'Firefox 141+ (Windows)', 'Safari 26+'],
+        'An unsupported GPU or driver can also block WebGPU.',
+      ),
     ),
     capability(
       'web-codecs',
       'WebCodecs',
       false,
       probeWebCodecs(),
-      'WebCodecs is available as an extra decoding path',
-      'Decoding uses Web Audio only, which covers the formats listed below',
+      ['Extra decoding path', 'Decoding uses Web Audio'],
+      support('WebCodecs AudioDecoder', browser, [
+        'Chrome 94+',
+        'Edge 94+',
+        'Firefox 130+',
+        'Safari 26+',
+      ]),
     ),
   ];
 
-  for (const format of FORMAT_PROBES) {
+  for (const probe of FORMAT_PROBES) {
+    const mime = probeFormat(probe.mimes);
     caps.push(
       capability(
-        format.id,
-        format.label,
+        probe.id,
+        probe.label,
         false,
-        probeFormat(format.mimes),
-        `${format.affected} files can be imported.`,
-        `${format.affected} files must be converted to WAV before import.`,
+        mime !== null,
+        [`${probe.format} files can be imported`, 'Convert to WAV before import'],
+        [
+          `${probe.format} decoding is supported by ${browser} (${mime ?? ''}).`,
+          `${probe.format} decoding is not supported by ${browser}.\n\nConvert files to WAV before import.`,
+        ],
       ),
     );
   }
