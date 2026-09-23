@@ -117,7 +117,7 @@ function openOperation(options: {
     blocking: false,
     actions: [
       {
-        label: 'Discard',
+        label: 'Cancel',
         onSelect: () => {
           settled = true;
           ctx.workspace.discardPreview();
@@ -148,8 +148,8 @@ export function showCorrection(ctx: CommandContext): Dialog {
   const state = ctx.store.state;
   const current = state.edits?.scale ?? null;
   if (current === null) {
-    ctx.toast.warn('Open a vocal before correcting it');
-    return Dialog.open({ title: 'Correction', content: hint('Nothing to correct') });
+    ctx.toast.warn('Open a vocal to use Correction');
+    return Dialog.open({ title: 'Correction', content: hint('Open a vocal first') });
   }
   const content = document.createElement('div');
   content.className = 'axys-panel';
@@ -171,10 +171,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
 
   const strengthRow = document.createElement('div');
   strengthRow.className = 'axys-field';
-  const strengthLabel = guidedLabel(
-    'Strength',
-    'How far correction pulls a blob onto its scale degree. 0% leaves it where it was sung',
-  );
+  const strengthLabel = guidedLabel('Strength', 'How far blobs are pulled onto the scale');
   strengthLabel.htmlFor = strength.id;
   const pair = document.createElement('div');
   pair.className = 'axys-control-pair';
@@ -207,12 +204,8 @@ export function showCorrection(ctx: CommandContext): Dialog {
   });
 
   content.append(
-    field('Key', key, 'Tonic the scale is built on. Every scale degree is measured from it'),
-    field(
-      'Scale',
-      scale,
-      'The degrees correction is allowed to pull a blob onto. Anything not in the scale is moved to the nearest degree that is',
-    ),
+    field('Key', key, 'Root note of the scale'),
+    field('Scale', scale, 'Notes blobs are pulled onto'),
     strengthRow,
     excluded,
     ...(picker.element === null ? [] : [picker.element]),
@@ -252,8 +245,8 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   const state = ctx.store.state;
   const edits = state.edits;
   if (edits === null) {
-    ctx.toast.warn('Open a vocal before shaping it');
-    return Dialog.open({ title: 'Voice Character', content: hint('Nothing to shape') });
+    ctx.toast.warn('Open a vocal to use Voice Character');
+    return Dialog.open({ title: 'Voice Character', content: hint('Open a vocal first') });
   }
   const modulation = edits.modulation;
   const formant = edits.formant;
@@ -300,20 +293,20 @@ export function showVoiceCharacter(ctx: CommandContext): Dialog {
   };
 
   content.append(
-    row('Pitch Drift', drift, driftReadout, 'How much slow pitch drift survives correction'),
-    row('Vibrato Depth', vibrato, vibratoReadout, 'Scales detected vibrato; 100% keeps it'),
-    field('Vibrato Split', split, 'Boundary in Hz between drift and vibrato', 'Hz'),
-    field('Formant Mode', mode, 'How the vocal tract is treated while pitch moves'),
-    row('Formant Shift', shift, shiftReadout, 'Independent formant movement in semitones'),
+    row('Pitch Drift', drift, driftReadout, 'Slow pitch drift kept after correction'),
+    row('Vibrato Depth', vibrato, vibratoReadout, 'Detected vibrato depth, 100% is unchanged'),
+    field('Vibrato Split', split, 'Frequency splitting drift from vibrato', 'Hz'),
+    field('Formant Mode', mode, 'How formants follow pitch changes'),
+    row('Formant Shift', shift, shiftReadout, 'Formant shift in semitones'),
     // Drift, vibrato and formants are properties of the voice rather than of a span, and the
     // core compiles them over every take, so this one has no selection or source to narrow it to.
     hint(
       edits.clips.length > 1
-        ? `Affects every source: ${sourceNames(
+        ? `Affects all sources: ${sourceNames(
             edits,
             edits.clips.map((clip) => clip.id),
           )}`
-        : 'Affects whole project',
+        : 'Affects the whole project',
     ),
   );
 

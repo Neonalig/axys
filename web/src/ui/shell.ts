@@ -136,8 +136,8 @@ interface ToolEntry {
 
 const TOOLS: readonly ToolEntry[] = [
   { id: 'select', label: 'Select Tool', icon: 'select', tooltip: 'Selects blobs and anchors' },
-  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob where you click' },
-  { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Drags whole blobs in pitch' },
+  { id: 'split', label: 'Slice Tool', icon: 'split', tooltip: 'Slices a blob at the cursor' },
+  { id: 'pitch', label: 'Pitch Tool', icon: 'pitch', tooltip: 'Moves whole blobs in pitch' },
   { id: 'pen', label: 'Draw Tool', icon: 'pen', tooltip: 'Draws a freehand pitch target' },
   {
     id: 'bezier',
@@ -193,7 +193,7 @@ interface ButtonMenu {
 /** How long ago an epoch-millisecond time was, as a recent-list detail such as `3h ago`. */
 function ago(time: number): string {
   const minutes = Math.floor((Date.now() - time) / 60_000);
-  if (minutes < 1) return 'Just Now';
+  if (minutes < 1) return 'Just now';
   if (minutes < 60) return `${String(minutes)}m ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${String(hours)}h ago`;
@@ -208,7 +208,7 @@ function ago(time: number): string {
  */
 const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
   'file.open': {
-    hint: 'Recent projects in the menu',
+    hint: 'Includes recent projects',
     onClick: true,
     entries: async (shell) => {
       const recent = await shell.recentProjects();
@@ -242,7 +242,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
     },
   },
   'view.sources': {
-    hint: 'Pick the source in front and how the others show',
+    hint: 'Set the front source and how other sources show',
     onClick: true,
     entries: (shell) => [
       ...shell.sourceMenu(),
@@ -268,7 +268,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
     ],
   },
   'file.saveProject': {
-    hint: 'Save As (Ctrl+Shift+S). Right-click for both',
+    hint: 'Right-click for Save As (Ctrl+Shift+S)',
     entries: (shell) => [
       {
         label: 'Save Project',
@@ -299,7 +299,7 @@ function themeLabel(choice: ThemeChoice): string {
 
 /** The theme button's tooltip: what pressing it does, and which theme is on. */
 function themeTip(choice: ThemeChoice): string {
-  return `Pick Theme (${choice === 'system' ? 'System' : THEME_LABELS[choice]})`;
+  return `Theme (${choice === 'system' ? 'System' : THEME_LABELS[choice]})`;
 }
 
 /**
@@ -320,7 +320,7 @@ function buildAccentRow(shell: AppShell): HTMLElement {
   const dark = isDarkTheme(theme);
   const ignored = theme === 'contrast';
   if (ignored) {
-    setTooltip(group, 'High Contrast uses its own colours');
+    setTooltip(group, 'Not available in High Contrast');
   }
 
   for (const name of ACCENT_NAMES) {
@@ -778,8 +778,8 @@ export class AppShell {
     emptyHeading.textContent = 'Open a vocal to start';
     const emptyHint = document.createElement('p');
     emptyHint.className = 'axys-hint';
-    emptyHint.textContent = 'Drop an audio file here, or open one';
-    const emptyActions = group('Ways In');
+    emptyHint.textContent = 'Drop an audio file here';
+    const emptyActions = group('Get Started');
     for (const id of EMPTY_COMMANDS) {
       const command = options.commands.find((entry) => entry.id === id);
       if (command === undefined) continue;
@@ -1021,7 +1021,7 @@ export class AppShell {
     this.#setFace('transport.toggleMetronome', {
       icon: 'metronome',
       label: 'Metronome',
-      tooltip: metronome ? 'Silence Metronome (M)' : 'Metronome (M)',
+      tooltip: metronome ? 'Mute Metronome (M)' : 'Metronome (M)',
       pressed: metronome,
     });
 
@@ -1543,7 +1543,7 @@ ${tool.tooltip}`,
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
         this.#hooks.setTool(tool.id);
-        this.announce(`${tool.label} active.`);
+        this.announce(`${tool.label} selected`);
       });
       this.#toolButtons.set(tool.id, button);
       section.append(button);

@@ -76,7 +76,7 @@ async function answer(request: Request): Promise<Response> {
   try {
     return await fetch(request);
   } catch {
-    return new Response('Axys is offline and this file is not in its cache.', {
+    return new Response('Offline. File not cached.', {
       status: 504,
       statusText: 'Offline',
       headers: { 'content-type': 'text/plain; charset=utf-8' },

@@ -154,10 +154,10 @@ export function showExportDialog(options: ExportDialogOptions): Dialog {
 function describeChoice(choice: ExportChoice): string {
   const range =
     choice.range === null
-      ? 'The whole project'
+      ? 'Whole project'
       : `${seconds(choice.range.start)} to ${seconds(choice.range.end)}`;
   const layout = choice.withReferences ? 'stereo with references' : 'mono';
-  return `${range}, ${layout}, at ${String(choice.sampleRate)} Hz, ${depthLabel(choice.depth)}. Measure it for peak level, clipping and timing conflicts.`;
+  return `${range}, ${layout}, ${String(choice.sampleRate)} Hz, ${depthLabel(choice.depth)}`;
 }
 
 /** How a bit depth names itself. */
@@ -174,7 +174,7 @@ function describe(panel: HTMLElement, preview: ExportPreview | null, choice: Exp
   panel.append(heading);
 
   if (!preview) {
-    panel.append(warning('This range could not be measured. Exporting it may not produce audio'));
+    panel.append(warning('Range could not be measured. The export may be silent.'));
     return;
   }
 
@@ -187,20 +187,18 @@ function describe(panel: HTMLElement, preview: ExportPreview | null, choice: Exp
   panel.append(list);
 
   if (preview.frames === 0) {
-    panel.append(warning('This range is empty, so the file would hold no audio'));
+    panel.append(warning('Range is empty'));
   }
   if (preview.clips && choice.depth !== 'float32') {
-    panel.append(warning('The peak is over full scale, so this export would clip'));
+    panel.append(warning('Peak exceeds 0 dBFS and will clip'));
   }
   if (preview.silent > SILENCE_EPSILON) {
-    panel.append(
-      warning(`${seconds(preview.silent)} of this range falls outside the source and is silent.`),
-    );
+    panel.append(warning(`${seconds(preview.silent)} outside the source will be silent`));
   }
   if (preview.conflicts > 0) {
     panel.append(
       warning(
-        `${String(preview.conflicts)} ${preview.conflicts === 1 ? 'gap' : 'gaps'} from timing edits fall in this range and may be audible.`,
+        `${String(preview.conflicts)} ${preview.conflicts === 1 ? 'gap' : 'gaps'} from timing edits may be audible`,
       ),
     );
   }

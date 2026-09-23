@@ -10,7 +10,6 @@
 
 import { Dialog } from '../ui/dialog.js';
 
-declare const __AXYS_VERSION__: string;
 declare const __AXYS_REVISION__: string;
 
 /** Where the build records what it is, for comparing the page against what is served now. */
@@ -120,7 +119,7 @@ async function isStale(): Promise<boolean> {
 function showUpdate(worker: ServiceWorker, container: ServiceWorkerContainer): void {
   const body = document.createElement('p');
   body.className = 'axys-hint';
-  body.textContent = `A newer Axys than ${__AXYS_VERSION__} is ready. Reloading keeps your projects and their audio.`;
+  body.textContent = 'A new version of Axys is ready. Reload to update.';
 
   Dialog.open({
     title: 'Update Ready',

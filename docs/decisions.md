@@ -696,7 +696,7 @@ move and right-clicked to delete, and each has a strip on the desk.
 Import takes audio or MIDI. MIDI is only ever the guide, and audio with nothing open only ever
 starts a project as its vocal, so neither is asked about. Audio on an open project could be a take
 to edit or a backing track to hear, which nothing in the file says, so a question asks once for
-everything imported or dropped together: Import Vocal or Import Reference.
+everything imported or dropped together: Vocal or Reference.
 
 Rejected: an Import menu with an entry per kind. It asked the same question before the file was
 chosen, and a drop had no menu to ask it with, so dropped audio was always taken as a vocal.
@@ -906,7 +906,8 @@ with an info icon, and the control carries none. Hovering the label or the icon 
 the field shows nothing.
 
 The same rule settled what an operation says about its extent. Each now says `Affects 3 selected
-blobs.` or `No selection. Affects whole project.` and nothing else. The line is read at a glance
+blobs` or `Affects the whole project`, naming the sources when there are several, and nothing
+else. The line is read at a glance
 before pressing Apply, and the sentence about playing to hear it was read once and then read past
 forever.
 

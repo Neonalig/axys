@@ -99,9 +99,7 @@ fn check_fits_audio(
     frames: usize,
 ) -> Result<(), String> {
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return Err(format!(
-            "sample rate {sample_rate} is not a positive number"
-        ));
+        return Err(format!("invalid sample rate {sample_rate}"));
     }
     if track.sample_rate != sample_rate {
         return Err(format!(
@@ -790,7 +788,7 @@ impl Session {
         };
         if axys_core::project::fingerprint(&samples) != runtime.source.fingerprint {
             return Err(JsValue::from_str(&format!(
-                "this audio is not {}, which the project was made from",
+                "audio does not match {}. Choose the original file",
                 runtime.source.name
             )));
         }

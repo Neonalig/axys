@@ -1361,7 +1361,7 @@ export class EditorController {
         // A press that never became a line leaves nothing to shape.
         if (this.#moved && gesture.to.time !== gesture.from.time) {
           this.#bezier = straightBezier(gesture.from, gesture.to);
-          this.#announce('Drag the handles to shape the curve. Enter keeps it, Escape drops it');
+          this.#announce('Drag handles to shape. Enter to apply, Esc to cancel');
         }
         break;
       case 'bezierHandle':
@@ -1825,7 +1825,7 @@ export class EditorController {
       curve,
       points: sampleBezier(curve, this.#bezierSamples(curve)),
       active,
-      label: `Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}  Enter Keeps`,
+      label: `Bezier ${noteNameWithCents(curve.to.midi, this.#accidentals())}  Enter Apply  Esc Cancel`,
     };
   }
 

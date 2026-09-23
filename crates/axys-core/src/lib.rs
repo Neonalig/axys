@@ -36,9 +36,9 @@ pub enum AxysError {
 impl std::fmt::Display for AxysError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AxysError::Invalid(m) => write!(f, "invalid input: {m}"),
-            AxysError::NotFound(m) => write!(f, "not found: {m}"),
-            AxysError::Unsupported(m) => write!(f, "unsupported: {m}"),
+            AxysError::Invalid(m) => write!(f, "{m}"),
+            AxysError::NotFound(m) => write!(f, "{m} not found"),
+            AxysError::Unsupported(m) => write!(f, "{m}"),
         }
     }
 }

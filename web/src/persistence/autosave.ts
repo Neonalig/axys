@@ -144,7 +144,11 @@ export class Autosave {
     } catch (error) {
       const failure =
         error instanceof PersistenceError ? error : toPersistenceError(error, 'Autosave');
-      this.#set('failed', `${failure.message} Export the project to keep this work.`);
+      // Storage failures already name their fix; anything else gets the one that always works.
+      const message = /export/i.test(failure.message)
+        ? failure.message
+        : `${failure.message} Export the project to keep your changes.`;
+      this.#set('failed', message);
     }
   }
 

@@ -54,7 +54,7 @@ export function showCommandPalette(options: PaletteOptions): Dialog {
 
   const empty = document.createElement('p');
   empty.className = 'axys-hint';
-  empty.textContent = 'No command matches';
+  empty.textContent = 'No matching commands';
   empty.hidden = true;
 
   content.append(search, results, empty);

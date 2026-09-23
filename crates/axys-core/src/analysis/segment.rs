@@ -97,7 +97,7 @@ pub fn segment(
 
     if regions.len() > limits::MAX_BLOBS {
         return Err(AxysError::Invalid(format!(
-            "segmentation produced {} blobs, over the {} limit",
+            "audio has {} blobs, over the {} blob limit",
             regions.len(),
             limits::MAX_BLOBS
         )));

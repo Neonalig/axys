@@ -249,7 +249,7 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return;
     }
-    if (!(await this.#mayReplaceProject('Starting a new project', 'Discard and Start'))) return;
+    if (!(await this.#mayReplaceProject())) return;
     this.#close();
     this.#projectFile = null;
     recordOpenProject('');
@@ -512,7 +512,7 @@ class AxysWorkspace implements Workspace {
       await this.#install(session, null, null);
       this.estimate(true);
       if (decoded.resampled) {
-        this.#toast.warn(`Decoded at ${String(decoded.sampleRate)} Hz, not the file's own rate.`);
+        this.#toast.warn(`Resampled to ${String(decoded.sampleRate)} Hz`);
       }
     } catch (error) {
       this.#importFailed('Open Audio', error);
@@ -692,9 +692,9 @@ class AxysWorkspace implements Workspace {
       files.length === 1 ? sourceTitle(first.name) : `${String(files.length)} audio files`;
     const answer = await confirmAction({
       title: 'Import Audio',
-      message: `Import ${what} as a vocal to edit, or as a reference to hear beside it.`,
-      confirm: 'Import Vocal',
-      alternative: 'Import Reference',
+      message: `Import ${what} as a vocal or a reference?`,
+      confirm: 'Vocal',
+      alternative: 'Reference',
       icon: 'import',
       kind: 'primary',
     });
@@ -802,20 +802,16 @@ class AxysWorkspace implements Workspace {
   /**
    * Whether opening something else may replace what is open.
    *
-   * @remarks Opening, and starting again, replace the whole project, so unsaved work would go
-   * without a word. The question offers to save first, because that is what someone who did not
-   * mean to discard it wants next, and it names what is about to happen.
+   * @remarks Opening and starting again replace the whole project, so unsaved work is offered a
+   * save before it is discarded.
    */
-  async #mayReplaceProject(
-    what = 'Opening something else',
-    confirm = 'Discard and Open',
-  ): Promise<boolean> {
+  async #mayReplaceProject(): Promise<boolean> {
     if (!this.#session || !this.#store.state.dirty) return true;
     const answer = await confirmAction({
-      title: 'Unsaved Changes',
-      message: `${this.projectName} has edits that are not saved. ${what} discards them.`,
-      confirm,
-      alternative: 'Save First',
+      title: `Save Changes to ${this.projectName}?`,
+      message: 'Unsaved changes will be lost.',
+      confirm: 'Discard',
+      alternative: 'Save',
       icon: 'warning',
     });
     if (answer === 'cancel') return false;
@@ -839,7 +835,7 @@ class AxysWorkspace implements Workspace {
       this.#store.update({ midi });
       this.#publish();
       this.#toast.info(
-        `Imported ${String(midi.tracks.length)} tracks, ${String(midi.notes.length)} notes.`,
+        `Imported ${String(midi.tracks.length)} tracks, ${String(midi.notes.length)} notes`,
       );
     } catch (error) {
       this.#fail('Open MIDI', error);
@@ -971,7 +967,7 @@ class AxysWorkspace implements Workspace {
     }
     const unlinked = choice.withReferences ? this.#missing.references[0] : undefined;
     if (unlinked !== undefined) {
-      this.#toast.error(`Relink ${unlinked.source.name} to export it with the vocal.`);
+      this.#toast.error(`Relink ${unlinked.source.name} to export references`);
       return;
     }
     this.#progress('Export WAV', 0.02);
@@ -1084,7 +1080,7 @@ class AxysWorkspace implements Workspace {
     if (key !== null) {
       parts.push(`${SHARP_NAMES[key.root] ?? ''} ${key.minor ? 'Minor' : 'Major'}`);
     }
-    this.#toast.info(`Estimated ${parts.join(', ')}. Check the Project tab`);
+    this.#toast.info(`Estimated ${parts.join(', ')}`);
   }
 
   /** Sets the concert reference the editor names and measures pitch against. */
@@ -1188,8 +1184,8 @@ class AxysWorkspace implements Workspace {
     const count = this.#missing.clips.length + this.#missing.references.length;
     this.#toast.warn(
       count === 1
-        ? `Open ${first.name} to relink it.`
-        : `Open ${first.name} to relink it. ${String(count)} files are missing.`,
+        ? `Open ${first.name} to relink`
+        : `${String(count)} files missing. Open ${first.name} to relink.`,
     );
   }
 
@@ -1234,10 +1230,7 @@ class AxysWorkspace implements Workspace {
         );
         void this.#cacheReference(reference.source, channels);
       } else {
-        throw new PersistenceError(
-          'corrupt',
-          `${file.name} is not audio this project is waiting for.`,
-        );
+        throw new PersistenceError('corrupt', `${file.name} does not match any missing audio.`);
       }
       this.#idle();
       this.#publish();
@@ -1354,7 +1347,7 @@ class AxysWorkspace implements Workspace {
       if (await media.has(fingerprint)) return;
       await media.write(fingerprint, mono);
     } catch {
-      this.#toast.warn('Audio not cached. Reopening will decode again');
+      this.#toast.warn('Audio not cached');
     } finally {
       this.#writes -= 1;
     }
@@ -1389,7 +1382,7 @@ class AxysWorkspace implements Workspace {
       if (await media.has(key)) return;
       await media.write(key, joinChannels(channels));
     } catch {
-      this.#toast.warn('Audio not cached. Reopening will decode again');
+      this.#toast.warn('Audio not cached');
     } finally {
       this.#writes -= 1;
     }
@@ -1424,9 +1417,7 @@ class AxysWorkspace implements Workspace {
     }
     this.#store.update({ guideOverlaps: overlaps });
     if (announce && overlaps.length > 0) {
-      this.#toast.warn(
-        `Guide has ${String(overlaps.length)} overlapping notes. Each note takes one blob at most.`,
-      );
+      this.#toast.warn(`Guide has ${String(overlaps.length)} overlapping notes`);
     }
   }
 
@@ -1461,7 +1452,7 @@ class AxysWorkspace implements Workspace {
       this.#audio.setTail(endLeniency(this.#store.state));
       this.#audio.setTimeline(edits.timeline);
     } catch (error) {
-      this.#fail('Read Plan', error);
+      this.#fail('Update Editor', error);
       return;
     }
     this.#autosave?.markDirty();
@@ -1633,7 +1624,7 @@ function describe(error: unknown): string {
   if (error instanceof AxysError || error instanceof PersistenceError) return error.message;
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
-  return 'the reason was not reported';
+  return 'Unknown error';
 }
 
 /**
@@ -1704,10 +1695,10 @@ function bindDragAndDrop(
     const item = event.dataTransfer?.items[0];
     shell.setDropTarget(
       item?.kind !== 'file'
-        ? 'Drop To Open File'
+        ? 'Drop a file to open'
         : workspace.ready
-          ? 'Drop To Import'
-          : 'Drop To Open Audio Or Project',
+          ? 'Drop to import'
+          : 'Drop audio or a project to open',
     );
   };
   const onDragEnter = (event: DragEvent): void => {
@@ -1827,7 +1818,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
   section.append(list);
 
   const tail = document.createElement('p');
-  tail.textContent = 'Supported Browsers: current Chrome, Edge, Firefox and Safari, over HTTPS.';
+  tail.textContent = 'Supported browsers: current Chrome, Edge, Firefox and Safari, over HTTPS.';
   section.append(tail);
 
   mount.append(section);
@@ -1839,7 +1830,7 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
  * @remarks Drawn with the splash's own inline styles, since a failed load may have fetched no
  * stylesheet. A failed fetch is named as the connection it is, with the browser's text under it.
  */
-function showFailure(mount: HTMLElement, error: unknown, part = 'audio core'): void {
+function showFailure(mount: HTMLElement, error: unknown, part = 'Editor'): void {
   mount.textContent = '';
   const section = document.createElement('section');
   section.className = 'axys-failure';
@@ -1852,8 +1843,8 @@ function showFailure(mount: HTMLElement, error: unknown, part = 'audio core'): v
   const lead = document.createElement('p');
   lead.textContent =
     lostConnection(error) || (error instanceof Error && lostConnection(error.cause))
-      ? `Axys could not download its ${part}. Check the connection, then reload.`
-      : `Axys could not start its ${part}.`;
+      ? `${part} failed to load. Check your connection and reload.`
+      : `${part} failed to start.`;
   const detail = document.createElement('p');
   detail.className = 'axys-failure-detail';
   detail.textContent = describe(error);
@@ -1905,7 +1896,7 @@ function noteDegradedCapabilities(
     // A browser that refuses storage shows the notice again next time, which is harmless.
   }
   const names = missing.map((cap) => cap.label).join(', ');
-  toast.warn(`Unavailable Features: ${names}. See Help and Diagnostics for details.`, {
+  toast.warn(`Unavailable features: ${names}`, {
     text: 'Help and Diagnostics',
     run: openHelp,
   });
@@ -1943,8 +1934,8 @@ async function restoreLastProject(
   if (discarded > 0) {
     toast.info(
       discarded === 1
-        ? 'Discarded a recovery copy this version cannot read'
-        : `Discarded ${String(discarded)} recovery copies this version cannot read`,
+        ? 'Discarded an unreadable recovery copy'
+        : `Discarded ${String(discarded)} unreadable recovery copies`,
     );
   }
 }
@@ -1994,7 +1985,7 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
   const show = (report: EngineReport): void => {
     shell.setEngineReport(report);
     if (report.status === 'failed') {
-      const message = report.message ?? 'Playback failed and the browser gave no reason';
+      const message = report.message ?? 'Playback failed';
       if (message !== reportedFailure) toast.error(message);
       reportedFailure = message;
       return;
@@ -2010,7 +2001,7 @@ function watchEngine(audio: AudioEngine, shell: AppShell, toast: ToastHost): () 
     const missed = report.underruns - seenUnderruns;
     seenUnderruns = report.underruns;
     shell.setEngineReport(report);
-    toast.warn(`Dropped ${String(missed)} audio blocks. Close other heavy tabs.`);
+    toast.warn(`${String(missed)} audio dropouts. Close other tabs.`);
   }, UNDERRUN_INTERVAL_MS);
 
   return () => {
@@ -2195,7 +2186,7 @@ async function start(): Promise<void> {
   if (audio.loadError !== null) {
     audio.dispose();
     dismissSplash();
-    showFailure(mount, audio.loadError, 'audio engine');
+    showFailure(mount, audio.loadError, 'Audio engine');
     return;
   }
   const projectsPromise = openStore(ProjectStore.open());
@@ -2234,10 +2225,10 @@ async function start(): Promise<void> {
   const projects = await projectsPromise;
   const media = await mediaPromise;
   if (!projects) {
-    toast.warn('This browser cannot store projects. Export before closing the tab');
+    toast.warn('Project storage unavailable. Export before closing the tab.');
   }
   if (!media) {
-    toast.warn('Audio cannot be cached here. Reopening will ask for the file');
+    toast.warn('Audio caching unavailable');
   }
 
   workspace = new AxysWorkspace({ core, store, audio, toast, projects, media });
@@ -2335,7 +2326,7 @@ async function start(): Promise<void> {
     open.flush();
     queueMicrotask(() => {
       teardown();
-      showFailure(mount, error, 'audio engine');
+      showFailure(mount, error, 'Audio engine');
     });
   });
 

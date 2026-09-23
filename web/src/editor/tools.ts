@@ -60,42 +60,42 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     id: 'select',
     label: 'Select',
-    hint: 'Click a blob, drag a band, Shift adds',
+    hint: 'Click or drag to select, Shift to add',
     key: 'V',
     cursor: 'default',
   },
   {
     id: 'split',
     label: 'Slice',
-    hint: 'Click a blob to slice it in two',
+    hint: 'Click to slice a blob',
     key: 'X',
     cursor: 'col-resize',
   },
   {
     id: 'pitch',
     label: 'Move Pitch',
-    hint: 'Drag in pitch, Shift semitones, Alt fine, Ctrl scale',
+    hint: 'Drag to move pitch, Shift semitones, Alt fine, Ctrl scale',
     key: 'P',
     cursor: 'ns-resize',
   },
   {
     id: 'pen',
     label: 'Draw Curve',
-    hint: 'Drag a freehand target',
+    hint: 'Drag to draw a pitch curve',
     key: 'B',
     cursor: PEN_CURSOR,
   },
   {
     id: 'bezier',
     label: 'Draw Bezier',
-    hint: 'Drag a line, then shape it by its handles',
+    hint: 'Drag a line, then drag handles to shape',
     key: 'N',
     cursor: 'crosshair',
   },
   {
     id: 'time',
     label: 'Move Time',
-    hint: 'Drag a blob or its edges in time',
+    hint: 'Drag to move blobs or edges in time',
     key: 'T',
     cursor: 'ew-resize',
   },
@@ -196,10 +196,8 @@ export function describeHit(hit: Hit, state: AppState): string {
       if (conflict === null) {
         return clock;
       }
-      const pair = `blobs ${String(conflict.first)} and ${String(conflict.second)}`;
-      return conflict.kind === 'gap'
-        ? `Gap  Nothing sounds between ${pair}`
-        : `Overlap  ${pair.charAt(0).toUpperCase()}${pair.slice(1)} both sound here`;
+      const pair = `Blobs ${String(conflict.first)} and ${String(conflict.second)}`;
+      return conflict.kind === 'gap' ? `Gap  ${pair}` : `Overlap  ${pair}`;
     }
     default:
       return `${clock}  ${readoutNoteName(hit.midi, accidentals)}`;

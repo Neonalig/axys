@@ -131,7 +131,7 @@ impl MidiFile {
 pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
     if bytes.len() > limits::MAX_MIDI_BYTES {
         return Err(AxysError::Invalid(format!(
-            "midi file of {} bytes exceeds the {} byte limit",
+            "MIDI file of {} bytes is over the {} byte limit",
             bytes.len(),
             limits::MAX_MIDI_BYTES
         )));
@@ -139,7 +139,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
     let ppq = check_structure(bytes)?;
 
     let smf = midly::Smf::parse(bytes)
-        .map_err(|e| AxysError::Invalid(format!("midi file could not be parsed: {e}")))?;
+        .map_err(|e| AxysError::Invalid(format!("MIDI file is not valid: {e}")))?;
 
     let format = match smf.header.format {
         midly::Format::SingleTrack => 0,
@@ -150,7 +150,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
     let total_events: usize = smf.tracks.iter().map(|t| t.len()).sum();
     if total_events > limits::MAX_MIDI_EVENTS {
         return Err(AxysError::Invalid(format!(
-            "midi file holds {total_events} events, over the {} event limit",
+            "MIDI file has {total_events} events, over the {} event limit",
             limits::MAX_MIDI_EVENTS
         )));
     }
@@ -172,7 +172,7 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
         file.tracks.push(scanned.info);
         if file.tempo.len() > limits::MAX_MAP_EVENTS || file.meter.len() > limits::MAX_MAP_EVENTS {
             return Err(AxysError::Invalid(format!(
-                "midi tempo or meter map exceeds {} events",
+                "MIDI tempo or meter map is over {} events",
                 limits::MAX_MAP_EVENTS
             )));
         }
@@ -191,33 +191,31 @@ pub fn parse_smf(bytes: &[u8]) -> Result<MidiFile> {
 /// an SMPTE division be reported precisely instead of as a generic parse failure.
 fn check_structure(bytes: &[u8]) -> Result<u16> {
     if bytes.len() < 14 {
-        return Err(AxysError::Invalid(
-            "midi file is shorter than a header chunk".into(),
-        ));
+        return Err(AxysError::Invalid("MIDI file is truncated".into()));
     }
     if &bytes[0..4] != b"MThd" {
-        return Err(AxysError::Invalid("midi file has no MThd header".into()));
+        return Err(AxysError::Invalid("file is not a MIDI file".into()));
     }
     let header_len = read_u32(bytes, 4) as usize;
     if header_len < 6 {
-        return Err(AxysError::Invalid("midi header chunk is too short".into()));
+        return Err(AxysError::Invalid("MIDI header is truncated".into()));
     }
     let body_end = 8usize
         .checked_add(header_len)
-        .ok_or_else(|| AxysError::Invalid("midi header length overflows".into()))?;
+        .ok_or_else(|| AxysError::Invalid("MIDI header is corrupt".into()))?;
     if body_end > bytes.len() {
-        return Err(AxysError::Invalid("midi header chunk is truncated".into()));
+        return Err(AxysError::Invalid("MIDI header is truncated".into()));
     }
 
     let declared_tracks = u16::from_be_bytes([bytes[10], bytes[11]]) as usize;
     let division = u16::from_be_bytes([bytes[12], bytes[13]]);
     if division & 0x8000 != 0 {
         return Err(AxysError::Unsupported(
-            "SMPTE timecode divisions are not supported, only ticks per quarter note".into(),
+            "SMPTE timecode MIDI files are not supported".into(),
         ));
     }
     if division == 0 {
-        return Err(AxysError::Invalid("midi tick division is zero".into()));
+        return Err(AxysError::Invalid("MIDI tick division is zero".into()));
     }
 
     let mut pos = body_end;
@@ -227,9 +225,9 @@ fn check_structure(bytes: &[u8]) -> Result<u16> {
         let end = pos
             .checked_add(8)
             .and_then(|p| p.checked_add(len))
-            .ok_or_else(|| AxysError::Invalid("midi chunk length overflows".into()))?;
+            .ok_or_else(|| AxysError::Invalid("MIDI track is corrupt".into()))?;
         if end > bytes.len() {
-            return Err(AxysError::Invalid("midi track chunk is truncated".into()));
+            return Err(AxysError::Invalid("MIDI track is truncated".into()));
         }
         if &bytes[pos..pos + 4] == b"MTrk" {
             found_tracks += 1;
@@ -237,13 +235,11 @@ fn check_structure(bytes: &[u8]) -> Result<u16> {
         pos = end;
     }
     if pos != bytes.len() {
-        return Err(AxysError::Invalid(
-            "midi file ends inside a chunk header".into(),
-        ));
+        return Err(AxysError::Invalid("MIDI file is truncated".into()));
     }
     if found_tracks < declared_tracks {
         return Err(AxysError::Invalid(format!(
-            "midi header declares {declared_tracks} tracks but the file holds {found_tracks}"
+            "MIDI file has {found_tracks} of {declared_tracks} tracks"
         )));
     }
     Ok(division)

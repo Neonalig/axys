@@ -60,7 +60,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   const state: AppState = ctx.store.state;
   const guide = state.edits?.guide ?? null;
   if (guide === null) {
-    ctx.toast.warn('Choose a MIDI guide track before aligning it');
+    ctx.toast.warn('Choose a guide track first');
     return Dialog.open({ title: 'Align Guide', content: document.createElement('div') });
   }
   const selected = new Set(state.selection.blobs);
@@ -89,7 +89,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   });
   const first = propose(picker.chosen());
   if (first === null) {
-    ctx.toast.warn('This guide could not be aligned');
+    ctx.toast.warn('Guide alignment failed');
     return Dialog.open({ title: 'Align Guide', content: document.createElement('div') });
   }
   let mappings = first;
@@ -114,7 +114,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   strengthRow.className = 'axys-field';
   const strengthLabel = guidedLabel(
     'Guide Strength',
-    'How far a mapped blob is pulled onto its note. 0% leaves the vocal where it was sung',
+    'How far mapped blobs are pulled onto their notes',
   );
   strengthLabel.htmlFor = strength.id;
   const pair = document.createElement('div');
@@ -123,11 +123,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   strengthRow.append(strengthLabel, pair);
 
   content.append(
-    field(
-      'Guide Mode',
-      mode,
-      'What the guide moves. A blob mapped to a note is pulled onto that note; Visual Only maps the notes and moves nothing, which is how a mapping is checked before it is used',
-    ),
+    field('Guide Mode', mode, 'What the guide moves: pitch, timing, both or nothing'),
     strengthRow,
     ...(picker.element === null ? [] : [picker.element]),
     scope,
@@ -162,7 +158,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
     blocking: false,
     actions: [
       {
-        label: 'Discard',
+        label: 'Cancel',
         onSelect: () => {
           settled = true;
           ctx.workspace.discardPreview();

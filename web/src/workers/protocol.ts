@@ -17,10 +17,10 @@ export type RequestId = number;
 export const RENDER_CHUNK_FRAMES = 1 << 16;
 
 /** Where the analysis worker has reached. */
-export type AnalysisStage = 'Load Core' | 'Analyse Audio' | 'Read Track' | 'Read Blobs';
+export type AnalysisStage = 'Load Engine' | 'Analyse Audio' | 'Read Pitch' | 'Read Blobs';
 
 /** Where the render worker has reached. */
-export type RenderStage = 'Load Core' | 'Build Renderer' | 'Render Audio' | 'Encode WAV';
+export type RenderStage = 'Load Engine' | 'Prepare Render' | 'Render Audio' | 'Encode WAV';
 
 /** Analyses one mono source buffer into pitch, energy and provisional blobs. */
 export interface AnalyseRequest {

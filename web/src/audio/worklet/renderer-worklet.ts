@@ -320,7 +320,7 @@ class Core {
     const value: unknown = table.get(index);
     this.#function('__externref_table_dealloc')(index);
     if (value instanceof Error) return value;
-    return new Error(typeof value === 'string' ? value : 'the core failed without a message');
+    return new Error(typeof value === 'string' ? value : 'Unknown error');
   }
 
   #values(returned: unknown, length: number): unknown[] {

@@ -462,9 +462,7 @@ describe('wasm boundary', () => {
     const scoped = core.Session.create(samples, sampleRate, 'project', analysis, '');
     try {
       const document = scoped.projectJson('');
-      expect(() => reopenProject(core, document, other.samples)).toThrow(
-        /which the project was made from/,
-      );
+      expect(() => reopenProject(core, document, other.samples)).toThrow(/does not match/);
       // Same audio with one sample changed: the fingerprint, not the length, is the check.
       const tampered = samples.slice();
       tampered[0] = at(tampered, 0) + 0.5;

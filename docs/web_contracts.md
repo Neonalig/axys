@@ -504,8 +504,9 @@ the operation applies to that span by excluding every blob outside it, and those
 part of what Discard takes back. Align Guide narrows its proposal to the selected blobs instead,
 leaving every blob outside the selection mapped as it was.
 
-Each names its extent in one line, the same line everywhere: `Affects 3 selected blobs.` or `No
-selection. Affects whole project.` Nothing else goes in it.
+Each names its extent in one line, the same line everywhere: `Affects 3 selected blobs` or
+`Affects the whole project`, with the sources named when there are several. Nothing else goes in
+it.
 
 `ui/export-dialog.ts` exports `showExportDialog(options: ExportDialogOptions): Dialog`, the Export
 WAV panel: a range choice of whole project or selection defaulting to the selection when there is

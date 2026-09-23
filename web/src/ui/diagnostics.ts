@@ -43,9 +43,9 @@ export interface DiagnosticsInput {
 
 const ENGINE_STATUS_TEXT: Readonly<Record<EngineReport['status'], string>> = {
   idle: 'No audio loaded',
-  blocked: 'Waiting for a click to start audio',
-  running: 'Playing through the renderer worklet',
-  failed: 'Renderer failed and is outputting silence',
+  blocked: 'Waiting for a click',
+  running: 'Running',
+  failed: 'Failed, no output',
 };
 
 let latestEngineReport: EngineReport | null = null;
@@ -128,24 +128,20 @@ export function renderEngineReport(report: EngineReport | null): HTMLElement {
   definition(
     list,
     'Output Rate',
-    report.contextRate === null ? 'No context' : `${String(Math.round(report.contextRate))} Hz`,
+    report.contextRate === null ? 'Not started' : `${String(Math.round(report.contextRate))} Hz`,
   );
   definition(
     list,
     'Source Rate',
-    report.sourceRate === null ? 'No source' : `${String(Math.round(report.sourceRate))} Hz`,
+    report.sourceRate === null ? 'No audio loaded' : `${String(Math.round(report.sourceRate))} Hz`,
   );
   if (report.contextRate !== null && report.sourceRate !== null) {
-    definition(
-      list,
-      'Resampling',
-      report.contextRate === report.sourceRate ? 'None' : 'Output rate differs from the source',
-    );
+    definition(list, 'Resampling', report.contextRate === report.sourceRate ? 'None' : 'Active');
   }
   if (report.message !== null) {
     definition(list, 'Last Message', report.message);
   }
-  definition(list, 'Logical Cores', String(globalThis.navigator?.hardwareConcurrency ?? 'unknown'));
+  definition(list, 'CPU Threads', String(globalThis.navigator?.hardwareConcurrency ?? 'Unknown'));
   return list;
 }
 
@@ -167,7 +163,7 @@ export function renderSourceCode(): HTMLElement {
   const paragraph = document.createElement('p');
   paragraph.className = 'axys-hint axys-blurb';
   paragraph.textContent =
-    'Axys is free software under the GNU Affero General Public License, version 3 or later. The corresponding source for this build is at:';
+    'Axys is free software under the GNU AGPL, version 3 or later. Source code for this build:';
   section.append(paragraph);
 
   const link = document.createElement('a');
@@ -182,7 +178,7 @@ export function renderSourceCode(): HTMLElement {
     const warning = document.createElement('p');
     warning.className = 'axys-hint axys-warning';
     warning.textContent =
-      'This build records no revision, so the link opens the repository rather than the exact source.';
+      'No revision recorded. The link opens the repository, not the exact source.';
     section.append(warning);
   }
 
@@ -203,9 +199,8 @@ function showProvenance(badge: HTMLElement, provenance: Provenance, info: BuildI
   badge.classList.add(state);
   const reasons: Record<Provenance, string> = {
     official: `Signed by the official Axys release pipeline.\n\nSource: ${info.repository}\nRevision: ${info.revision}`,
-    unofficial: `Not signed by the official Axys release pipeline.\n\nThis build publishes its source at ${info.repository}.`,
-    invalid:
-      'The release signature does not match this build.\n\nThe build may have been modified after release.',
+    unofficial: `Not signed by the official Axys release pipeline.\n\nSource: ${info.repository}`,
+    invalid: 'Release signature does not match this build.\n\nThe build may have been modified.',
     unchecked: [
       `Ed25519 signatures are not supported by ${browserLabel()}.`,
       'Supported Browsers:\n- Chrome 137+\n- Edge 137+\n- Firefox 129+\n- Safari 17+',
@@ -225,12 +220,12 @@ function renderCoreLoad(): HTMLElement {
   list.className = 'axys-caps';
   const report = coreLoadReport();
   if (!report) {
-    definition(list, 'Core Module', 'Not loaded');
+    definition(list, 'WebAssembly Module', 'Not loaded');
     return list;
   }
-  definition(list, 'Core Version', report.version);
+  definition(list, 'Module Version', report.version);
   definition(list, 'Compilation', report.path === 'streaming' ? 'Streaming' : 'Array buffer');
-  definition(list, 'Served As', report.contentType === '' ? 'No content type' : report.contentType);
+  definition(list, 'Served As', report.contentType === '' ? 'Not set' : report.contentType);
   definition(list, 'Load Time', `${String(Math.round(report.milliseconds))} ms`);
   if (report.fallbackReason !== null) {
     definition(list, 'Fallback Reason', report.fallbackReason);
@@ -247,7 +242,7 @@ export function renderDiagnostics(input: DiagnosticsInput): HTMLElement {
     renderCapabilities(input.capabilities),
     heading('Playback'),
     renderEngineReport(input.engine),
-    heading('Core Module'),
+    heading('WebAssembly Module'),
     renderCoreLoad(),
     heading('Source Code'),
     renderSourceCode(),

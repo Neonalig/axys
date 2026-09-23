@@ -382,7 +382,7 @@ impl Project {
             .map_err(|e| AxysError::Invalid(format!("project is not valid JSON: {e}")))?;
         let migrated = migrate(value)?;
         serde_json::from_value(migrated)
-            .map_err(|e| AxysError::Invalid(format!("project document is malformed: {e}")))
+            .map_err(|e| AxysError::Invalid(format!("project file is malformed: {e}")))
     }
 
     /// True when `other` describes the same media as one of the project's clips.
@@ -431,9 +431,7 @@ pub fn fingerprint(samples: &[f32]) -> String {
 pub fn migrate(value: serde_json::Value) -> Result<serde_json::Value> {
     let mut value = value;
     if !value.is_object() {
-        return Err(AxysError::Invalid(
-            "project document is not an object".to_string(),
-        ));
+        return Err(AxysError::Invalid("project file is malformed".to_string()));
     }
     let version = read_schema_version(&value)?;
     match version {
@@ -441,12 +439,12 @@ pub fn migrate(value: serde_json::Value) -> Result<serde_json::Value> {
         1 => upgrade_1_to_2(&mut value)?,
         v if v > SCHEMA_VERSION => {
             return Err(AxysError::Unsupported(format!(
-                "project schema version {v} is newer than {SCHEMA_VERSION}"
+                "project format {v} is newer than this version of Axys supports"
             )))
         }
         v => {
             return Err(AxysError::Invalid(format!(
-                "project schema version {v} is not understood"
+                "project format {v} is not supported"
             )))
         }
     }
@@ -469,10 +467,10 @@ fn upgrade_1_to_2(value: &mut serde_json::Value) -> Result<()> {
 
     let object = value
         .as_object_mut()
-        .ok_or_else(|| AxysError::Invalid("project document is not an object".into()))?;
+        .ok_or_else(|| AxysError::Invalid("project file is malformed".into()))?;
     let source = object
         .remove("source")
-        .ok_or_else(|| AxysError::Invalid("project document has no source".into()))?;
+        .ok_or_else(|| AxysError::Invalid("project file has no source audio".into()))?;
     let analysis = object.remove("analysis");
     let track = object.remove("track");
 

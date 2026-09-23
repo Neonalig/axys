@@ -582,7 +582,7 @@ export class MixerPanel {
  * differently in each place is a gesture nobody learns.
  */
 function switchTip(action: string, strip: string): string {
-  return `${action} ${strip}. Ctrl-click for more than one`;
+  return `${action} ${strip}\nCtrl-click for multiple strips`;
 }
 
 /** One of the desk's three groups of strips. */

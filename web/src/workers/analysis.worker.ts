@@ -73,7 +73,7 @@ scope.addEventListener('message', (event) => {
 async function run(request: AnalyseRequest): Promise<void> {
   const { id } = request;
   try {
-    report(id, 'Load Core', 0);
+    report(id, 'Load Engine', 0);
     await loadCore();
     if (abandon(id)) return;
 
@@ -88,7 +88,7 @@ async function run(request: AnalyseRequest): Promise<void> {
     try {
       if (abandon(id)) return;
 
-      report(id, 'Read Track', 0.85);
+      report(id, 'Read Pitch', 0.85);
       const trackJson = analysis.trackJson();
       const times = analysis.times();
       const midi = analysis.midi();

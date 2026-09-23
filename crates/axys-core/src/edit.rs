@@ -674,8 +674,7 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
                 }
                 let Some(baseline) = sources.baseline(clip.id) else {
                     return Err(AxysError::Invalid(
-                        "the analysed segmentation is unavailable, so a range cannot be reset"
-                            .into(),
+                        "range includes a clip with no analysis".into(),
                     ));
                 };
                 clip.blobs.restore_range(baseline, from, to)?;
@@ -729,7 +728,7 @@ pub fn apply_in(state: &mut EditState, sources: &dyn ClipSources, op: &EditOp) -
             }
             let duration = finite(clip.source.duration, "clip duration")?;
             if duration <= 0.0 {
-                return Err(AxysError::Invalid("a clip must have some duration".into()));
+                return Err(AxysError::Invalid("clip is empty".into()));
             }
             let mut clip = clip.clone();
             fit_to_source(&mut clip.blobs, duration);

@@ -86,5 +86,5 @@ export function scopeText(state: AppState, clips: readonly ClipId[]): string {
     const what = `${String(count)} selected ${count === 1 ? 'blob' : 'blobs'}`;
     return many ? `Affects ${what} in ${names}` : `Affects ${what}`;
   }
-  return many ? `Affects ${names}` : 'No selection. Affects whole project';
+  return many ? `Affects ${names}` : 'Affects the whole project';
 }

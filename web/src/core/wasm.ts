@@ -210,7 +210,7 @@ async function compileCore(url: URL): Promise<CompiledCore> {
   if (!response.ok) {
     throw new AxysError(
       'Load Core',
-      `the core module could not be read (${String(response.status)} ${response.statusText})`,
+      `Download failed (${String(response.status)} ${response.statusText})`,
     );
   }
   const contentType = response.headers.get('content-type') ?? '';
@@ -528,7 +528,7 @@ export class Session {
     );
     const report = this.lastExportReport();
     if (!report) {
-      throw new AxysError('Export WAV', 'the core encoded a file but reported no peak figures');
+      throw new AxysError('Export WAV', 'Encoder returned no peak level');
     }
     return { bytes, report };
   }
@@ -634,7 +634,7 @@ export class Session {
 
   #alive(): RawSession {
     if (this.#freed) {
-      throw new AxysError('Use Session', 'this session has been closed');
+      throw new AxysError('Use Session', 'Project is closed');
     }
     return this.#raw;
   }
@@ -680,7 +680,7 @@ function messageOf(thrown: unknown): string {
     const message: unknown = (thrown as { message: unknown }).message;
     if (typeof message === 'string') return message;
   }
-  return 'the core failed without a message';
+  return 'Unknown error';
 }
 
 function now(): number {

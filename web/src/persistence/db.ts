@@ -92,7 +92,7 @@ export function toPersistenceError(error: unknown, context: string): Persistence
   if (isQuotaError(error)) {
     return new PersistenceError(
       'quota',
-      `${context} ran out of browser storage. Free space or export the project.`,
+      'Browser storage is full. Free space or export the project.',
       { cause: error },
     );
   }
@@ -142,7 +142,7 @@ export function openDatabase(): Promise<IDBDatabase> {
   if (typeof indexedDB === 'undefined') {
     throw new PersistenceError(
       'unavailable',
-      'This browser has no IndexedDB, so projects cannot be saved. Export before closing the tab',
+      'Project storage unavailable. Export before closing the tab.',
     );
   }
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -164,7 +164,7 @@ export function openDatabase(): Promise<IDBDatabase> {
       reject(
         new PersistenceError(
           'unavailable',
-          'Another Axys tab is upgrading storage. Close it and try again',
+          'Another Axys tab is upgrading storage. Close that tab and try again.',
         ),
       );
     };
@@ -175,7 +175,7 @@ export function openDatabase(): Promise<IDBDatabase> {
       reject(
         new PersistenceError(
           'unavailable',
-          'Browser storage is unavailable, which private browsing can cause',
+          'Browser storage unavailable. Try a non-private window.',
           { cause: request.error },
         ),
       );
@@ -229,7 +229,7 @@ export class ProjectStore {
       summaries.sort((a, b) => b.updated - a.updated);
       return summaries;
     } catch (error) {
-      throw toPersistenceError(error, 'Listing projects');
+      throw toPersistenceError(error, 'List projects');
     }
   }
 
@@ -245,10 +245,10 @@ export class ProjectStore {
       row = await promisify(tx.objectStore(PROJECT_STORE).get(id));
       await settled(tx);
     } catch (error) {
-      throw toPersistenceError(error, 'Loading the project');
+      throw toPersistenceError(error, 'Load project');
     }
     if (row === undefined) {
-      throw new PersistenceError('missing', `No stored project has the id ${id}.`);
+      throw new PersistenceError('missing', `Stored project ${id} not found.`);
     }
     if (!isProjectRecord(row)) {
       throw new PersistenceError('corrupt', 'The stored project record is unreadable');
@@ -267,7 +267,7 @@ export class ProjectStore {
     try {
       document = parseJson(json, isProject, 'project');
     } catch (cause) {
-      throw new PersistenceError('corrupt', 'Refusing to store a document that is not a project', {
+      throw new PersistenceError('corrupt', 'Document is not a valid project', {
         cause,
       });
     }
@@ -277,7 +277,7 @@ export class ProjectStore {
       tx.objectStore(PROJECT_STORE).put(record);
       await settled(tx);
     } catch (error) {
-      throw toPersistenceError(error, 'Saving the project');
+      throw toPersistenceError(error, 'Save project');
     }
   }
 
@@ -288,7 +288,7 @@ export class ProjectStore {
       tx.objectStore(PROJECT_STORE).delete(id);
       await settled(tx);
     } catch (error) {
-      throw toPersistenceError(error, 'Deleting the project');
+      throw toPersistenceError(error, 'Delete project');
     }
   }
 
