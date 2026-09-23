@@ -64,6 +64,7 @@ export interface MenuCustom {
 /** Anything a menu may hold. */
 export type MenuEntry = MenuItem | MenuSeparator | MenuCustom;
 
+import { keycaps } from './keys.js';
 import { ICONS } from './icons.js';
 import type { IconName } from './icons.js';
 import { animateOut } from './motion.js';
@@ -146,9 +147,8 @@ export function showContextMenu(
     }
 
     if (entry.key !== undefined) {
-      const key = document.createElement('kbd');
-      key.className = 'axys-menu-key';
-      key.textContent = entry.key;
+      const key = keycaps(entry.key);
+      key.classList.add('axys-menu-key');
       button.append(key);
     }
 

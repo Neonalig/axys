@@ -76,6 +76,41 @@ export function drawChip(
   return { width, height: CHIP_HEIGHT };
 }
 
+/** Key names a hint names, drawn as keys; single letters are left alone, since notes use them. */
+const HINT_KEYS = /\b(Ctrl|Shift|Alt|Enter|Esc|Delete|Backspace|Space)\b/g;
+
+/**
+ * Draws a hint chip, `Move Clip  Ctrl Start`, with each key it names in a box of its own.
+ *
+ * @remarks The boxes sit around the key's own characters, so the chip keeps the width its text
+ * gives it and a hint reads as the same chip a readout is.
+ */
+export function drawHintChip(
+  ctx: CanvasRenderingContext2D,
+  theme: Theme,
+  text: string,
+  left: number,
+  top: number,
+): { width: number; height: number } {
+  const box = drawChip(ctx, theme, text, left, top);
+  const column = columnWidth(ctx);
+  ctx.save();
+  ctx.strokeStyle = theme.borderStrong;
+  ctx.lineWidth = 1;
+  for (const match of text.matchAll(HINT_KEYS)) {
+    const x = Math.round(left + CHIP_PAD + match.index * column - KEY_INSET) + 0.5;
+    const width = Math.round(match[0].length * column + KEY_INSET * 2);
+    ctx.beginPath();
+    ctx.roundRect(x, Math.round(top + KEY_INSET) + 0.5, width, CHIP_HEIGHT - KEY_INSET * 2 - 1, 3);
+    ctx.stroke();
+  }
+  ctx.restore();
+  return box;
+}
+
+/** Pixels a key's box reaches past its characters and in from the chip's edge. */
+const KEY_INSET = 3;
+
 /**
  * Half the ink height of a figure in {@link READOUT_FONT}, in pixels.
  *

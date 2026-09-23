@@ -9,6 +9,7 @@
  * accessible name stays on the control, so assistive technology reads the same thing either way.
  */
 
+import { writeWithKeys } from './keys.js';
 import { animateOut } from './motion.js';
 
 /** Milliseconds a pointer rests on a control before its tooltip appears. */
@@ -86,7 +87,7 @@ export class TooltipHost {
       this.#cancel();
       return;
     }
-    this.#element.textContent = text;
+    writeWithKeys(this.#element, text);
     this.#place(element);
   }
 
@@ -146,7 +147,7 @@ export class TooltipHost {
     }
     this.#target = target;
     this.#element.classList.remove('is-leaving');
-    this.#element.textContent = text;
+    writeWithKeys(this.#element, text);
     this.#element.hidden = false;
     target.setAttribute('aria-describedby', this.#element.id);
     this.#place(target);

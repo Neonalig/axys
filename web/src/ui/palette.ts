@@ -8,6 +8,7 @@
  * here knows what a command does.
  */
 
+import { keycaps } from './keys.js';
 import { Dialog } from './dialog.js';
 import type { SearchableCommand } from './shell.js';
 import { ICONS } from './icons.js';
@@ -97,9 +98,8 @@ export function showCommandPalette(options: PaletteOptions): Dialog {
 
     item.append(glyph, label, group);
     if (command.shortcut !== undefined) {
-      const key = document.createElement('kbd');
-      key.className = 'axys-menu-key';
-      key.textContent = command.shortcut;
+      const key = keycaps(command.shortcut);
+      key.classList.add('axys-menu-key');
       item.append(key);
     }
     item.addEventListener('click', () => {
@@ -186,10 +186,11 @@ export function showCheatsheet(commands: readonly SearchableCommand[]): Dialog {
       const name = document.createElement('dt');
       name.textContent = command.label;
       const key = document.createElement('dd');
-      const chord = document.createElement('kbd');
-      chord.className = 'axys-menu-key';
-      chord.textContent = command.shortcut ?? '';
-      key.append(chord);
+      if (command.shortcut !== undefined) {
+        const chord = keycaps(command.shortcut);
+        chord.classList.add('axys-menu-key');
+        key.append(chord);
+      }
       list.append(name, key);
     }
     section.append(list);

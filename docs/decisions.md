@@ -863,6 +863,35 @@ A freehand stroke is kept as the points left once it has been reduced to within 
 was drawn, and a Bezier as its samples reduced to within one, so both come back as drawn at the
 zoom they were drawn at.
 
+### A selection stretches by its edges
+
+Under the Time tool a selection carries a grip on each edge, in every mode, and dragging one
+stretches what the selection holds to the new span, keeping its proportions: the dragged edge moves
+and the other stays. What stretches is what the mode edits. Blob and Pitch stretches the selected
+blobs' timing, and so their audio; Blob stretches the spans the blobs cover over audio that does not
+move; Pitch stretches the pitch line. Shift ripples, moving the blobs beyond the dragged edge by as
+far as it went, which is what Shift means wherever something can ripple; without it the stretch
+lays over what is there. A single selected blob keeps its own edges, which already stretch it.
+
+The Pitch tool moves a line up and down and the Time tool along time, never both at once, so each
+tool keeps one meaning in every mode.
+
+### Cut and paste say what happens to what is there
+
+Paste lays clips over what is there, Paste Insert on `Ctrl+Shift+V` moves every clip starting at or
+after the playhead later by the length pasted, and Paste Replace on `Ctrl+Alt+V` cuts the pasted
+span out of every clip it reaches first. Ripple Cut on `Ctrl+Shift+X` closes the gap a cut leaves by
+moving every later clip earlier by its length. Blobs cannot lie over each other, so a plain paste of
+blobs fills the audio the blobs already there leave free, and Paste Replace puts them in place of
+those. Pitch always replaces the line it lands on. Each is one undo step.
+
+### Shortcuts are drawn as keys
+
+Every chord a tooltip, menu, palette or cheatsheet names is drawn one box per key, `Ctrl` `Shift`
+`V`, rather than as the text `Ctrl+Shift+V`. A tooltip's trailing `(chord)` becomes its keys, and the
+canvas hints box the named keys they mention in place, so a chip keeps the width its text gives it.
+Single letters are boxed only where they are a chord, since the canvas also writes note names.
+
 ### What a mode does not edit is drawn faint
 
 In Pitch mode the blobs and their waveforms are drawn at a third of their strength, and in Blob mode

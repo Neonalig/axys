@@ -16,7 +16,7 @@ import { drawGrid, drawPitchLabels } from './layers/grid.js';
 import { drawMidi } from './layers/midi.js';
 import { drawHoverGuides, drawOverlay } from './layers/overlay.js';
 import { drawPitch } from './layers/pitch.js';
-import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
+import { CHIP_HEIGHT, chipWidth, drawHintChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { drawWaveform, fillEnvelope } from './layers/waveform.js';
 import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
@@ -1197,7 +1197,7 @@ function labelAt(
 /**
  * Draws a floating readout.
  *
- * @remarks Sized in whole character columns by {@link drawChip}, because these follow the cursor
+ * @remarks Sized in whole character columns by {@link drawHintChip}, because these follow the cursor
  * and the transport and would otherwise resize on every frame a digit changed.
  */
 function drawTooltip(
@@ -1211,5 +1211,5 @@ function drawTooltip(
   const width = chipWidth(ctx, text);
   const left = Math.min(Math.max(4, x), viewport.width - width - 4);
   const top = Math.min(Math.max(RULER_HEIGHT + 2, y), viewport.height - CHIP_HEIGHT - 4);
-  drawChip(ctx, theme, text, left, top);
+  drawHintChip(ctx, theme, text, left, top);
 }
