@@ -1628,16 +1628,37 @@ function showUnsupported(mount: HTMLElement, caps: Capability[]): void {
   mount.append(section);
 }
 
-/** Replaces the page when the core itself will not load, which leaves nothing to run. */
-function showFailure(mount: HTMLElement, message: string): void {
+/**
+ * Replaces the page when the core itself will not load, which leaves nothing to run.
+ *
+ * @remarks Drawn with the splash's own inline styles, since a failed load may have fetched no
+ * stylesheet. A failed fetch is named as the connection it is, with the browser's text under it.
+ */
+function showFailure(mount: HTMLElement, error: unknown): void {
   mount.textContent = '';
   const section = document.createElement('section');
-  section.className = 'axys-unsupported';
+  section.className = 'axys-failure';
+  section.setAttribute('role', 'alert');
+  const mark = document.createElement('div');
+  mark.className = 'axys-splash-mark';
+  mark.textContent = 'AXYS';
   const heading = document.createElement('h1');
   heading.textContent = 'Load Failed';
+  const lead = document.createElement('p');
+  lead.textContent =
+    error instanceof TypeError || (error instanceof Error && error.cause instanceof TypeError)
+      ? 'Axys could not download its audio core. Check the connection, then reload.'
+      : 'Axys could not start its audio core.';
   const detail = document.createElement('p');
-  detail.textContent = message;
-  section.append(heading, detail);
+  detail.className = 'axys-failure-detail';
+  detail.textContent = describe(error);
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.textContent = 'Reload';
+  retry.addEventListener('click', () => {
+    location.reload();
+  });
+  section.append(mark, heading, lead, detail, retry);
   mount.append(section);
 }
 
@@ -1905,7 +1926,7 @@ async function start(): Promise<void> {
     core = await loadCore();
   } catch (error) {
     dismissSplash();
-    showFailure(mount, describe(error));
+    showFailure(mount, error);
     return;
   }
 

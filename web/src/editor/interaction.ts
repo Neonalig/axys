@@ -593,7 +593,6 @@ export class EditorController {
       this.#current = this.#origin;
       this.#moved = false;
       this.#gesture = { kind: 'pan', from: state.view };
-      this.#renderer?.setHover(null);
       this.#canvas.style.cursor = 'grabbing';
       event.preventDefault();
       return;
@@ -611,9 +610,6 @@ export class EditorController {
     this.#current = point;
     this.#moved = false;
     this.#gesture = this.#beginGesture(state, hit, modifiers);
-    // The readout and its guides describe where the pointer rests. A drag's own preview says
-    // what it is doing, and a readout left behind would stay frozen where the drag began.
-    if (this.#gesture !== null) this.#renderer?.setHover(null);
     // A band being dragged is not the select tool resting over a blob, so it says so for as long
     // as it lasts rather than leaving the arrow up while a marquee is being drawn.
     if (this.#gesture?.kind === 'rubberBand') {
@@ -646,6 +642,13 @@ export class EditorController {
     }
     this.#advanceGesture(modifiers);
     this.#updatePreview();
+    // The readout and its guides go on following the pointer through a drag, read against the
+    // view the drag has just produced, rather than staying where the drag began.
+    this.#renderer?.setHover({
+      x: point.x,
+      y: point.y,
+      text: describeHit(this.hitTest(point.x, point.y), this.#store.state),
+    });
     event.preventDefault();
   };
 

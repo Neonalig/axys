@@ -77,6 +77,57 @@
         opacity: 0.66;
       }
 
+      /* The failure screen shares the splash's look, because it can appear before any stylesheet */
+
+      .axys-failure {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+      }
+
+      .axys-failure h1 {
+        margin: 6px 0 0;
+        font-size: 17px;
+        font-weight: 600;
+      }
+
+      .axys-failure p {
+        max-width: 46ch;
+        margin: 0;
+        font-size: 13px;
+        opacity: 0.66;
+      }
+
+      .axys-failure .axys-failure-detail {
+        font-family: ui-monospace, 'Cascadia Mono', monospace;
+        font-size: 12px;
+        opacity: 0.5;
+      }
+
+      .axys-failure button {
+        margin-top: 8px;
+        padding: 6px 18px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        color: #0e1116;
+        background: #34a4ff;
+        border: 0;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .axys-failure button:focus-visible {
+        outline: 2px solid #34a4ff;
+        outline-offset: 2px;
+      }
+
       @keyframes axys-splash-slide {
         0% {
           transform: translateX(-100%);
