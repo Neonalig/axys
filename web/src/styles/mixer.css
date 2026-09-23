@@ -402,9 +402,12 @@
  * as the title it is until it is reached for.
  */
 
+/* A block box, since text-overflow does not reach the text of a flex container */
+
 .axys-title {
-  justify-content: flex-end;
+  display: block;
   overflow: hidden;
+  text-align: right;
   max-width: 28ch;
   padding: 0 var(--axys-space-2);
   background: transparent;

@@ -257,9 +257,17 @@
   color: var(--axys-text-muted);
 }
 
+/* A long title, such as one naming the project, is cut short rather than widening the panel */
+
 .axys-dialog-head > h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 28em;
   margin: 0;
+  overflow: hidden;
   font-size: var(--axys-size-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .axys-dialog-actions {

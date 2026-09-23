@@ -163,6 +163,10 @@ export class Dialog {
 
     const heading = document.createElement('h2');
     heading.textContent = options.title;
+    // A title cut short shows in full on hover.
+    heading.addEventListener('pointerenter', () => {
+      if (heading.scrollWidth > heading.clientWidth) setTooltip(heading, options.title);
+    });
     head.append(heading);
 
     // The gap between the title and the close button was already the grab area; the dots are
