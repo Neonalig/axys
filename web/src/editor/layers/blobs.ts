@@ -416,16 +416,6 @@ function drawBlob(
 
   // Detail narrower than a few pixels is not legible and costs a draw per blob when zoomed out.
   const detailed = x1 - x0 >= DETAIL_MIN_WIDTH;
-  for (const region of detailed ? blob.subregions : []) {
-    if (region.voicing === 'voiced') {
-      continue;
-    }
-    const rx0 = viewport.timeToX(sourceToOutput(blob, region.start));
-    const rx1 = viewport.timeToX(sourceToOutput(blob, region.end));
-    ctx.globalAlpha = alpha * (region.voicing === 'silence' ? 0.18 : 0.3);
-    ctx.fillStyle = theme.unvoiced;
-    ctx.fillRect(rx0, top, Math.max(1, rx1 - rx0), height);
-  }
 
   ctx.globalAlpha = alpha;
   const bound = viewport.crispWidth(isSelected ? 2 : 1);
