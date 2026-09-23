@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { AppState } from '../../app/store.js';
-import type { PitchTrackArrays, RenderPlan } from '../../core/types.js';
+import type { Blob, PitchTrackArrays, RenderPlan } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
-import { blobOutputEnd, blobOutputStart, outputToSource, targetMidiAt } from './blobs.js';
+import {
+  blobOutputEnd,
+  blobOutputStart,
+  outputToSource,
+  sourceToOutput,
+  targetMidiAt,
+} from './blobs.js';
 
 /** Height in pixels of the unvoiced strip along the bottom of the pitch area. */
 const UNVOICED_STRIP = 7;
@@ -58,11 +64,9 @@ function collect(track: PitchTrackArrays, viewport: Viewport): Columns {
   const weight = new Float32Array(count);
   for (let i = 0; i < track.times.length; i += 1) {
     const time = track.times[i] ?? 0;
-    if (time < from) {
+    // A timing edit can carry frames past later ones, so the track is not always in time order.
+    if (time < from || time > to) {
       continue;
-    }
-    if (time > to) {
-      break;
     }
     const column = Math.floor(time / step) - firstColumn;
     if (column < 0 || column >= count) {
@@ -162,7 +166,7 @@ export function drawPitch(
   if (state.track === null) {
     return;
   }
-  const columns = collect(state.track, viewport);
+  const columns = collect(warpedTrack(state.track, state.blobs), viewport);
 
   ctx.save();
   ctx.beginPath();
@@ -177,6 +181,43 @@ export function drawPitch(
 
   ctx.restore();
 }
+
+/**
+ * A track with every frame inside a blob moved to where that blob's timing edit puts it.
+ *
+ * @remarks The detected line then moves and stretches with its blob, as the waveform and the
+ * target already do. Frames outside every blob stay where they were sung. Kept per track and
+ * blob list, which every edit replaces.
+ */
+function warpedTrack(track: PitchTrackArrays, blobs: readonly Blob[]): PitchTrackArrays {
+  const known = WARPED.get(track);
+  if (known !== undefined && known.blobs === blobs) {
+    return known.warped;
+  }
+  const edited = blobs.filter((blob) => blob.timeOffset !== 0 || blob.timeScale !== 1);
+  let warped = track;
+  if (edited.length > 0) {
+    const times = new Float32Array(track.times);
+    let next = 0;
+    for (let i = 0; i < times.length; i += 1) {
+      const time = track.times[i] ?? 0;
+      while (next < edited.length && (edited[next]?.end ?? 0) < time) next += 1;
+      const blob = edited[next];
+      if (blob !== undefined && time >= blob.start) {
+        times[i] = sourceToOutput(blob, time);
+      }
+    }
+    warped = { ...track, times };
+  }
+  WARPED.set(track, { blobs, warped });
+  return warped;
+}
+
+/** Each track's warped copy, and the blob list it was warped by. */
+const WARPED = new WeakMap<
+  PitchTrackArrays,
+  { blobs: readonly Blob[]; warped: PitchTrackArrays }
+>();
 
 function drawUnvoiced(
   ctx: CanvasRenderingContext2D,

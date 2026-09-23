@@ -260,8 +260,8 @@ export function blobPitchExtent(
 /**
  * Draws blob bodies, centres, boundary handles and timing conflicts.
  *
- * @remarks Blobs are drawn at their edited positions, so a timing edit moves the body while the
- * detected pitch behind it stays where it was sung.
+ * @remarks Blobs are drawn at their edited positions, so a timing edit moves the body, and the
+ * pitch layer moves the detected line with it.
  */
 export function drawBlobs(
   ctx: CanvasRenderingContext2D,
