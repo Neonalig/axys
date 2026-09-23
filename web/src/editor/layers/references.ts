@@ -8,6 +8,7 @@ import { referenceColour } from '../../ui/theme.js';
 import { peaksFor } from '../peaks.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER } from '../view.js';
+import { CORNER_RADIUS } from './blobs.js';
 import { LABEL_ALPHA, labelBaseline } from './label.js';
 import { fillEnvelope } from './waveform.js';
 
@@ -83,7 +84,7 @@ function drawBandTitle(
   theme: Theme,
   title: string,
   colour: string,
-  band: { left: number; right: number; top: number; bottom: number },
+  band: { left: number; right: number; top: number; bottom: number; rounded: boolean },
 ): void {
   if (band.right - band.left < TITLE_PADDING * 2) return;
   ctx.font = TITLE_FONT;
@@ -92,8 +93,15 @@ function drawBandTitle(
   const width = ctx.measureText(title).width + TITLE_PADDING * 2;
   const right = Math.min(band.right, band.left + width);
   ctx.save();
+  // The band's own rounded start where it is in view; square where the view cuts it.
+  const corner = band.rounded ? CORNER_RADIUS : 0;
   ctx.beginPath();
-  ctx.rect(band.left, band.top, right - band.left, band.bottom - band.top);
+  ctx.roundRect(band.left, band.top, right - band.left, band.bottom - band.top, [
+    corner,
+    0,
+    0,
+    corner,
+  ]);
   ctx.clip();
   ctx.globalAlpha = 1;
   ctx.fillStyle = colour;
@@ -132,7 +140,9 @@ export function drawReferenceBand(
   ctx.save();
   ctx.globalAlpha = BAND_ALPHA * alpha;
   ctx.fillStyle = colour;
-  ctx.fillRect(x0 - line / 2, y0 - line / 2, x1 - x0 + line, y1 - y0 + line);
+  ctx.beginPath();
+  ctx.roundRect(x0 - line / 2, y0 - line / 2, x1 - x0 + line, y1 - y0 + line, CORNER_RADIUS);
+  ctx.fill();
 
   const envelope = peaksFor(referencePeaksKey(reference.source.fingerprint));
   // Columns are cut a whole number of pixels from the band's own start, so a band sliding under a
@@ -161,9 +171,12 @@ export function drawReferenceBand(
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = colour;
   ctx.lineWidth = line;
-  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.beginPath();
+  ctx.roundRect(x0, y0, x1 - x0, y1 - y0, CORNER_RADIUS);
+  ctx.stroke();
   drawBandTitle(ctx, viewport, theme, displayTitle(reference), colour, {
     left: Math.max(x0 - line / 2, PITCH_LABEL_GUTTER),
+    rounded: x0 - line / 2 >= PITCH_LABEL_GUTTER,
     right: x1 + line / 2,
     top: y0 - line / 2,
     bottom: y1 + line / 2,

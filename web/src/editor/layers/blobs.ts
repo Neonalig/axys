@@ -49,6 +49,9 @@ const TITLE_MIN_WIDTH = 28;
 /** Padding in pixels either side of a title's text. */
 const TITLE_PADDING = 4;
 
+/** Corner radius of a blob's box and header, in pixels, the one the mixer's faders use. */
+export const CORNER_RADIUS = 3;
+
 const TITLE_FONT = '600 12px "Atkinson Hyperlegible Next", system-ui, sans-serif';
 
 /** The clip a blob belongs to, when that clip is on the lane. */
@@ -423,10 +426,19 @@ function drawBlob(
   const right = viewport.crisp(x0 + width, bound);
   const lower = viewport.crisp(top + height, bound);
 
+  // Under a header the top corners are the header's, so the two join square.
+  const headed = titleRect(blob, state.track, viewport) !== null;
+  const radii = headed ? [0, 0, CORNER_RADIUS, CORNER_RADIUS] : CORNER_RADIUS;
+  const box = (): void => {
+    ctx.beginPath();
+    ctx.roundRect(left, upper, right - left, lower - upper, radii);
+  };
+
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = isSelected ? theme.blobFillSelected : theme.blobFill;
-  ctx.fillRect(left, upper, right - left, lower - upper);
+  box();
+  ctx.fill();
 
   // Detail narrower than a few pixels is not legible and costs a draw per blob when zoomed out.
   const detailed = x1 - x0 >= DETAIL_MIN_WIDTH;
@@ -437,7 +449,8 @@ function drawBlob(
   if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
-  ctx.strokeRect(left, upper, right - left, lower - upper);
+  box();
+  ctx.stroke();
   ctx.setLineDash([]);
 
   const centreY = viewport.midiToY(blob.detectedCenter + blob.pitchOffset);
@@ -501,7 +514,9 @@ function drawTitle(
   const left = viewport.crisp(rect.x, bound) - bound / 2;
   const right = viewport.crisp(rect.x + Math.max(2, rect.width), bound) + bound / 2;
   const top = Math.round(rect.y);
-  ctx.fillRect(left, top, right - left, rect.height);
+  ctx.beginPath();
+  ctx.roundRect(left, top, right - left, rect.height, [CORNER_RADIUS, CORNER_RADIUS, 0, 0]);
+  ctx.fill();
   ctx.font = TITLE_FONT;
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
