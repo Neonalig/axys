@@ -140,6 +140,11 @@ export class EditorController {
   #pointerId: number | null = null;
   #origin: Point = { x: 0, y: 0 };
   #current: Point = { x: 0, y: 0 };
+  /** Where the pointer last was over the canvas, or `null` once it has left. */
+  #pointer: Point | null = null;
+  /** The view and blobs the hover readout was last read against. */
+  #hoverView: unknown = null;
+  #hoverBlobs: unknown = null;
   #moved = false;
   #gesture: Gesture | null = null;
   #hover: Hit | null = null;
@@ -176,6 +181,14 @@ export class EditorController {
         }
       }
       this.render();
+      // A view that scrolls under a still pointer, as Follow does during playback, leaves the
+      // readout naming what used to be there unless it is read again.
+      if (
+        this.#pointer !== null &&
+        (state.view !== this.#hoverView || state.blobs !== this.#hoverBlobs)
+      ) {
+        this.#readHover(this.#pointer);
+      }
     });
     this.#observer =
       typeof ResizeObserver === 'undefined'
@@ -622,18 +635,9 @@ export class EditorController {
   #onPointerMove = (event: PointerEvent): void => {
     const point = this.#pointOf(event);
     const modifiers = modifiersOf(event);
+    this.#pointer = point;
     if (this.#pointerId === null || this.#gesture === null) {
-      const hit = this.hitTest(point.x, point.y);
-      this.#hover = hit;
-      this.#applyCursor(hit);
-      if (this.#bezierHandleAt(point) !== null) {
-        this.#canvas.style.cursor = 'grab';
-      }
-      this.#renderer?.setHover({
-        x: point.x,
-        y: point.y,
-        text: describeHit(hit, this.#store.state),
-      });
+      this.#readHover(point);
       return;
     }
     this.#current = point;
@@ -644,11 +648,7 @@ export class EditorController {
     this.#updatePreview();
     // The readout and its guides go on following the pointer through a drag, read against the
     // view the drag has just produced, rather than staying where the drag began.
-    this.#renderer?.setHover({
-      x: point.x,
-      y: point.y,
-      text: describeHit(this.hitTest(point.x, point.y), this.#store.state),
-    });
+    this.#readHover(point);
     event.preventDefault();
   };
 
@@ -672,7 +672,29 @@ export class EditorController {
     this.#releasePointer(event.pointerId);
   };
 
+  /**
+   * Reads what is under `point` into the hover readout and its guides.
+   *
+   * @remarks Outside a gesture it also sets the cursor for what is there. During one the cursor
+   * belongs to the gesture and is left alone.
+   */
+  #readHover(point: Point): void {
+    const state = this.#store.state;
+    this.#hoverView = state.view;
+    this.#hoverBlobs = state.blobs;
+    const hit = this.hitTest(point.x, point.y);
+    if (this.#gesture === null) {
+      this.#hover = hit;
+      this.#applyCursor(hit);
+      if (this.#bezierHandleAt(point) !== null) {
+        this.#canvas.style.cursor = 'grab';
+      }
+    }
+    this.#renderer?.setHover({ x: point.x, y: point.y, text: describeHit(hit, state) });
+  }
+
   #onPointerLeave = (): void => {
+    this.#pointer = null;
     if (this.#gesture === null) {
       this.#hover = null;
       this.#renderer?.setHover(null);

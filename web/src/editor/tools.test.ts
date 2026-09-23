@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { bezierAt, freePosition, moveBezierHandle, sampleBezier, straightBezier } from './tools.js';
+import { readoutNoteName } from '../core/notes.js';
 
 describe('freePosition', () => {
   it('keeps a clip where it was asked when it fits', () => {
@@ -63,5 +64,14 @@ describe('Bezier', () => {
   it('bends when a control is pulled off the line', () => {
     const curve = moveBezierHandle(straightBezier(from, to), 'c1', { time: 4 / 3, midi: 68 });
     expect(bezierAt(curve, 0.25).midi).toBeGreaterThan(61);
+  });
+});
+
+describe('readoutNoteName', () => {
+  it('keeps every reading the same width', () => {
+    const readings = [60, 60.03, 61.69, 69.5, 71.99, 59.12].map((midi) => readoutNoteName(midi));
+    expect(new Set(readings.map((text) => text.length)).size).toBe(1);
+    expect(readoutNoteName(60.03)).toBe('C4   +3c');
+    expect(readoutNoteName(61.69)).toBe('D4  -31c');
   });
 });

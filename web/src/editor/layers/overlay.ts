@@ -4,7 +4,7 @@ import type { AppState } from '../../app/store.js';
 import type { Theme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { PITCH_LABEL_GUTTER, RULER_HEIGHT } from '../view.js';
-import { noteName, noteNameWithCents } from '../../core/notes.js';
+import { noteName, readoutNoteName } from '../../core/notes.js';
 import { detectedAt } from './pitch.js';
 import { chipWidth, drawChip, READOUT_FONT } from './readout.js';
 import { formatBarBeat, formatClock } from './ruler.js';
@@ -249,7 +249,7 @@ function drawReadout(
   // the cursor that changes on every frame the voice drops out.
   const detected = state.track === null ? null : detectedAt(state.track, position);
   const pitch =
-    detected === null ? '' : noteNameWithCents(detected, state.edits?.accidentals ?? 'sharps');
+    detected === null ? '' : readoutNoteName(detected, state.edits?.accidentals ?? 'sharps');
   const text = pitch === '' ? clock : `${clock}  ${pitch}`;
 
   const width = chipWidth(ctx, text);

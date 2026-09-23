@@ -12,7 +12,7 @@ import type {
   TimelineMap,
   TimingConflict,
 } from '../core/types.js';
-import { noteNameWithCents } from '../core/notes.js';
+import { readoutNoteName } from '../core/notes.js';
 import { formatClock } from './layers/ruler.js';
 import { beatGrid } from '../core/timeline.js';
 
@@ -173,11 +173,11 @@ export function describeHit(hit: Hit, state: AppState): string {
     case 'loopEdge':
       return hit.edge === 'start' ? 'Loop Start' : 'Loop End';
     case 'anchor':
-      return `Anchor ${noteNameWithCents(hit.midi, accidentals)}`;
+      return `Anchor ${readoutNoteName(hit.midi, accidentals)}`;
     case 'blobEdge':
       return hit.edge === 'start' ? `Blob Start ${clock}` : `Blob End ${clock}`;
     case 'blob':
-      return `Blob ${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
+      return `Blob ${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
     case 'clipTitle':
       return 'Move Clip';
     case 'reference':
@@ -193,7 +193,7 @@ export function describeHit(hit: Hit, state: AppState): string {
         : `Overlap  ${pair.charAt(0).toUpperCase()}${pair.slice(1)} both sound here`;
     }
     default:
-      return `${clock} ${noteNameWithCents(hit.midi, accidentals)}`;
+      return `${clock}  ${readoutNoteName(hit.midi, accidentals)}`;
   }
 }
 
