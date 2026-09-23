@@ -20,6 +20,7 @@ import { CHIP_HEIGHT, chipWidth, drawChip } from './layers/readout.js';
 import { drawRuler } from './layers/ruler.js';
 import { clipPeaks, drawWaveform, fillEnvelope } from './layers/waveform.js';
 import { drawReferenceBand, drawReferences, REFERENCE_BAND } from './layers/references.js';
+import { othersOf } from '../app/sources.js';
 import { clipOf } from '../core/types.js';
 import type { BezierCurve, BezierHandle, EditorPreview, PendingClip } from './tools.js';
 import { peaksFor } from './peaks.js';
@@ -35,6 +36,9 @@ export interface HoverReadout {
 }
 
 const GHOST_ALPHA = 0.55;
+
+/** Opacity of the clips outside the editor's layer, per way of showing them. */
+const OTHERS_ALPHA = { show: 0.5, dim: 0.2 } as const;
 
 /**
  * Composes the editor layers onto one canvas.
@@ -59,6 +63,8 @@ export class EditorRenderer {
   #lastFrameMs = 0;
   #disposed = false;
   #base: HTMLCanvasElement | null = null;
+  /** Where the clips outside the layer are drawn before they are laid under it, faded. */
+  #others: HTMLCanvasElement | null = null;
   #baseKey: BaseKey | null = null;
   /** The blob under the pointer, whose title scrolls when it does not fit, and since when. */
   #hoverBlob: { id: BlobId; since: number } | null = null;
@@ -234,6 +240,7 @@ export class EditorRenderer {
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, viewport.width, viewport.height);
     drawGrid(ctx, state, viewport, theme);
+    this.#drawOthers(ctx, state, viewport, theme);
     drawWaveform(ctx, state, viewport, theme);
     drawMidi(ctx, state, viewport, theme);
     drawReferences(ctx, state, viewport, theme);
@@ -245,6 +252,52 @@ export class EditorRenderer {
     drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
     return base;
+  }
+
+  /**
+   * Draws every clip outside the editor's layer behind it, faded as a whole.
+   *
+   * @remarks Each is drawn by the same layers as the active one, from its own blobs, track and
+   * plan, on a canvas of its own. Fading the finished picture rather than each stroke keeps the
+   * layers' own opacities where they overlap.
+   */
+  #drawOthers(
+    ctx: CanvasRenderingContext2D,
+    state: AppState,
+    viewport: Viewport,
+    theme: Theme,
+  ): void {
+    const mode = othersOf(state.view);
+    if (mode === 'hide' || state.others.length === 0) return;
+    const canvas = (this.#others ??= document.createElement('canvas'));
+    if (canvas.width !== this.#canvas.width || canvas.height !== this.#canvas.height) {
+      canvas.width = this.#canvas.width;
+      canvas.height = this.#canvas.height;
+    }
+    const layer = canvas.getContext('2d');
+    if (layer === null) return;
+    layer.setTransform(1, 0, 0, 1, 0, 0);
+    layer.clearRect(0, 0, canvas.width, canvas.height);
+    layer.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
+    for (const other of state.others) {
+      const behind: AppState = {
+        ...state,
+        tool: 'select',
+        blobs: other.blobs,
+        track: other.track,
+        plan: other.plan,
+        conflicts: [],
+        selection: { blobs: [], anchors: [], ranges: [] },
+      };
+      drawWaveform(layer, behind, viewport, theme);
+      drawBlobs(layer, behind, viewport, theme);
+      drawPitch(layer, behind, viewport, theme);
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = OTHERS_ALPHA[mode];
+    ctx.drawImage(canvas, 0, 0);
+    ctx.restore();
   }
 
   #resolveTheme(): Theme {
@@ -408,6 +461,7 @@ function baseKey(
     refs: [
       theme,
       state.blobs,
+      state.others,
       state.track,
       state.edits,
       state.plan,
@@ -427,6 +481,7 @@ function baseKey(
       view.highMidi,
       view.timeDisplay,
       view.snapDivision,
+      othersOf(view),
       ...extra,
     ],
   };

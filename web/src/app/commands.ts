@@ -18,6 +18,7 @@ import type {
   Blob,
   ClipId,
   EditOp,
+  OthersView,
   ExportPreview,
   MappingProposal,
   TimelineMap,
@@ -144,10 +145,19 @@ export interface Workspace {
   /**
    * Proposes blob-to-note mappings against the guide, without applying them.
    *
-   * @remarks `null` when there is no session or no guide to align against. The caller commits
-   * what it keeps of the proposal as an edit of its own.
+   * @remarks `clips` limits the proposal to those clips, each mapped on its own; absent is every
+   * clip. `null` when there is no session or no guide to align against. The caller commits what
+   * it keeps of the proposal as an edit of its own.
    */
-  proposeMappings(): MappingProposal | null;
+  proposeMappings(clips?: readonly ClipId[]): MappingProposal | null;
+
+  /**
+   * Brings a clip forward, and sets how the clips outside its layer are shown.
+   *
+   * @remarks `null` is the first clip. An absent `others` keeps the current one. A view change,
+   * not an edit, so it is never undone.
+   */
+  focus(clip: ClipId | null, others?: OthersView): void;
 
   /** Source time a source time snaps to on the musical grid. */
   snapTime(seconds: number): number;

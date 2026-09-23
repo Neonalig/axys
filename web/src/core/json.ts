@@ -104,7 +104,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isNumber(value: unknown): value is number {
+export function isNumber(value: unknown): value is number {
   return typeof value === 'number';
 }
 
@@ -138,6 +138,7 @@ const EDGES = ['start', 'end'] as const;
 const CONFLICT_KINDS = ['overlap', 'gap'] as const;
 const GUIDE_MODES = ['visualOnly', 'pitchOnly', 'timingOnly', 'combined'] as const;
 const TIME_DISPLAYS = ['seconds', 'barsBeats'] as const;
+const OTHERS_VIEWS = ['show', 'dim', 'hide'] as const;
 const ACCIDENTAL_STYLES = ['sharps', 'flats'] as const;
 
 /** Accepts one curve anchor. */
@@ -756,7 +757,9 @@ export function isViewState(value: unknown): value is ViewState {
     isNumber(value.snapDivision) &&
     isNumber(value.playhead) &&
     isNullableNumber(value.loopStart) &&
-    isNullableNumber(value.loopEnd)
+    isNullableNumber(value.loopEnd) &&
+    (value.activeClip === undefined || isNumber(value.activeClip)) &&
+    (value.others === undefined || isLiteral(OTHERS_VIEWS, value.others))
   );
 }
 

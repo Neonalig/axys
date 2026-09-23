@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { OtherSource } from './sources.js';
 import type {
   Blob,
+  ClipId,
   DriftReport,
   EditState,
   GuideOverlap,
@@ -20,8 +22,15 @@ export interface AppState {
   message: string | null;
   /** What the project is called, or `null` with nothing open. */
   projectName: string | null;
+  /** Detected pitch across the editor's layer. */
   track: PitchTrackArrays | null;
+  /** Blobs of the editor's layer, the clips it edits: one ordered, non-overlapping set. */
   blobs: Blob[];
+  /** The clips of the editor's layer, active clip first. */
+  layer: ClipId[];
+  /** Every clip outside the layer, drawn behind it. */
+  others: OtherSource[];
+  /** Timing conflicts within each clip, across every clip. */
   conflicts: TimingConflict[];
   edits: EditState | null;
   /** The plan the core last compiled from the edits, or null before a project is open. */
@@ -170,6 +179,8 @@ export function initialState(): AppState {
     projectName: null,
     track: null,
     blobs: [],
+    layer: [],
+    others: [],
     conflicts: [],
     edits: null,
     plan: null,
@@ -213,7 +224,7 @@ export function projectEnd(state: AppState): number {
   for (const reference of edits.references) {
     end = Math.max(end, reference.position + reference.source.duration);
   }
-  for (const blob of state.blobs) {
+  for (const blob of [...state.blobs, ...state.others.flatMap((other) => other.blobs)]) {
     end = Math.max(end, blob.start + blob.timeOffset + (blob.end - blob.start) * blob.timeScale);
   }
   return end;

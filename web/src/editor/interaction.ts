@@ -8,6 +8,7 @@ import {
   withRange,
 } from '../app/selection.js';
 import type { TimeRange } from '../app/selection.js';
+import { othersOf } from '../app/sources.js';
 import { projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Interp, ViewState } from '../core/types.js';
@@ -19,6 +20,7 @@ import {
   outputToSource,
   sourceToOutput,
   titleRect,
+  TITLE_HEIGHT,
 } from './layers/blobs.js';
 import { MARQUEE_CURSOR } from './cursors.js';
 import { referenceRect } from './layers/references.js';
@@ -45,9 +47,7 @@ import {
   describeHit,
   EDGE_GRIP,
   FINE_FACTOR,
-  freePosition,
   gestureAnchors,
-  insertPoint,
   modifiersOf,
   moveBezierHandle,
   sampleBezier,
@@ -77,6 +77,8 @@ export interface EditorControllerOptions {
   announce?(message: string): void;
   /** Opens the menu for what was right-clicked, at a viewport position. */
   contextMenu?(hit: Hit, at: { x: number; y: number }): void;
+  /** Brings a clip outside the editor's layer forward, so its blobs can be edited. */
+  focus?(clip: number): void;
 }
 
 type Point = { x: number; y: number };
@@ -104,8 +106,6 @@ type Gesture =
       /** How far into the clip the pointer took hold, so the clip does not jump to it. */
       grab: number;
       duration: number;
-      /** Every other clip's span, which the dragged clip may not land over. */
-      others: [number, number][];
       position: number;
     }
   | { kind: 'reference'; reference: number; from: number; grab: number; position: number };
@@ -615,7 +615,7 @@ export class EditorController {
       return;
     }
     const point = this.#pointOf(event);
-    const hit = this.hitTest(point.x, point.y);
+    const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
     const modifiers = modifiersOf(event);
     this.#canvas.focus();
     capturePointer(this.#canvas, event.pointerId);
@@ -623,7 +623,7 @@ export class EditorController {
     this.#origin = point;
     this.#current = point;
     this.#moved = false;
-    this.#gesture = this.#beginGesture(state, hit, modifiers);
+    this.#gesture = this.#beginGesture(this.#store.state, hit, modifiers);
     // A band being dragged is not the select tool resting over a blob, so it says so for as long
     // as it lasts rather than leaving the arrow up while a marquee is being drawn.
     if (this.#gesture?.kind === 'rubberBand') {
@@ -674,6 +674,43 @@ export class EditorController {
   };
 
   /**
+   * The clip outside the editor's layer whose blob or title is under a point, or `null`.
+   *
+   * @remarks Only while the others are shown; dimmed or hidden, they are never hit.
+   */
+  #otherClipAt(point: Point): number | null {
+    const state = this.#store.state;
+    if (othersOf(state.view) !== 'show') return null;
+    const viewport = this.viewport;
+    for (const other of state.others) {
+      for (const blob of other.blobs) {
+        const x0 = viewport.timeToX(blobOutputStart(blob));
+        const x1 = viewport.timeToX(blobOutputEnd(blob));
+        if (point.x < x0 || point.x > x1) continue;
+        const extent = blobPitchExtent(blob, other.track);
+        const top = viewport.midiToY(extent.high) - TITLE_HEIGHT;
+        const bottom = viewport.midiToY(extent.low) + BODY_SLACK;
+        if (point.y >= top && point.y <= bottom) return other.clip;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Brings forward the clip behind a point where nothing of the layer is hit, and hits again.
+   *
+   * @remarks The layer is in front, so a click that lands on it acts on it. Where it lands on a
+   * clip behind instead, that clip comes forward and the click acts on it.
+   */
+  #bringForward(point: Point, hit: Hit): Hit {
+    if (hit.kind !== 'empty' && hit.kind !== 'conflict') return hit;
+    const clip = this.#otherClipAt(point);
+    if (clip === null || this.#options.focus === undefined) return hit;
+    this.#options.focus(clip);
+    return this.hitTest(point.x, point.y);
+  }
+
+  /**
    * Reads what is under `point` into the hover readout and its guides.
    *
    * @remarks Outside a gesture it also sets the cursor for what is there. During one the cursor
@@ -691,7 +728,14 @@ export class EditorController {
         this.#canvas.style.cursor = 'grab';
       }
     }
-    this.#renderer?.setHover({ x: point.x, y: point.y, text: describeHit(hit, state) });
+    const behind =
+      hit.kind === 'empty' || hit.kind === 'conflict' ? this.#otherClipAt(point) : null;
+    const clip = behind === null ? undefined : state.edits?.clips.find((c) => c.id === behind);
+    if (clip !== undefined && this.#gesture === null) {
+      this.#canvas.style.cursor = 'pointer';
+    }
+    const text = clip === undefined ? describeHit(hit, state) : `Edit ${displayTitle(clip)}`;
+    this.#renderer?.setHover({ x: point.x, y: point.y, text });
     this.#renderer?.setHoverBlob(hit.blob);
   }
 
@@ -731,8 +775,8 @@ export class EditorController {
     }
     event.preventDefault();
     const point = this.#pointOf(event);
-    const hit = this.hitTest(point.x, point.y);
-    if (hit.blob !== null && !state.selection.blobs.includes(hit.blob)) {
+    const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
+    if (hit.blob !== null && !this.#store.state.selection.blobs.includes(hit.blob)) {
       const blob = this.#blob(hit.blob);
       if (blob !== undefined) {
         this.#selectSpan(blobOutputStart(blob), blobOutputEnd(blob));
@@ -928,16 +972,12 @@ export class EditorController {
     if (clip === undefined) {
       return null;
     }
-    const others = (state.edits?.clips ?? [])
-      .filter((entry) => entry.id !== id)
-      .map((entry): [number, number] => [entry.position, entry.position + entry.source.duration]);
     return {
       kind: 'clip',
       clip: id,
       from: clip.position,
       grab: time - clip.position,
       duration: clip.source.duration,
-      others,
       position: clip.position,
     };
   }
@@ -957,22 +997,12 @@ export class EditorController {
       this.endDrop();
       return null;
     }
-    const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false });
-    // A vocal cannot land inside another, so the marker goes where it will be inserted. A
-    // reference overlaps freely and lands where it was let go, which the label says when the two
-    // differ.
-    const spans = (this.#store.state.edits?.clips ?? []).map((clip): [number, number] => [
-      clip.position,
-      clip.position + clip.source.duration,
-    ]);
-    const vocal = insertPoint(spans, time);
+    const time = this.#placeTime(this.viewport.xToTime(x), { ...modifiers, fine: false }, false);
+    // A vocal and a reference both land where they are let go, over whatever is there.
     this.#renderer?.setPreview({
       kind: 'drop',
-      time: vocal,
-      label:
-        vocal === time
-          ? `Import At ${formatClock(time, 0.001)}`
-          : `Vocal At ${formatClock(vocal, 0.001)}  Reference At ${formatClock(time, 0.001)}`,
+      time,
+      label: `Import At ${formatClock(time, 0.001)}`,
     });
     return time;
   }
@@ -1145,8 +1175,8 @@ export class EditorController {
         break;
       }
       case 'clip': {
-        const wanted = this.#placeTime(time - gesture.grab, modifiers);
-        gesture.position = freePosition(gesture.others, gesture.duration, wanted);
+        // Lands where it is let go, over any clip already there; only the grid pulls on it.
+        gesture.position = this.#placeTime(time - gesture.grab, modifiers, false);
         break;
       }
       case 'reference':
@@ -1372,7 +1402,7 @@ export class EditorController {
         if (this.#moved) {
           if (gesture.position !== gesture.from) {
             this.#commit(
-              { type: 'moveClip', clip: gesture.clip, position: gesture.position },
+              { type: 'moveClip', clip: gesture.clip, position: gesture.position, exact: true },
               `Move Clip ${formatClock(gesture.position, 0.001)}`,
             );
           }
@@ -1576,11 +1606,15 @@ export class EditorController {
   /**
    * Where a clip, a reference or a dropped file is put: the start with Ctrl, the playhead with
    * Shift, and otherwise `seconds` snapped. Never negative.
+   *
+   * @remarks Without `edges`, only the grid pulls on it, not the edges of the blobs already there.
    */
-  #placeTime(seconds: number, modifiers: Modifiers): number {
+  #placeTime(seconds: number, modifiers: Modifiers, edges = true): number {
     if (modifiers.snap) return 0;
     if (modifiers.constrain) return this.#playhead();
-    return Math.max(0, this.#snapTime(seconds, modifiers));
+    if (modifiers.fine) return Math.max(0, seconds);
+    const context = edges ? this.#snapContext() : { ...this.#snapContext(), blobs: [] };
+    return Math.max(0, snapTime(seconds, context));
   }
 
   #snapTime(seconds: number, modifiers: Modifiers): number {

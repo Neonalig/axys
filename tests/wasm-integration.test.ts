@@ -485,6 +485,7 @@ describe('wasm boundary', () => {
         '',
         100,
         false,
+        false,
       );
       expect(clip).toBe(1);
       expect((JSON.parse(scoped.historyJson()) as HistoryJson).undo).toBe('Import Clip');
@@ -521,6 +522,7 @@ describe('wasm boundary', () => {
           analysis.blobsJson(),
           '',
           0,
+          false,
           false,
         ),
       ).toThrow(/Hz/);

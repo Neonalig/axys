@@ -391,8 +391,8 @@ export type EditOp =
   | { type: 'setExcluded'; blob: BlobId; excluded: boolean }
   | { type: 'setGain'; blob: BlobId; gainDb: number }
   | { type: 'deleteBlobs'; blobs: BlobId[] }
-  | { type: 'addClip'; clip: Clip }
-  | { type: 'moveClip'; clip: ClipId; position: number }
+  | { type: 'addClip'; clip: Clip; ripple?: boolean; exact?: boolean }
+  | { type: 'moveClip'; clip: ClipId; position: number; exact?: boolean }
   | { type: 'removeClip'; clip: ClipId }
   | { type: 'addReference'; reference: Reference }
   | { type: 'moveReference'; reference: ReferenceId; position: number }
@@ -621,7 +621,22 @@ export interface ViewState {
   playhead: number;
   loopStart: number | null;
   loopEnd: number | null;
+  /** The clip in front, which the editor edits; absent is the first clip. */
+  activeClip?: ClipId;
+  /** How the clips outside the active layer are shown; absent is `show`. */
+  others?: OthersView;
 }
+
+/**
+ * How the clips outside the active layer are shown and reached.
+ *
+ * @remarks `show` draws them behind the layer, where a click brings one forward. `dim` and `hide`
+ * edit the active clip alone, with the others faint or not drawn.
+ */
+export type OthersView = 'show' | 'dim' | 'hide';
+
+/** Every {@link OthersView}, in the order they are offered. */
+export const OTHERS_VIEWS: readonly OthersView[] = ['show', 'dim', 'hide'];
 
 /** A complete saved project. */
 export interface Project {

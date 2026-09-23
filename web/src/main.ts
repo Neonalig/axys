@@ -18,6 +18,7 @@ import { bindShortcuts } from './app/shortcuts.js';
 import { clampInspectorWidth, loadPreferences, savePreferences } from './app/preferences.js';
 import type { ThemeChoice } from './app/preferences.js';
 import { emptySelection, selectionForRanges } from './app/selection.js';
+import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js';
 import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
@@ -28,11 +29,13 @@ import { browserLabel } from './browser.js';
 import { isSupported, probeCapabilities } from './capabilities.js';
 import type { Capability } from './capabilities.js';
 import { isViewState } from './core/json.js';
+import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, Session } from './core/wasm.js';
 import { sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
+  Clip,
   ClipId,
   EditOp,
   EditState,
@@ -40,6 +43,8 @@ import type {
   GuideOverlap,
   MappingProposal,
   MixerSettings,
+  OthersView,
+  PitchTrackArrays,
   Reference,
   ReferenceId,
   RenderPlan,
@@ -200,6 +205,8 @@ class AxysWorkspace implements Workspace {
   #missing: MissingMedia = { clips: [], references: [] };
   /** Each reference's channels at the project rate, kept so the engine can be handed copies. */
   readonly #references = new Map<ReferenceId, Float32Array[]>();
+  /** Each clip's detected pitch in its own source seconds, read once for drawing it behind. */
+  readonly #clipTracks = new Map<ClipId, PitchTrackArrays>();
   #importing = false;
   /** Whether an open operation has a group applied that Apply keeps and Discard takes back. */
   #previewing = false;
@@ -255,6 +262,8 @@ class AxysWorkspace implements Workspace {
       projectName: null,
       track: null,
       blobs: [],
+      layer: [],
+      others: [],
       conflicts: [],
       edits: null,
       plan: null,
@@ -279,6 +288,7 @@ class AxysWorkspace implements Workspace {
     this.#session = null;
     this.#missing = { clips: [], references: [] };
     this.#references.clear();
+    this.#clipTracks.clear();
     this.#plan = null;
     this.#projectId = null;
     clearPeaks();
@@ -517,12 +527,17 @@ class AxysWorkspace implements Workspace {
    *
    * @remarks `position` is project seconds, and defaults to the end of the lane so a take
    * stitches onto the one before it. A position that would overlap a clip lands on the nearest
-   * free one, or with `ripple` stays where it is and moves the clips after it later. The audio is
+   * free one, with `exact` lands there over whatever is there, or with `ripple` stays where it is
+   * and moves the clips after it later. The audio is
    * decoded at the project's rate, because every clip is held at one. The decoded waveform is
    * shown where the clip lands while it is analysed, and the view moves to it when it lands out
    * of sight. Resolves with where the clip ends, or `null` when it was not imported.
    */
-  async importClipFile(file: File, position?: number, ripple = false): Promise<number | null> {
+  async importClipFile(
+    file: File,
+    position?: number,
+    placement: 'free' | 'exact' | 'ripple' = 'free',
+  ): Promise<number | null> {
     const session = this.#session;
     if (!session) {
       await this.openAudioFile(file);
@@ -543,9 +558,12 @@ class AxysWorkspace implements Workspace {
         clip.position + clip.source.duration,
       ]);
       const wanted = position ?? laneEnd(this.#store.state);
-      const at = ripple
-        ? rippleInsert(spans, decoded.duration, wanted).position
-        : freePosition(spans, decoded.duration, wanted);
+      const at =
+        placement === 'exact'
+          ? Math.max(0, wanted)
+          : placement === 'ripple'
+            ? rippleInsert(spans, decoded.duration, wanted).position
+            : freePosition(spans, decoded.duration, wanted);
       buildPeaks(decoded.mono, rate, decoded.fingerprint);
       this.#onPending?.({
         position: at,
@@ -561,11 +579,14 @@ class AxysWorkspace implements Workspace {
         trackJson: analysed.trackJson,
         blobsJson: analysed.blobsJson,
         position: at,
-        ripple,
+        ripple: placement === 'ripple',
+        exact: placement === 'exact',
       });
       buildPeaks(analysed.samples, rate, fingerprintOf(analysed.samples));
       this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
       this.#idle();
+      // A clip just brought in is what is being worked on, so it comes forward.
+      this.#store.update({ view: { ...this.#store.state.view, activeClip: clip } });
       this.#publish();
       const placed = session.state().clips.find((entry) => entry.id === clip);
       if (placed) this.#reveal(placed.position);
@@ -603,10 +624,9 @@ class AxysWorkspace implements Workspace {
    * Takes audio dropped on an open project: a relink when the project is waiting for it, and
    * otherwise a vocal or a reference, whichever the user answers.
    *
-   * @remarks One question for everything dropped at once. The first vocal goes at `position`,
-   * and each after it follows the one before. A vocal dropped at a position is inserted there,
-   * moving the clips after it later rather than landing wherever there happens to be room. Every
-   * reference goes at `position`.
+   * @remarks One question for everything dropped at once. Every file dropped at a position goes
+   * there, over whatever is already there, so stems dropped together line up. With no position
+   * each vocal follows the one before, from the end of the project.
    */
   async dropAudio(files: readonly File[], position: number | null): Promise<void> {
     if (this.#hasMissing()) {
@@ -618,7 +638,8 @@ class AxysWorkspace implements Workspace {
     let next = position;
     for (const file of files) {
       if (role === 'vocal') {
-        next = (await this.importClipFile(file, next ?? undefined, next !== null)) ?? next;
+        if (position !== null) await this.importClipFile(file, position, 'exact');
+        else next = (await this.importClipFile(file, next ?? undefined)) ?? next;
       } else {
         await this.importReferenceFile(file, position ?? 0);
       }
@@ -994,17 +1015,48 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  proposeMappings(): MappingProposal | null {
+  proposeMappings(clips?: readonly ClipId[]): MappingProposal | null {
     const session = this.#session;
     if (!session) return null;
     try {
-      const proposal = session.proposeMappingsPreview();
+      const proposal = session.proposeMappingsPreview(clips);
       this.#store.update({ mappingReport: proposal.report });
       return proposal;
     } catch (error) {
       this.#fail('Align Guide', error);
       return null;
     }
+  }
+
+  focus(clip: ClipId | null, others?: OthersView): void {
+    const session = this.#session;
+    const edits = this.#store.state.edits;
+    if (!session || edits === null) return;
+    const current = this.#store.state.view;
+    const view: ViewState = { ...current, others: others ?? othersOf(current) };
+    if (clip === null) delete view.activeClip;
+    else view.activeClip = clip;
+    try {
+      const plans = session.clipPlans();
+      const patch = this.#readLayer(session, edits, plans, view);
+      const state = this.#store.state;
+      const kept =
+        patch.layer.length === state.layer.length &&
+        patch.layer.every((id) => state.layer.includes(id));
+      this.#audio.setPlans(plans, patch.plan);
+      this.#store.update({
+        ...patch,
+        view,
+        // A span over one layer names other blobs over the next, so a new layer starts clear.
+        selection: kept
+          ? selectionForRanges(patch.blobs, state.selection.ranges)
+          : emptySelection(),
+      });
+    } catch (error) {
+      this.#fail('Focus Clip', error);
+      return;
+    }
+    this.#autosave?.markDirty();
   }
 
   /**
@@ -1213,11 +1265,7 @@ class AxysWorkspace implements Workspace {
     // A fresh import has no file of its own yet, so the next Save asks where it goes.
     if (view === null) this.#projectFile = null;
 
-    const blobs = session.blobs();
-    const track = session.track();
-    const plan = session.plan();
     const edits = session.state();
-    this.#plan = plan;
     this.#projectId = id ?? newProjectId();
 
     const rate = session.sampleRate();
@@ -1241,7 +1289,9 @@ class AxysWorkspace implements Workspace {
         reference.position,
       );
     }
-    this.#audio.setPlans(plans, plan);
+    const layer = this.#readLayer(session, edits, plans, view ?? this.#store.state.view);
+    const blobs = layer.blobs;
+    this.#audio.setPlans(plans, layer.plan);
     this.#audio.placeReferences(edits.references);
     this.#audio.setMixer(edits.mixer);
     this.#audio.setLoop(null);
@@ -1260,10 +1310,7 @@ class AxysWorkspace implements Workspace {
       phase: 'ready',
       message: null,
       projectName: edits.name,
-      track,
-      blobs,
-      plan,
-      conflicts: session.conflicts(),
+      ...layer,
       edits,
       midi: session.midi(),
       mappingReport: null,
@@ -1393,24 +1440,21 @@ class AxysWorkspace implements Workspace {
     const session = this.#session;
     if (!session) return;
     try {
-      const plan = session.plan();
-      this.#plan = plan;
       const edits = session.state();
-      this.#audio.setPlans(session.clipPlans(), plan);
+      const plans = session.clipPlans();
+      const layer = this.#readLayer(session, edits, plans, this.#store.state.view);
+      const blobs = layer.blobs;
+      this.#audio.setPlans(plans, layer.plan);
       this.#audio.placeReferences(edits.references);
       // The desk is monitoring rather than a plan input, so it reaches the worklet on its own
       // path. It still travels with the project, which is why it is read back from the session.
       this.#audio.setMixer(edits.mixer);
-      const blobs = session.blobs();
       this.#store.update({
-        blobs,
         // The track moves with the clips, so it is read again whenever a clip may have moved.
-        track: session.track(),
         // The plan is what correction, guidance and modulation actually amount to, and the
         // editor draws the pitch target from it. Leaving it out drew the blob edits alone, so
         // an operation the plan carried moved nothing on screen.
-        plan,
-        conflicts: session.conflicts(),
+        ...layer,
         edits,
         // Renaming is an ordinary edit, so the name comes back with the rest of the state and
         // needs no path of its own.
@@ -1427,6 +1471,57 @@ class AxysWorkspace implements Workspace {
       return;
     }
     this.#autosave?.markDirty();
+  }
+
+  /**
+   * Reads the editor's layer for a view's focus, and every clip outside it.
+   *
+   * @remarks Sets the session's focus as it goes, so what the core answers afterwards is about
+   * the same layer.
+   */
+  #readLayer(
+    session: Session,
+    edits: EditState,
+    plans: readonly ClipPlan[],
+    view: ViewState,
+  ): Pick<AppState, 'blobs' | 'track' | 'conflicts' | 'layer' | 'others'> & { plan: RenderPlan } {
+    session.setFocus(view.activeClip ?? null, othersOf(view) !== 'show');
+    const plan = session.plan();
+    this.#plan = plan;
+    const layer = session.layer();
+    const others = otherSources(
+      edits,
+      layer,
+      session.otherBlobs(),
+      (clip: Clip) => {
+        const track = this.#clipTrack(session, clip.id);
+        return track === null ? null : placeTrack(track, clip);
+      },
+      (clip: Clip) => {
+        const placed = plans.find((entry) => entry.clip === clip.id);
+        return placed === undefined ? null : placePlan(placed.plan, clip.position);
+      },
+    );
+    return {
+      blobs: session.blobs(),
+      track: session.track(),
+      plan,
+      conflicts: session.conflicts(),
+      layer,
+      others,
+    };
+  }
+
+  #clipTrack(session: Session, clip: ClipId): PitchTrackArrays | null {
+    const known = this.#clipTracks.get(clip);
+    if (known !== undefined) return known;
+    try {
+      const track = session.clipTrack(clip);
+      this.#clipTracks.set(clip, track);
+      return track;
+    } catch {
+      return null;
+    }
   }
 
   #progress(stage: string, progress: number): void {
@@ -2199,6 +2294,9 @@ async function start(): Promise<void> {
           : referenceMenu(reference, hooks),
         at,
       );
+    },
+    focus: (clip) => {
+      workspace.focus(clip);
     },
   });
   context = { store, editor, audio, toast, workspace, chrome: shell };

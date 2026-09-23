@@ -12,6 +12,7 @@ import type {
 } from '../../core/types.js';
 import { clipOf, displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
+import { sourceTheme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 
 /** Half-height in semitones of the smallest blob body. */
@@ -313,10 +314,12 @@ export function drawBlobs(
     const monitor = monitorOf(blob);
     const alpha = monitor === 'processed' ? 1 : monitor === 'original' ? 0.28 : 0.55;
     const isSelected = selected.has(blob.id);
-    drawBlob(ctx, state, viewport, theme, blob, isSelected, alpha, showHandles);
+    // Each clip has colours of its own, so a blob always says which source it belongs to.
+    const tint = sourceTheme(theme, clipOf(blob.id));
+    drawBlob(ctx, state, viewport, tint, blob, isSelected, alpha, showHandles);
     const scrolled = marquee !== null && marquee.blob === blob.id ? marquee.elapsed : null;
     scrolling =
-      drawTitle(ctx, state, viewport, theme, blob, isSelected, alpha, scrolled) || scrolling;
+      drawTitle(ctx, state, viewport, tint, blob, isSelected, alpha, scrolled) || scrolling;
   }
 
   for (const conflict of state.conflicts) {
