@@ -129,10 +129,8 @@ export function drawReferenceBand(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.text;
-  ctx.fillText(
-    displayTitle(reference),
-    Math.max(rect.x, PITCH_LABEL_GUTTER) + 4,
-    rect.y + rect.height / 2,
-  );
+  // On the device grid, so the name does not blur and sharpen as the band slides.
+  const titleX = Math.round((Math.max(rect.x, PITCH_LABEL_GUTTER) + 4) * viewport.ratio);
+  ctx.fillText(displayTitle(reference), titleX / viewport.ratio, rect.y + rect.height / 2);
   ctx.restore();
 }
