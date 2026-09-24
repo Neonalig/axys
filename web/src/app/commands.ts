@@ -144,6 +144,8 @@ export interface Workspace {
    * picker, which is how a copy is saved somewhere else.
    */
   saveProject(askWhere?: boolean): Promise<void>;
+  /** Writes the project and its audio as one file, asking where. */
+  saveProjectWithAudio(): Promise<void>;
 
   /** Closes what is open and returns the editor to an empty project. */
   newProject(): Promise<void>;
@@ -613,6 +615,15 @@ export function buildCommands(): Command[] {
       enabled: ready,
       run: async (ctx) => {
         await ctx.workspace.saveProject(true);
+      },
+    },
+    {
+      id: 'file.saveProjectWithAudio',
+      label: 'Save with Audio',
+      group: 'File',
+      enabled: ready,
+      run: async (ctx) => {
+        await ctx.workspace.saveProjectWithAudio();
       },
     },
     {

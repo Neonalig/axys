@@ -192,6 +192,7 @@ function pickWithInput(accept: string): Promise<File | null> {
  */
 export const OPENABLE: readonly FileKind[] = [
   { description: 'Axys Project', accept: { 'application/json': ['.axys.json', '.json'] } },
+  { description: 'Axys Project with Audio', accept: { 'application/zip': ['.axys'] } },
   {
     description: 'Audio',
     accept: {
@@ -221,6 +222,11 @@ export const IMPORTABLE: readonly FileKind[] = [...AUDIO_KIND, ...MIDI_KIND];
 /** The project document kind, for saving. */
 export const PROJECT_KIND: readonly FileKind[] = [
   { description: 'Axys Project', accept: { 'application/json': ['.axys.json'] } },
+];
+
+/** The packaged project kind, for saving a project with its audio. */
+export const PACKAGE_KIND: readonly FileKind[] = [
+  { description: 'Axys Project with Audio', accept: { 'application/zip': ['.axys'] } },
 ];
 
 /** The audio kinds an export may be written as. */

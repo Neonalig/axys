@@ -77,12 +77,15 @@ import {
   IMPORTABLE,
   openFile,
   OPENABLE,
+  PACKAGE_KIND,
   PROJECT_KIND,
   saveFileAs,
   writeFile,
 } from './persistence/file-access.js';
 import type { FileHandle } from './persistence/file-access.js';
 import { importProject } from './persistence/project-io.js';
+import { isPackage, PACKAGE_EXTENSION, packProject, unpackProject } from './persistence/package.js';
+import type { PackagedMedia } from './persistence/package.js';
 import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
@@ -1044,11 +1047,33 @@ class AxysWorkspace implements Workspace {
     }
   }
 
+  /**
+   * Opens a project file, either a document or a package carrying its own audio.
+   *
+   * @remarks A package's audio is attached as it opens and kept on the device, so nothing in it
+   * needs relinking here or later.
+   */
   async openProjectFile(file: File, ask = false): Promise<void> {
     if (ask && !(await this.#mayReplaceProject())) return;
     try {
-      const imported = await importProject(file, (json) => this.#core.readProject(json));
-      await this.#openProject(imported.json, null);
+      if (!(await isPackage(file))) {
+        const imported = await importProject(file, (json) => this.#core.readProject(json));
+        await this.#openProject(imported.json, null);
+        return;
+      }
+      this.#progress('Open Project', 0.1);
+      const unpacked = await unpackProject(file);
+      const preloaded = new Map<string, Float32Array>();
+      for (const item of unpacked.media) {
+        preloaded.set(
+          item.key,
+          item.channels.length > 1
+            ? joinChannels(item.channels)
+            : (item.channels[0] ?? new Float32Array(0)),
+        );
+      }
+      await this.#openProject(this.#core.readProject(unpacked.json).json, null, preloaded);
+      for (const [key, samples] of preloaded) void this.#cacheMedia(key, samples);
     } catch (error) {
       this.#fail('Open Project', error);
     }
@@ -1137,6 +1162,62 @@ class AxysWorkspace implements Workspace {
       return;
     }
     await this.#keepLocalCopy(json);
+  }
+
+  /**
+   * Writes the project and every source's audio as one package, always asking where.
+   *
+   * @remarks A copy, like Save As: the file Save writes to stays the document. Audio still
+   * missing is left out and named.
+   */
+  async saveProjectWithAudio(): Promise<void> {
+    const session = this.#session;
+    const json = this.#projectJson();
+    if (!session || json === null) {
+      this.#toast.error('Nothing to save');
+      return;
+    }
+    const rate = session.sampleRate();
+    const media: PackagedMedia[] = [];
+    const packed = new Set<string>();
+    for (const entry of session.media().clips) {
+      if (!entry.attached || packed.has(entry.source.fingerprint)) continue;
+      packed.add(entry.source.fingerprint);
+      media.push({
+        key: entry.source.fingerprint,
+        name: entry.source.name,
+        sampleRate: rate,
+        channels: [session.clipSamples(entry.clip)],
+      });
+    }
+    for (const reference of session.media().references) {
+      const channels = this.#references.get(reference.id);
+      const key = referenceKey(reference.source.fingerprint);
+      if (channels === undefined || packed.has(key)) continue;
+      packed.add(key);
+      media.push({ key, name: reference.source.name, sampleRate: rate, channels });
+    }
+    const name = `${this.projectName}${PACKAGE_EXTENSION}`;
+    try {
+      const handle = await saveFileAs(
+        packProject(json, media),
+        name,
+        PACKAGE_KIND,
+        'application/zip',
+      );
+      if (handle === null && hasHandleSupport()) return;
+      const saved = handle?.name ?? name;
+      const missing = this.#missing.clips.length + this.#missing.references.length;
+      if (missing > 0) {
+        this.#toast.warn(
+          `Saved ${saved} without ${String(missing)} missing ${missing === 1 ? 'file' : 'files'}`,
+        );
+      } else {
+        this.#toast.info(`Saved ${saved}`);
+      }
+    } catch (error) {
+      this.#fail('Save with Audio', error);
+    }
   }
 
   /** Mirrors the document into device storage, so a lost file is not a lost session. */
@@ -1330,16 +1411,23 @@ class AxysWorkspace implements Workspace {
    *
    * @remarks A project whose audio is not all here still opens and edits. What is missing is
    * named, and the next audio file opened is checked against it. `id` is the recovery copy it
-   * was restored from, or `null` for a project that gets a copy of its own.
+   * was restored from, or `null` for a project that gets a copy of its own. `preloaded` holds
+   * audio by media store key, read ahead of the device's own.
    */
-  async #openProject(json: string, id: string | null): Promise<void> {
+  async #openProject(
+    json: string,
+    id: string | null,
+    preloaded?: ReadonlyMap<string, Float32Array>,
+  ): Promise<void> {
     this.#progress('Open Project', 0.3);
     const session = this.#core.openSession(json);
     const references = new Map<ReferenceId, Float32Array[]>();
     const missing: MissingMedia = { clips: [], references: [] };
     const media = session.media();
     for (const entry of media.clips) {
-      const samples = await this.#readMedia(entry.source.fingerprint);
+      const samples =
+        preloaded?.get(entry.source.fingerprint) ??
+        (await this.#readMedia(entry.source.fingerprint));
       if (samples === null) {
         missing.clips.push({ clip: entry.clip, source: entry.source });
         continue;
@@ -1356,7 +1444,8 @@ class AxysWorkspace implements Workspace {
       }
     }
     for (const reference of media.references) {
-      const stored = await this.#readMedia(referenceKey(reference.source.fingerprint));
+      const key = referenceKey(reference.source.fingerprint);
+      const stored = preloaded?.get(key) ?? (await this.#readMedia(key));
       if (stored === null) {
         missing.references.push(reference);
         continue;
@@ -2174,7 +2263,9 @@ function describeFiles(files: readonly File[]): string {
 
 function kindOf(file: File): 'project' | 'midi' | 'audio' {
   const name = file.name.toLowerCase();
-  if (name.endsWith('.axys.json') || name.endsWith('.json')) return 'project';
+  if (name.endsWith('.axys.json') || name.endsWith('.json') || name.endsWith(PACKAGE_EXTENSION)) {
+    return 'project';
+  }
   if (name.endsWith('.mid') || name.endsWith('.midi') || file.type === 'audio/midi') return 'midi';
   return 'audio';
 }

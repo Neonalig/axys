@@ -1412,6 +1412,16 @@ length so every blob stays where it was, and the clip keeps its recorded `Source
 relink is still checked against the original. A decoder of its own in the core for WAV would make
 the fingerprint agree across browsers; lossy formats would still need the leniency.
 
+### A project can carry its audio
+
+Audio lives in the browser's own storage, so a `.axys.json` opened in another browser or on another
+machine has none, however deterministic the decoding. Save with Audio writes a `.axys` package
+instead: a plain zip holding the document and each source's decoded PCM as a float WAV. Storing
+the PCM rather than the original file keeps a package exact, since the fingerprint is taken from
+that PCM, and works for audio imported before the original was ever kept. The cost is size: a
+float WAV is larger than the MP3 or FLAC it came from. The light `.axys.json` stays the default
+for Save, and Save with Audio is a copy like Save As, so Save goes on writing the document.
+
 ### File access prefers the host's own picker
 
 `persistence/file-access.ts` uses the File System Access API where it exists, which gives one picker

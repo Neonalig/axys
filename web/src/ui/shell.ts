@@ -42,7 +42,7 @@ import { Inspector } from './inspector.js';
 import { MixerPanel } from './mixer.js';
 import { showContextMenu } from './menu.js';
 import { showCheatsheet, showCommandPalette } from './palette.js';
-import type { MenuEntry } from './menu.js';
+import type { MenuEntry, MenuItem } from './menu.js';
 import type { AccentName } from './accent.js';
 import { ACCENT_LABELS, ACCENT_NAMES, DEFAULT_ACCENT, accentTokens } from './accent.js';
 import { THEME_LABELS, THEME_NAMES, currentTheme, isDarkTheme } from './theme.js';
@@ -214,7 +214,7 @@ const SHORT_LABEL: Readonly<Record<string, string>> = {
 interface ButtonMenu {
   /** Second tooltip line saying the menu is there. */
   hint: string;
-  /** Whether a click opens the menu rather than running the command. */
+  /** Whether a click opens the menu rather than running the command. One usable item runs. */
   onClick?: boolean;
   entries(shell: AppShell): MenuEntry[] | Promise<MenuEntry[]>;
 }
@@ -382,7 +382,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
     ],
   },
   'file.saveProject': {
-    hint: 'Right-click for Save As (Ctrl+Shift+S)',
+    hint: 'Right-click for Save As and Save with Audio',
     entries: (shell) => [
       {
         label: 'Save Project',
@@ -400,6 +400,14 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
         enabled: shell.can('file.saveProjectAs'),
         run: () => {
           shell.run('file.saveProjectAs');
+        },
+      },
+      {
+        label: 'Save with Audio',
+        icon: 'save',
+        enabled: shell.can('file.saveProjectWithAudio'),
+        run: () => {
+          shell.run('file.saveProjectWithAudio');
         },
       },
     ],
@@ -1508,10 +1516,29 @@ export class AppShell {
   #press(id: string, button: HTMLButtonElement): void {
     const menu = BUTTON_MENUS[id];
     if (menu?.onClick === true) {
-      void this.#openButtonMenu(button, menu.entries);
+      void this.#pressMenu(button, menu.entries);
       return;
     }
     this.#hooks.runCommand(id);
+  }
+
+  /** Opens a button's menu when it offers a choice, and runs its one usable item when not. */
+  async #pressMenu(
+    button: HTMLButtonElement,
+    entries: (shell: AppShell) => MenuEntry[] | Promise<MenuEntry[]>,
+  ): Promise<void> {
+    const list = await entries(this);
+    const usable = list.filter(
+      (entry): entry is MenuItem =>
+        !('separator' in entry) && !('render' in entry) && entry.enabled !== false,
+    );
+    const only = usable[0];
+    if (usable.length === 1 && only !== undefined && !list.some((entry) => 'render' in entry)) {
+      only.run();
+      return;
+    }
+    const bounds = button.getBoundingClientRect();
+    showContextMenu(list, { x: bounds.left, y: bounds.bottom + 4 }, button);
   }
 
   /** Projects the Open menu offers. */
