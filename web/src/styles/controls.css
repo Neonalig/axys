@@ -30,18 +30,18 @@ button {
     border-color var(--axys-duration-fast) var(--axys-ease-standard);
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled, .is-unavailable) {
   border-color: var(--axys-border-strong);
   background: var(--axys-surface-sunken);
 }
 
-button[aria-pressed='true']:hover:not(:disabled),
-button.is-active:hover:not(:disabled) {
+button[aria-pressed='true']:hover:not(:disabled, .is-unavailable),
+button.is-active:hover:not(:disabled, .is-unavailable) {
   background: color-mix(in srgb, var(--axys-accent) 80%, var(--axys-text));
   color: var(--axys-accent-text);
 }
 
-button:active:not(:disabled) {
+button:active:not(:disabled, .is-unavailable) {
   transform: translateY(1px);
 }
 

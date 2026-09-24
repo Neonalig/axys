@@ -650,9 +650,10 @@ export class MediaStore {
 }
 ```
 
-`persistence/package.ts` exports `packProject(json, media)` and `unpackProject(file)` for a `.axys`
-package: a zip of `project.axys.json`, `manifest.json` and each source's PCM as a 32-bit float WAV
-under `audio/`, keyed in the manifest by its media store key. Save with Audio writes one, and
+`persistence/package.ts` exports `packProject(json, media, onProgress?)` and
+`unpackProject(file, onProgress?)` for a `.axys` package: a zip of `project.axys.json`,
+`manifest.json` and each source's PCM as a WAV at the smallest exact depth, 16-bit, 24-bit or
+32-bit float, under `audio/`, keyed in the manifest by its media store key. Save with Audio writes one, and
 Open, Import and a drop open one, attaching and caching its audio. `isPackage(file)` tells one
 from a document.
 

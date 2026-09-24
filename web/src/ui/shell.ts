@@ -41,7 +41,7 @@ import type { Dialog } from './dialog.js';
 import { Inspector } from './inspector.js';
 import type { InspectorTab } from './inspector.js';
 import { MixerPanel } from './mixer.js';
-import { showContextMenu } from './menu.js';
+import { claimContextMenu, showContextMenu } from './menu.js';
 import { showCheatsheet, showCommandPalette } from './palette.js';
 import type { MenuEntry, MenuItem } from './menu.js';
 import type { AccentName } from './accent.js';
@@ -220,6 +220,23 @@ interface ButtonMenu {
   /** Whether a click opens the menu rather than running the command. One usable item runs. */
   onClick?: boolean;
   entries(shell: AppShell): MenuEntry[] | Promise<MenuEntry[]>;
+}
+
+/**
+ * Marks a toolbar button available or not.
+ *
+ * @remarks Not the native `disabled`, which takes every pointer event from the button, so a
+ * right-click would reach the browser's menu instead of the button's own.
+ */
+function setAvailable(button: HTMLButtonElement, available: boolean): void {
+  button.classList.toggle('is-unavailable', !available);
+  if (available) button.removeAttribute('aria-disabled');
+  else button.setAttribute('aria-disabled', 'true');
+}
+
+/** Whether a toolbar button is marked unavailable, so a press does nothing. */
+function unavailable(button: HTMLButtonElement): boolean {
+  return button.classList.contains('is-unavailable');
 }
 
 /** A separator in a list of command ids given to {@link commandMenu}. */
@@ -1165,7 +1182,7 @@ export class AppShell {
   update(state: AppState): void {
     this.#state = state;
     for (const [id, entry] of this.#commandButtons) {
-      entry.button.disabled = !this.#hooks.isCommandEnabled(id);
+      setAvailable(entry.button, this.#hooks.isCommandEnabled(id));
     }
 
     const playing = state.transport.playing;
@@ -1190,11 +1207,11 @@ export class AppShell {
 
     for (const [mode, button] of this.#modeButtons) {
       button.setAttribute('aria-pressed', String(state.editMode === mode));
-      button.disabled = state.phase !== 'ready';
+      setAvailable(button, state.phase === 'ready');
     }
     for (const [tool, button] of this.#toolButtons) {
       button.setAttribute('aria-pressed', String(state.tool === tool));
-      button.disabled = state.phase !== 'ready' || !toolWorksIn(tool, state.editMode);
+      setAvailable(button, state.phase === 'ready' && toolWorksIn(tool, state.editMode));
     }
 
     // Following, looping and the metronome are switches, so each says whether it is on rather
@@ -1477,11 +1494,13 @@ export class AppShell {
     text.textContent = SHORT_LABEL[command.id] ?? command.label;
     const menu = BUTTON_MENUS[command.id];
     button.addEventListener('click', (event) => {
+      if (unavailable(button)) return;
       this.#press(this.#variantOf(command.id, event), button);
     });
-    // Every button answers a right-click; one with nothing more to offer lists its own command.
+    // Every button answers a right-click, an unavailable one too, with its commands greyed out;
+    // one with nothing more to offer lists its own command.
     button.addEventListener('contextmenu', (event) => {
-      event.preventDefault();
+      if (!claimContextMenu(event, button)) return;
       void this.#openButtonMenu(button, menu?.entries ?? ((shell) => menuOf(shell, [command.id])));
     });
     if (MODIFIED[command.id] !== undefined) {
@@ -1916,11 +1935,12 @@ ${tool.tooltip}`,
       });
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
+        if (unavailable(button)) return;
         this.#hooks.runCommand(id);
         this.announce(`${tool.label} selected`);
       });
       button.addEventListener('contextmenu', (event) => {
-        event.preventDefault();
+        if (!claimContextMenu(event, button)) return;
         void this.#openButtonMenu(button, (shell) =>
           menuOf(
             shell,
@@ -1949,11 +1969,12 @@ ${this.#keyed('Next Edit Mode', 'tools.nextEditMode')}`,
       });
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
+        if (unavailable(button)) return;
         this.#hooks.runCommand(`tools.editMode.${mode.id}`);
         this.announce(`${label} selected`);
       });
       button.addEventListener('contextmenu', (event) => {
-        event.preventDefault();
+        if (!claimContextMenu(event, button)) return;
         void this.#openButtonMenu(button, (shell) =>
           menuOf(
             shell,
@@ -1989,7 +2010,7 @@ ${this.#keyed('Next Edit Mode', 'tools.nextEditMode')}`,
     button.setAttribute('aria-label', 'Choose a Theme');
     button.setAttribute('aria-haspopup', 'menu');
     const open = (event: Event): void => {
-      event.preventDefault();
+      if (!claimContextMenu(event, button)) return;
       void this.#openButtonMenu(button, (shell) =>
         // No icon per entry: four copies of the same palette would say nothing, and the mark
         // against the current choice is what the menu is here to show.

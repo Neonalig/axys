@@ -1441,11 +1441,17 @@ Relink, which takes several files at once.
 
 Audio lives in the browser's own storage, so a `.axys.json` opened in another browser or on another
 machine has none, however deterministic the decoding. Save with Audio writes a `.axys` package
-instead: a plain zip holding the document and each source's decoded PCM as a float WAV. Storing
-the PCM rather than the original file keeps a package exact, since the fingerprint is taken from
-that PCM, and works for audio imported before the original was ever kept. The cost is size: a
-float WAV is larger than the MP3 or FLAC it came from. The light `.axys.json` stays the default
-for Save, and Save with Audio is a copy like Save As, so Save goes on writing the document.
+instead: a plain zip holding the document and each source's decoded PCM as a WAV. Storing the PCM
+rather than the original file keeps a package exact, since the fingerprint is taken from that
+PCM, and works for audio imported before the original was ever kept. Each WAV is written at the
+smallest depth that holds its samples exactly: audio decoded from a 16-bit file is whole 16-bit
+steps and goes back to 16 bits, the size of the file it came from, and a vocal mixed to mono from
+stereo 16-bit is half a step finer and fits 24 bits. Only audio with finer steps, resampled or
+decoded from a lossy file, is written as 32-bit float, which is larger than the MP3 it came from.
+Packing and unpacking work a slice at a time with progress, and Save with Audio asks where the file
+goes before it packs, since the save picker only opens straight after a press. The light
+`.axys.json` stays the default for Save, and Save with Audio is a copy like Save As, so Save goes
+on writing the document.
 
 ### File access prefers the host's own picker
 

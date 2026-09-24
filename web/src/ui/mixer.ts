@@ -37,7 +37,7 @@ import type { VocalStrip } from '../audio/mixer.js';
 import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
-import { showContextMenu } from './menu.js';
+import { claimContextMenu, showContextMenu } from './menu.js';
 import type { MenuEntry } from './menu.js';
 import { setTooltip } from './tooltip.js';
 import { referenceColour, resolveTheme, sourceTheme } from './theme.js';
@@ -427,12 +427,16 @@ export class MixerPanel {
    */
   #bindMenu(element: HTMLElement, target: { clip: ClipId } | { reference: ReferenceId }): void {
     element.addEventListener('contextmenu', (event) => {
-      event.preventDefault();
+      if (!claimContextMenu(event, element)) return;
       this.#hooks.selectSource(target);
-      showContextMenu(this.#hooks.commandMenu('clip' in target ? CLIP_MENU : REFERENCE_MENU), {
-        x: event.clientX,
-        y: event.clientY,
-      });
+      showContextMenu(
+        this.#hooks.commandMenu('clip' in target ? CLIP_MENU : REFERENCE_MENU),
+        {
+          x: event.clientX,
+          y: event.clientY,
+        },
+        element,
+      );
     });
   }
 

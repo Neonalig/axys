@@ -133,6 +133,43 @@ export async function saveFileAs(
   return null;
 }
 
+/** Where a save goes: a file chosen in the host's picker, or a download. */
+export type SaveTarget =
+  { kind: 'file'; handle: FileHandle } | { kind: 'download'; name: string; mime: string };
+
+/**
+ * Asks where a save goes, before its data exists.
+ *
+ * @remarks The host's picker only opens straight after a press, so a save that takes a while to
+ * build asks first and writes with {@link writeSaveTarget} once it is built. `null` when the user
+ * cancelled.
+ */
+export async function chooseSaveTarget(
+  suggestedName: string,
+  kinds: readonly FileKind[],
+  mime: string,
+): Promise<SaveTarget | null> {
+  const host = pickers();
+  if (typeof host.showSaveFilePicker !== 'function') {
+    return { kind: 'download', name: suggestedName, mime };
+  }
+  try {
+    return { kind: 'file', handle: await host.showSaveFilePicker({ suggestedName, types: kinds }) };
+  } catch (thrown) {
+    if (isAbort(thrown)) return null;
+    throw thrown;
+  }
+}
+
+/** Writes a save to where {@link chooseSaveTarget} said it goes. */
+export async function writeSaveTarget(target: SaveTarget, data: BlobPart): Promise<void> {
+  if (target.kind === 'file') {
+    await writeFile(target.handle, data);
+  } else {
+    downloadFile(data, target.name, target.mime);
+  }
+}
+
 /** Writes to a file chosen earlier, without asking again. */
 export async function writeFile(handle: FileHandle, data: BlobPart): Promise<void> {
   const stream = await handle.createWritable();

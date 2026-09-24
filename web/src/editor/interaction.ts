@@ -25,6 +25,7 @@ import {
 import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
 import { othersOf } from '../app/sources.js';
 import { blobOffline, projectEnd } from '../app/store.js';
+import { claimContextMenu } from '../ui/menu.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Stroke, ViewState } from '../core/types.js';
 import { clipEnd, clipOf, clipStart, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
@@ -896,7 +897,7 @@ export class EditorController {
     if (state.phase !== 'ready') {
       return;
     }
-    event.preventDefault();
+    if (!claimContextMenu(event, this.#canvas)) return;
     const point = this.#pointOf(event);
     const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
     if (hit.blob !== null && !this.#store.state.selection.blobs.includes(hit.blob)) {

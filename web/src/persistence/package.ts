@@ -4,8 +4,14 @@
  * Projects saved with their audio, as one file.
  *
  * A package is a zip archive: the project document, a manifest, and each source's decoded audio
- * as a 32-bit float WAV at the project rate. The audio is the exact PCM the project fingerprinted,
- * so a package opens anywhere with nothing to relink, and any zip tool can take the audio out.
+ * as a WAV at the project rate. The audio is the exact PCM the project fingerprinted, so a package
+ * opens anywhere with nothing to relink, and any zip tool can take the audio out. Each WAV is
+ * written at the smallest depth that holds its samples exactly: audio decoded from a 16-bit file
+ * goes back to 16 bits, and only audio with finer steps, such as resampled or lossy audio, is
+ * written as 32-bit float.
+ *
+ * Packing and unpacking work through the audio a slice at a time, yielding between slices, so a
+ * large project reports progress instead of holding the page.
  */
 
 import { PersistenceError } from './db.js';
@@ -21,6 +27,12 @@ const MANIFEST_PATH = 'manifest.json';
 
 /** Package layout version this build writes. */
 const PACKAGE_VERSION = 1;
+
+/** Frames worked through between yields to the page. */
+const SLICE_FRAMES = 1 << 17;
+
+/** Receives the fraction of the work done, 0 to 1. */
+export type PackageProgress = (done: number) => void;
 
 /** One source's audio, keyed the way the media store keys it. */
 export interface PackagedMedia {
@@ -44,20 +56,63 @@ interface Manifest {
   media: { key: string; path: string }[];
 }
 
+/** One file in a zip archive, with its checksum. */
+interface ZipEntry {
+  path: string;
+  data: Uint8Array<ArrayBuffer>;
+  crc: number;
+}
+
+/** Lets the page run between slices of work. */
+function yieldToPage(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Counts frames worked through across every source and reports them as a fraction. */
+export class Tally {
+  #done = 0;
+  readonly #total: number;
+  readonly #report: PackageProgress | undefined;
+
+  constructor(total: number, report?: PackageProgress) {
+    this.#total = Math.max(1, total);
+    this.#report = report;
+  }
+
+  /** Counts `frames` more as done, reports, and yields to the page. */
+  async add(frames: number): Promise<void> {
+    this.#done += frames;
+    this.#report?.(Math.min(1, this.#done / this.#total));
+    await yieldToPage();
+  }
+}
+
 /** Builds a package from a project document and its sources' audio. */
-export function packProject(json: string, media: readonly PackagedMedia[]): Blob {
+export async function packProject(
+  json: string,
+  media: readonly PackagedMedia[],
+  onProgress?: PackageProgress,
+): Promise<Blob> {
   const encoder = new TextEncoder();
   const used = new Set<string>();
-  const entries: { path: string; data: Uint8Array<ArrayBuffer> }[] = [];
+  const entries: ZipEntry[] = [];
   const manifest: Manifest = { version: PACKAGE_VERSION, media: [] };
+  // Each source is read three times: to find its depth, to write it and to checksum it.
+  const frames = media.reduce((sum, item) => sum + (item.channels[0]?.length ?? 0), 0);
+  const tally = new Tally(frames * 3, onProgress);
   for (const item of media) {
     const path = uniquePath(`audio/${safeName(item.name)}.wav`, used);
-    entries.push({ path, data: encodeFloatWav(item.channels, item.sampleRate) });
+    const { data, stride } = await encodeWav(item.channels, item.sampleRate, tally);
+    entries.push({ path, data, crc: await crc32(data, tally, stride) });
     manifest.media.push({ key: item.key, path });
   }
+  const text = (path: string, value: string): ZipEntry => {
+    const data = encoder.encode(value);
+    return { path, data, crc: finishCrc(crcOver(CRC_START, data, 0, data.length)) };
+  };
   entries.unshift(
-    { path: DOCUMENT_PATH, data: encoder.encode(json) },
-    { path: MANIFEST_PATH, data: encoder.encode(JSON.stringify(manifest, null, 2)) },
+    text(DOCUMENT_PATH, json),
+    text(MANIFEST_PATH, JSON.stringify(manifest, null, 2)),
   );
   return writeZip(entries);
 }
@@ -67,7 +122,10 @@ export function packProject(json: string, media: readonly PackagedMedia[]): Blob
  *
  * @throws PersistenceError with kind `corrupt` when the file is not a package this build reads.
  */
-export async function unpackProject(file: File): Promise<UnpackedProject> {
+export async function unpackProject(
+  file: File,
+  onProgress?: PackageProgress,
+): Promise<UnpackedProject> {
   let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = new Uint8Array(await file.arrayBuffer());
@@ -86,11 +144,16 @@ export async function unpackProject(file: File): Promise<UnpackedProject> {
     if (typeof manifest.version !== 'number' || manifest.version > PACKAGE_VERSION) {
       throw new Error('the package is from a newer version');
     }
+    const total = manifest.media.reduce(
+      (sum, entry) => sum + (entries.get(entry.path)?.length ?? 0),
+      0,
+    );
+    const tally = new Tally(total, onProgress);
     const media: PackagedMedia[] = [];
     for (const entry of manifest.media) {
       const data = entries.get(entry.path);
       if (data === undefined) throw new Error(`${entry.path} is missing`);
-      const { sampleRate, channels } = decodeFloatWav(data);
+      const { sampleRate, channels } = await decodeWav(data, tally);
       media.push({ key: entry.key, name: entry.path, sampleRate, channels });
     }
     return { json: decoder.decode(document), media };
@@ -131,14 +194,59 @@ function uniquePath(path: string, used: Set<string>): string {
   return candidate;
 }
 
-/** A 32-bit float WAV of `channels`, interleaved. */
-export function encodeFloatWav(
+/**
+ * The smallest integer depth that holds every sample exactly, or 32 for float.
+ *
+ * @remarks A sample decoded from an n-bit file is a whole number of 2^-(n-1) steps, and one
+ * averaged from two such channels is half a step finer, so 16-bit audio mixed to mono still fits
+ * 24 bits.
+ */
+export async function exactDepth(
+  channels: readonly Float32Array[],
+  tally?: Tally,
+): Promise<16 | 24 | 32> {
+  let fits16 = true;
+  let fits24 = true;
+  const frames = channels[0]?.length ?? 0;
+  let start = 0;
+  for (; start < frames && fits24; start += SLICE_FRAMES) {
+    const end = Math.min(frames, start + SLICE_FRAMES);
+    for (const channel of channels) {
+      for (let i = start; i < end && fits24; i += 1) {
+        const sample = channel[i] ?? 0;
+        const wide = sample * 8388608;
+        if (!Number.isInteger(wide) || wide < -8388608 || wide > 8388607) {
+          fits24 = false;
+          fits16 = false;
+        } else if (fits16) {
+          const narrow = sample * 32768;
+          if (!Number.isInteger(narrow) || narrow < -32768 || narrow > 32767) fits16 = false;
+        }
+      }
+    }
+    await tally?.add(end - start);
+  }
+  // Float is settled as soon as one sample needs it, so the rest counts as read.
+  if (start < frames) await tally?.add(frames - start);
+  return fits16 ? 16 : fits24 ? 24 : 32;
+}
+
+/**
+ * A WAV of `channels`, interleaved, at the smallest depth that holds them exactly.
+ *
+ * @remarks `stride` is the bytes one frame takes.
+ */
+export async function encodeWav(
   channels: readonly Float32Array[],
   sampleRate: number,
-): Uint8Array<ArrayBuffer> {
+  tally?: Tally,
+): Promise<{ data: Uint8Array<ArrayBuffer>; stride: number }> {
+  const depth = await exactDepth(channels, tally);
   const count = Math.max(1, channels.length);
   const frames = channels[0]?.length ?? 0;
-  const dataBytes = frames * count * 4;
+  const width = depth / 8;
+  const stride = count * width;
+  const dataBytes = frames * stride;
   const bytes = new Uint8Array(44 + dataBytes);
   const view = new DataView(bytes.buffer);
   const ascii = (offset: number, text: string): void => {
@@ -149,54 +257,93 @@ export function encodeFloatWav(
   ascii(8, 'WAVE');
   ascii(12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 3, true);
+  view.setUint16(20, depth === 32 ? 3 : 1, true);
   view.setUint16(22, count, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * count * 4, true);
-  view.setUint16(32, count * 4, true);
-  view.setUint16(34, 32, true);
+  view.setUint32(28, sampleRate * stride, true);
+  view.setUint16(32, stride, true);
+  view.setUint16(34, depth, true);
   ascii(36, 'data');
   view.setUint32(40, dataBytes, true);
-  let offset = 44;
-  for (let frame = 0; frame < frames; frame += 1) {
-    for (let channel = 0; channel < count; channel += 1) {
-      view.setFloat32(offset, channels[channel]?.[frame] ?? 0, true);
-      offset += 4;
+  for (let start = 0; start < frames; start += SLICE_FRAMES) {
+    const end = Math.min(frames, start + SLICE_FRAMES);
+    let at = 44 + start * stride;
+    for (let frame = start; frame < end; frame += 1) {
+      for (let channel = 0; channel < count; channel += 1) {
+        const sample = channels[channel]?.[frame] ?? 0;
+        if (depth === 16) {
+          view.setInt16(at, Math.round(sample * 32768), true);
+        } else if (depth === 24) {
+          const value = Math.round(sample * 8388608);
+          bytes[at] = value & 0xff;
+          bytes[at + 1] = (value >> 8) & 0xff;
+          bytes[at + 2] = (value >> 16) & 0xff;
+        } else {
+          view.setFloat32(at, sample, true);
+        }
+        at += width;
+      }
     }
+    await tally?.add(end - start);
   }
-  return bytes;
+  return { data: bytes, stride };
 }
 
-/** Reads a 32-bit float WAV back to its channels, bit for bit. */
-export function decodeFloatWav(bytes: Uint8Array): {
-  sampleRate: number;
-  channels: Float32Array[];
-} {
+/**
+ * Reads a WAV written by {@link encodeWav} back to its channels, bit for bit.
+ *
+ * @remarks Reads 16-bit and 24-bit integer PCM and 32-bit float, which is every depth a package
+ * holds. `tally` counts bytes read.
+ */
+export async function decodeWav(
+  bytes: Uint8Array,
+  tally?: Tally,
+): Promise<{ sampleRate: number; channels: Float32Array[] }> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const tag = (offset: number): string =>
     String.fromCharCode(...bytes.subarray(offset, offset + 4));
   if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') throw new Error('not a WAV file');
-  let format: { count: number; rate: number } | null = null;
+  let format: { count: number; rate: number; depth: number } | null = null;
   let offset = 12;
   while (offset + 8 <= bytes.length) {
     const id = tag(offset);
     const size = view.getUint32(offset + 4, true);
     const body = offset + 8;
     if (id === 'fmt ') {
-      if (view.getUint16(body, true) !== 3 || view.getUint16(body + 14, true) !== 32) {
-        throw new Error('packaged audio is not 32-bit float');
-      }
-      format = { count: view.getUint16(body + 2, true), rate: view.getUint32(body + 4, true) };
+      const code = view.getUint16(body, true);
+      const depth = view.getUint16(body + 14, true);
+      const known = (code === 3 && depth === 32) || (code === 1 && (depth === 16 || depth === 24));
+      if (!known) throw new Error('packaged audio is at a depth this build does not read');
+      format = {
+        count: view.getUint16(body + 2, true),
+        rate: view.getUint32(body + 4, true),
+        depth,
+      };
     } else if (id === 'data') {
       if (format === null || format.count === 0) throw new Error('WAV data before its format');
-      const frames = Math.floor(Math.min(size, bytes.length - body) / (4 * format.count));
+      const width = format.depth / 8;
+      const stride = width * format.count;
+      const frames = Math.floor(Math.min(size, bytes.length - body) / stride);
       const channels = Array.from({ length: format.count }, () => new Float32Array(frames));
-      let at = body;
-      for (let frame = 0; frame < frames; frame += 1) {
-        for (const channel of channels) {
-          channel[frame] = view.getFloat32(at, true);
-          at += 4;
+      for (let start = 0; start < frames; start += SLICE_FRAMES) {
+        const end = Math.min(frames, start + SLICE_FRAMES);
+        let at = body + start * stride;
+        for (let frame = start; frame < end; frame += 1) {
+          for (const channel of channels) {
+            if (format.depth === 16) {
+              channel[frame] = view.getInt16(at, true) / 32768;
+            } else if (format.depth === 24) {
+              const low = (bytes[at] ?? 0) | ((bytes[at + 1] ?? 0) << 8);
+              // Sign-extended from the third byte.
+              const value = low | (((bytes[at + 2] ?? 0) << 24) >> 8);
+              channel[frame] = value / 8388608;
+            } else {
+              channel[frame] = view.getFloat32(at, true);
+            }
+            at += width;
+          }
         }
+        await tally?.add((end - start) * stride);
       }
       return { sampleRate: format.rate, channels };
     }
@@ -215,23 +362,41 @@ const CRC_TABLE = (() => {
   return table;
 })();
 
-function crc32(data: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < data.length; i += 1) {
-    crc = (CRC_TABLE[(crc ^ (data[i] ?? 0)) & 0xff] ?? 0) ^ (crc >>> 8);
+const CRC_START = 0xffffffff;
+
+function crcOver(crc: number, data: Uint8Array, start: number, end: number): number {
+  let value = crc;
+  for (let i = start; i < end; i += 1) {
+    value = (CRC_TABLE[(value ^ (data[i] ?? 0)) & 0xff] ?? 0) ^ (value >>> 8);
   }
+  return value;
+}
+
+function finishCrc(crc: number): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+/** The CRC-32 of a WAV, a slice at a time, counting its frames of `stride` bytes as it goes. */
+async function crc32(data: Uint8Array, tally: Tally, stride: number): Promise<number> {
+  const step = SLICE_FRAMES * stride;
+  let crc = CRC_START;
+  for (let start = 0; start < data.length; start += step) {
+    const end = Math.min(data.length, start + step);
+    crc = crcOver(crc, data, start, end);
+    await tally.add((end - start) / stride);
+  }
+  return finishCrc(crc);
+}
+
 /** A zip archive of `entries`, stored without compression. */
-function writeZip(entries: readonly { path: string; data: Uint8Array<ArrayBuffer> }[]): Blob {
+function writeZip(entries: readonly ZipEntry[]): Blob {
   const encoder = new TextEncoder();
   const parts: BlobPart[] = [];
   const central: Uint8Array<ArrayBuffer>[] = [];
   let offset = 0;
   for (const entry of entries) {
     const name = encoder.encode(entry.path);
-    const crc = crc32(entry.data);
+    const crc = entry.crc;
     const size = entry.data.length;
     if (size > 0xffffffff || offset > 0xffffffff) throw new Error('the package is too large');
     const local = new Uint8Array(30 + name.length);

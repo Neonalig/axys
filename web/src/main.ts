@@ -74,6 +74,7 @@ import type { ProjectSummary } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import {
   AUDIO_KIND,
+  chooseSaveTarget,
   EXPORT_KIND,
   IMPORTABLE,
   openFile,
@@ -83,8 +84,9 @@ import {
   PROJECT_KIND,
   saveFileAs,
   writeFile,
+  writeSaveTarget,
 } from './persistence/file-access.js';
-import type { FileHandle } from './persistence/file-access.js';
+import type { FileHandle, SaveTarget } from './persistence/file-access.js';
 import { importProject } from './persistence/project-io.js';
 import { isPackage, PACKAGE_EXTENSION, packProject, unpackProject } from './persistence/package.js';
 import type { PackagedMedia } from './persistence/package.js';
@@ -1293,8 +1295,10 @@ class AxysWorkspace implements Workspace {
         await this.#openProject(imported.json, null);
         return;
       }
-      this.#progress('Open Project', 0.1);
-      const unpacked = await unpackProject(file);
+      this.#progress('Open Project', 0);
+      const unpacked = await unpackProject(file, (done) => {
+        this.#progress('Open Project', done);
+      });
       const preloaded = new Map<string, Float32Array>();
       for (const item of unpacked.media) {
         preloaded.set(
@@ -1409,6 +1413,16 @@ class AxysWorkspace implements Workspace {
       this.#toast.error('Nothing to save');
       return;
     }
+    const name = `${fileName}${PACKAGE_EXTENSION}`;
+    // Where it goes is asked first, while the press that asked for it still lets a picker open.
+    let target: SaveTarget | null;
+    try {
+      target = await chooseSaveTarget(name, PACKAGE_KIND, 'application/zip');
+    } catch (error) {
+      this.#fail('Save with Audio', error);
+      return;
+    }
+    if (target === null) return;
     const rate = session.sampleRate();
     const media: PackagedMedia[] = [];
     const packed = new Set<string>();
@@ -1429,16 +1443,15 @@ class AxysWorkspace implements Workspace {
       packed.add(key);
       media.push({ key, name: reference.source.name, sampleRate: rate, channels });
     }
-    const name = `${fileName}${PACKAGE_EXTENSION}`;
+    this.#progress('Save with Audio', 0);
     try {
-      const handle = await saveFileAs(
-        packProject(json, media),
-        name,
-        PACKAGE_KIND,
-        'application/zip',
-      );
-      if (handle === null && hasHandleSupport()) return;
-      const saved = handle?.name ?? name;
+      const blob = await packProject(json, media, (done) => {
+        this.#progress('Save with Audio', done);
+      });
+      this.#progress('Save with Audio', 1);
+      await writeSaveTarget(target, blob);
+      this.#idle();
+      const saved = target.kind === 'file' ? target.handle.name : name;
       const missing = this.#missing.clips.length + this.#missing.references.length;
       if (missing > 0) {
         this.#toast.warn(
@@ -3112,7 +3125,11 @@ async function start(): Promise<void> {
       if (reference !== null) {
         store.update({ selectedReference: reference, selection: emptySelection() });
       }
-      showContextMenu(shell.commandMenu(reference === null ? BLOB_MENU : REFERENCE_MENU), at);
+      showContextMenu(
+        shell.commandMenu(reference === null ? BLOB_MENU : REFERENCE_MENU),
+        at,
+        shell.canvas,
+      );
     },
     focus: (clip) => {
       workspace.focus(clip);
