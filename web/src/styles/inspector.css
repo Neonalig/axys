@@ -159,22 +159,6 @@ input.is-adjustable {
   color: var(--axys-text-muted);
 }
 
-.axys-source-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  margin: var(--axys-space-2) 0 0;
-  padding: 0;
-  border: 0;
-}
-
-.axys-source-grid > legend {
-  width: 100%;
-  padding: 0 0 4px;
-  font-size: var(--axys-size-sm);
-  color: var(--axys-text-muted);
-}
-
 .axys-note-toggle {
   position: relative;
   display: flex;

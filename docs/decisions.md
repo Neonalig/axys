@@ -689,10 +689,12 @@ had, which is what made the migration a rename.
 
 ### Operations say which sources they change
 
-Correction and Align Guide tick the sources they change, starting from those holding the
-selection, or every source with nothing selected. Correction leaves an unticked source out by
-excluding its blobs, the same way it already confined itself to a selection. Align Guide maps
-each ticked source to the guide on its own, so a double follows the same notes as its lead, and
+Correction and Align Guide choose the sources they change from one Source drop-down: All Sources
+or one source. It starts on the source holding the selection, on All Sources when the selection
+spans several, and otherwise on the source in front. A drop-down keeps the panel narrow however
+many sources there are. Correction leaves an unchosen source out by excluding its blobs, the same
+way it already confined itself to a selection. Align Guide maps each chosen source to the guide on
+its own, so a double follows the same notes as its lead, and
 every other source keeps its mappings. Voice Character is compiled over every take and says so,
 naming them. A project with one source shows none of this.
 

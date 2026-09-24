@@ -7,14 +7,14 @@
  * those notes. It is chosen, watched against the material and then kept or thrown away, the same
  * way Correction and Voice Character are, so how far it pulls and what it pulls are visible
  * before anything is committed. With blobs selected only those are remapped; with nothing
- * selected the whole project is. With more than one vocal source, each ticked source is mapped to
+ * selected the whole project is. With more than one vocal source, each chosen source is mapped to
  * the guide on its own, so a double follows the same notes as its lead, and every other source
  * keeps its mappings.
  */
 
 import { Dialog } from './dialog.js';
 import { describeLeftovers, scopeLine } from './inspector.js';
-import { initialSources, sourcePicker } from './source-picker.js';
+import { sourcePicker } from './source-picker.js';
 import { field, guidedLabel, rangeInput, selectInput } from './controls/index.js';
 import type { CommandContext } from '../app/commands.js';
 import type { AppState } from '../app/store.js';
@@ -79,7 +79,7 @@ export function showAlignGuide(ctx: CommandContext): Dialog {
   const result = document.createElement('p');
   result.className = 'axys-hint';
   let scope: HTMLElement = document.createElement('p');
-  const picker = sourcePicker(state, initialSources(state), () => {
+  const picker = sourcePicker(state, () => {
     const next = propose(picker.chosen());
     if (next !== null) mappings = next;
     const line = scopeLine(state, picker.chosen());
