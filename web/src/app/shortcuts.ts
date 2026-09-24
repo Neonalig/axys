@@ -139,6 +139,13 @@ function editingText(target: EventTarget | null): boolean {
   return false;
 }
 
+/** Whether a key is Copy over text selected in the page, which the browser copies itself. */
+function copyingSelectedText(event: KeyboardEvent): boolean {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'c') return false;
+  const selected = document.getSelection();
+  return selected !== null && !selected.isCollapsed && selected.toString().length > 0;
+}
+
 function pitchStep(event: KeyboardEvent): number {
   if (event.altKey) return PITCH_STEP_FINE;
   if (event.shiftKey) return PITCH_STEP_COARSE;
@@ -281,6 +288,7 @@ export function bindShortcuts(
   const onKeyDown = (event: Event): void => {
     if (!(event instanceof KeyboardEvent) || event.repeat) return;
     if (editingText(event.target)) return;
+    if (copyingSelectedText(event)) return;
 
     if (event.key === 'Escape') {
       clearSelection(ctx);

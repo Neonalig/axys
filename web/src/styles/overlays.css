@@ -86,7 +86,14 @@
   pointer-events: none;
 }
 
+/* Over a stack the gaps count as the stack, so moving between toasts never resumes the countdown. */
+.axys-toast-host:not(:empty) {
+  pointer-events: auto;
+}
+
 .axys-toast {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: flex-start;
   gap: var(--axys-space-2);
@@ -127,14 +134,56 @@
   background: transparent;
 }
 
+.axys-toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+
 .axys-toast > button {
-  margin-left: auto;
+  flex: none;
   height: 20px;
   min-width: 20px;
   width: 20px;
   padding: 0;
   background: transparent;
   border-color: transparent;
+}
+
+.axys-toast > .axys-toast-copy {
+  opacity: 0;
+  transition: opacity var(--axys-duration-fast) var(--axys-ease-standard);
+}
+
+.axys-toast:hover > .axys-toast-copy,
+.axys-toast > .axys-toast-copy:focus-visible {
+  opacity: 1;
+}
+
+.axys-toast > .axys-toast-copy.is-copied {
+  color: var(--axys-accent);
+}
+
+.axys-toast-timer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--axys-accent);
+  opacity: 0.6;
+  transform-origin: left;
+  pointer-events: none;
+}
+
+.axys-toast.is-warn > .axys-toast-timer {
+  background: var(--axys-warning);
+}
+
+.axys-toast.is-error > .axys-toast-timer {
+  background: var(--axys-danger);
 }
 
 .axys-toast.is-leaving {

@@ -8,6 +8,7 @@
 
 import { button } from './controls/index.js';
 import { animateOut } from './motion.js';
+import { setTooltip } from './tooltip.js';
 
 /** Severity of a notification. */
 export type ToastKind = 'info' | 'warn' | 'error';
@@ -35,35 +36,62 @@ const LIFETIME: Readonly<Record<ToastKind, number>> = {
 /** Toasts kept on screen at once; the oldest leaves when a newer one arrives. */
 const MAX_STACK = 5;
 
-/** When a toast leaves on its own, while its countdown runs or stands paused. */
-interface Countdown {
-  timer: ReturnType<typeof setTimeout> | null;
-  /** Milliseconds left when the countdown last stopped or started. */
-  remaining: number;
-  /** When the running countdown started, from `performance.now()`. */
-  started: number;
+/** How long the copy button shows it has copied, in milliseconds. */
+const COPIED_MS = 1200;
+
+/** Puts text on the clipboard, reporting whether the host allowed it. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Stack of auto-dismissing notifications.
  *
  * @remarks Every toast is announced to assistive technology: an error assertively, anything
- * else politely. While the pointer is over any toast none of them leaves, so the stack holds
- * still while one is being read or its link reached for.
+ * else politely. While the pointer is anywhere over the stack, gaps included, or focus is inside
+ * it, none of them leaves. A line along each toast's foot shows the time it has left.
+ *
+ * Ctrl+C over a toast copies its message when no text is selected.
  */
 export class ToastHost {
   readonly #element: HTMLElement;
-  readonly #countdowns = new Map<HTMLElement, Countdown>();
-  /** Toasts under the pointer. More than one only for the moment the pointer crosses a gap. */
-  #hovered = 0;
+  /** Each toast's countdown, drawn as the line along its foot; the toast leaves when it ends. */
+  readonly #countdowns = new Map<HTMLElement, Animation>();
+  readonly #messages = new Map<HTMLElement, string>();
+  #hovered = false;
+  #focused = false;
+  #paused = false;
 
   constructor(parent: HTMLElement = document.body) {
     const element = document.createElement('div');
     element.className = 'axys-toast-host';
     element.setAttribute('aria-live', 'polite');
     element.setAttribute('aria-relevant', 'additions text');
+    element.addEventListener('pointerenter', () => {
+      this.#hovered = true;
+      this.#sync();
+    });
+    element.addEventListener('pointerleave', () => {
+      this.#hovered = false;
+      this.#sync();
+    });
+    element.addEventListener('focusin', () => {
+      this.#focused = true;
+      this.#sync();
+    });
+    element.addEventListener('focusout', (event) => {
+      this.#focused = event.relatedTarget instanceof Node && element.contains(event.relatedTarget);
+      this.#sync();
+    });
     parent.append(element);
     this.#element = element;
+    // Capture, so the editor's own Copy never sees a press meant for a toast.
+    window.addEventListener('keydown', this.#onKeyDown, true);
   }
 
   /** The host element, already attached to its parent. */
@@ -98,8 +126,25 @@ export class ToastHost {
   /** Removes the host from the document. */
   dispose(): void {
     this.clear();
+    window.removeEventListener('keydown', this.#onKeyDown, true);
     this.#element.remove();
   }
+
+  #onKeyDown = (event: KeyboardEvent): void => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'c') {
+      return;
+    }
+    const selected = document.getSelection();
+    if (selected !== null && !selected.isCollapsed && selected.toString().length > 0) return;
+    const toast = [...this.#messages.keys()].find(
+      (candidate) => candidate.matches(':hover') || candidate.contains(document.activeElement),
+    );
+    const message = toast === undefined ? undefined : this.#messages.get(toast);
+    if (message === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void copyText(message);
+  };
 
   #push(kind: ToastKind, message: string, link?: ToastLink): Toast {
     const toast = document.createElement('div');
@@ -107,6 +152,7 @@ export class ToastHost {
     toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
 
     const text = document.createElement('span');
+    text.className = 'axys-toast-text';
     if (link === undefined) {
       text.textContent = message;
     } else {
@@ -124,15 +170,23 @@ export class ToastHost {
       text.append(before, anchor, after);
     }
     toast.append(text);
-    toast.addEventListener('pointerenter', () => {
-      this.#hovered += 1;
-      if (this.#hovered === 1) this.#pauseAll();
-    });
-    toast.addEventListener('pointerleave', () => {
-      this.#hovered = Math.max(0, this.#hovered - 1);
-      if (this.#hovered === 0) this.#resumeAll();
-    });
 
+    const copy = button({
+      icon: 'copy',
+      label: 'Copy Message',
+      className: 'axys-toast-copy',
+      onPress: () => {
+        void copyText(text.textContent).then((copied) => {
+          if (!copied) return;
+          copy.classList.add('is-copied');
+          setTooltip(copy, 'Copied');
+          globalThis.setTimeout(() => {
+            copy.classList.remove('is-copied');
+            setTooltip(copy, 'Copy Message');
+          }, COPIED_MS);
+        });
+      },
+    });
     const close = button({
       icon: 'close',
       label: 'Dismiss Message',
@@ -140,20 +194,34 @@ export class ToastHost {
         this.#remove(toast);
       },
     });
-    toast.append(close);
+    const timer = document.createElement('span');
+    timer.className = 'axys-toast-timer';
+    timer.setAttribute('aria-hidden', 'true');
+    toast.append(copy, close, timer);
 
     this.#element.append(toast);
-    while (this.#element.children.length > MAX_STACK) {
-      const oldest = this.#element.firstElementChild;
-      if (!(oldest instanceof HTMLElement)) {
-        break;
-      }
+    // Toasts still playing their exit are on their way out and do not count.
+    const staying = [...this.#countdowns.keys()];
+    for (const oldest of staying.slice(0, Math.max(0, staying.length + 1 - MAX_STACK))) {
       this.#remove(oldest);
     }
 
-    const countdown: Countdown = { timer: null, remaining: LIFETIME[kind], started: 0 };
+    // The line is the clock, so a throttled background tab cannot leave the two disagreeing.
+    const countdown = timer.animate([{ transform: 'scaleX(1)' }, { transform: 'scaleX(0)' }], {
+      duration: LIFETIME[kind],
+      fill: 'forwards',
+    });
+    if (this.#paused) countdown.pause();
+    countdown.finished.then(
+      () => {
+        this.#remove(toast);
+      },
+      () => {
+        // Cancelled by an earlier removal.
+      },
+    );
     this.#countdowns.set(toast, countdown);
-    if (this.#hovered === 0) this.#start(toast, countdown);
+    this.#messages.set(toast, text.textContent);
 
     return {
       dismiss: () => {
@@ -162,44 +230,33 @@ export class ToastHost {
     };
   }
 
-  #start(toast: HTMLElement, countdown: Countdown): void {
-    countdown.started = performance.now();
-    countdown.timer = globalThis.setTimeout(() => {
-      this.#remove(toast);
-    }, countdown.remaining);
-  }
-
-  #pauseAll(): void {
+  /** Pauses or resumes every countdown to match where the pointer and focus are. */
+  #sync(): void {
+    const paused = this.#hovered || this.#focused;
+    if (paused === this.#paused) return;
+    this.#paused = paused;
     for (const countdown of this.#countdowns.values()) {
-      if (countdown.timer === null) continue;
-      globalThis.clearTimeout(countdown.timer);
-      countdown.timer = null;
-      countdown.remaining = Math.max(
-        0,
-        countdown.remaining - (performance.now() - countdown.started),
-      );
-    }
-  }
-
-  #resumeAll(): void {
-    for (const [toast, countdown] of this.#countdowns) {
-      if (countdown.timer === null) this.#start(toast, countdown);
+      if (paused) {
+        countdown.pause();
+      } else {
+        countdown.play();
+      }
     }
   }
 
   #remove(toast: HTMLElement): void {
     const countdown = this.#countdowns.get(toast);
-    if (countdown !== undefined) {
-      if (countdown.timer !== null) globalThis.clearTimeout(countdown.timer);
-      this.#countdowns.delete(toast);
-    }
-    // A toast taken away from under the pointer never reports the pointer leaving it.
-    if (toast.matches(':hover')) {
-      this.#hovered = Math.max(0, this.#hovered - 1);
-      if (this.#hovered === 0) this.#resumeAll();
-    }
+    if (countdown === undefined) return;
+    this.#countdowns.delete(toast);
+    countdown.pause();
+    this.#messages.delete(toast);
     animateOut(toast, 'is-leaving', () => {
       toast.remove();
+      // A stack that shrinks out from under the pointer never reports the pointer leaving it.
+      if (this.#hovered && !this.#element.matches(':hover')) {
+        this.#hovered = false;
+        this.#sync();
+      }
     });
   }
 }
