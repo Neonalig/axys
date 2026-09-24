@@ -21,7 +21,7 @@ import {
 import { selectionSpan } from '../app/selection.js';
 import { toolDefinition, toolWorksIn } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
-import { editModeLabel, projectEnd } from '../app/store.js';
+import { editModeLabel, nothingToPlay, projectEnd } from '../app/store.js';
 import type { AppState, EditMode, FollowMode, ToolId } from '../app/store.js';
 import type { PitchCutFill } from '../app/clipboard.js';
 import type { Capability } from '../capabilities.js';
@@ -1174,12 +1174,26 @@ export class AppShell {
     }
 
     const playing = state.transport.playing;
+    // With no audio to play the button stays pressable, so a press or Space can say why.
+    const silent = !playing && nothingToPlay(state);
     this.#setFace('transport.play', {
       icon: playing ? STATE_ICONS.transport.on : STATE_ICONS.transport.off,
       label: playing ? 'Pause' : 'Play',
-      tooltip: playing ? 'Pause (Space)' : 'Play (Space)',
+      tooltip: playing
+        ? 'Pause (Space)'
+        : silent
+          ? 'No audio loaded. Relink to play'
+          : 'Play (Space)',
       pressed: playing,
     });
+    const play = this.#commandButtons.get('transport.play')?.button;
+    if (play !== undefined) {
+      if (silent) {
+        play.setAttribute('aria-disabled', 'true');
+      } else {
+        play.removeAttribute('aria-disabled');
+      }
+    }
 
     for (const [mode, button] of this.#modeButtons) {
       button.setAttribute('aria-pressed', String(state.editMode === mode));

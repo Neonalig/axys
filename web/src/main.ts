@@ -11,6 +11,7 @@
 
 import { buildCommands, findCommand } from './app/commands.js';
 import { estimateEdits } from './app/estimate.js';
+import { withoutOffline } from './app/missing.js';
 import { fitFrames, likeliestSource, relinkMatch } from './app/relink.js';
 import type { RelinkMatch } from './app/relink.js';
 import { SHARP_NAMES } from './core/notes.js';
@@ -76,6 +77,7 @@ import {
   EXPORT_KIND,
   IMPORTABLE,
   openFile,
+  openFiles,
   OPENABLE,
   PACKAGE_KIND,
   PROJECT_KIND,
@@ -101,7 +103,7 @@ import type { ShellHooks } from './ui/shell.js';
 import type { AccentName } from './ui/accent.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
-import type { ToastHost } from './ui/toast.js';
+import type { Toast, ToastHost } from './ui/toast.js';
 import { AnalysisClient, RenderClient } from './workers/client.js';
 import { WorkerCancelled } from './workers/protocol.js';
 
@@ -318,12 +320,15 @@ class AxysWorkspace implements Workspace {
       selection: emptySelection(),
       transport: fresh.transport,
       analysis: fresh.analysis,
+      offline: fresh.offline,
       dirty: false,
     });
   }
 
   /** Lets go of the session, its media and its autosave. */
   #close(): void {
+    this.#missingToast?.dismiss();
+    this.#missingToast = null;
     this.#autosave?.dispose();
     this.#autosave = null;
     this.#session?.free();
@@ -434,10 +439,11 @@ class AxysWorkspace implements Workspace {
   previewEdits(ops: readonly EditOp[]): void {
     const session = this.#session;
     if (!session) return;
+    const kept = withoutOffline({ type: 'group', ops: [...ops] }, this.#offlineClips());
     try {
       if (this.#previewing) session.undo();
-      if (ops.length > 0) {
-        session.applyEdit({ type: 'group', ops: [...ops] });
+      if (kept !== null) {
+        session.applyEdit(kept);
         this.#previewing = true;
       } else {
         this.#previewing = false;
@@ -475,8 +481,13 @@ class AxysWorkspace implements Workspace {
     // previewing is kept rather than unwound out from under the edit that followed it.
     this.commitPreview();
     const guide = this.#store.state.edits?.guide ?? null;
+    const kept = withoutOffline(op, this.#offlineClips());
+    if (kept === null) {
+      this.#refuseOffline();
+      return;
+    }
     try {
-      session.applyEdit(op);
+      session.applyEdit(kept);
     } catch (error) {
       this.#fail('Apply Edit', error);
       return;
@@ -490,6 +501,48 @@ class AxysWorkspace implements Workspace {
     if (op.type === 'setMappings' || op.type === 'setMapping') {
       this.#store.update({ drift: session.drift() });
     }
+  }
+
+  /** Clips whose audio is missing. */
+  #offlineClips(): Set<ClipId> {
+    return new Set(this.#missing.clips.map((entry) => entry.clip));
+  }
+
+  /** The toast naming what the project is missing, while it is on screen. */
+  #missingToast: Toast | null = null;
+
+  /** When the last refused edit was reported, from `performance.now()`. */
+  #refusedAt = -Infinity;
+
+  /**
+   * Says an edit was refused because its audio is missing.
+   *
+   * @remarks Once a second at most, since a drag asks on every move.
+   */
+  #refuseOffline(): void {
+    const now = performance.now();
+    if (now - this.#refusedAt < 1000) return;
+    this.#refusedAt = now;
+    this.#toast.warn('Audio missing. Relink to edit', {
+      text: 'Relink',
+      run: () => {
+        void this.relinkMissing();
+      },
+    });
+  }
+
+  /** Asks for any number of files and relinks each to the audio the project is missing. */
+  async relinkMissing(): Promise<void> {
+    let files: File[];
+    try {
+      files = await openFiles(AUDIO_KIND);
+    } catch (error) {
+      this.#fail('Relink Audio', error);
+      return;
+    }
+    // The link that asked took its toast away, so a cancelled picker puts it back.
+    if (files.length === 0) this.#askForMissing();
+    for (const file of files) await this.#relink(file);
   }
 
   pasteClips(parts: readonly ClipPart[], at: number, mode: PasteMode = 'overlap'): void {
@@ -510,6 +563,11 @@ class AxysWorkspace implements Workspace {
   cutClips(parts: readonly { clip: ClipId; start: number; end: number }[], ripple = false): void {
     const session = this.#session;
     if (!session) return;
+    const offline = this.#offlineClips();
+    if (parts.some((part) => offline.has(part.clip))) {
+      this.#refuseOffline();
+      return;
+    }
     this.commitPreview();
     const before = new Set(session.state().clips.map((clip) => clip.id));
     try {
@@ -1475,14 +1533,21 @@ class AxysWorkspace implements Workspace {
 
   /** Names the first piece of audio the open project is still waiting for. */
   #askForMissing(): void {
-    const first = this.#missing.clips[0]?.source ?? this.#missing.references[0]?.source;
+    this.#missingToast?.dismiss();
+    this.#missingToast = null;
+    const targets = this.#missingTargets();
+    const first = targets[0];
     if (first === undefined) return;
-    const count = this.#missing.clips.length + this.#missing.references.length;
-    this.#toast.warn(
-      count === 1
-        ? `Open ${first.name} to relink`
-        : `${String(count)} files missing. Open ${first.name} to relink.`,
-    );
+    const message =
+      targets.length === 1
+        ? `${first.source.name} missing. Relink`
+        : `${String(targets.length)} files missing. Relink`;
+    this.#missingToast = this.#toast.warn(message, {
+      text: 'Relink',
+      run: () => {
+        void this.relinkMissing();
+      },
+    });
   }
 
   /**
@@ -1838,6 +1903,10 @@ class AxysWorkspace implements Workspace {
       view: { ...framed, playhead: 0 },
       transport: { ...this.#store.state.transport, playing: false, position: 0, loop: null },
       analysis: { running: false, progress: 1, stage: '' },
+      offline: {
+        clips: this.#missing.clips.map((entry) => entry.clip),
+        references: this.#missing.references.map((reference) => reference.id),
+      },
       dirty: false,
     });
     this.#audio.setTail(endLeniency(this.#store.state));
@@ -1990,6 +2059,10 @@ class AxysWorkspace implements Workspace {
           selectionForRanges(blobs, this.#store.state.selection.ranges),
           this.#store.state.editMode,
         ),
+        offline: {
+          clips: this.#missing.clips.map((entry) => entry.clip),
+          references: this.#missing.references.map((reference) => reference.id),
+        },
         dirty: true,
       });
       this.#audio.setTail(endLeniency(this.#store.state));

@@ -45,7 +45,8 @@ button:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-button:disabled {
+button:disabled,
+button[aria-disabled='true'] {
   opacity: 0.45;
   cursor: default;
 }

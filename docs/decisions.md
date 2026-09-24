@@ -1412,6 +1412,18 @@ length so every blob stays where it was, and the clip keeps its recorded `Source
 relink is still checked against the original. A decoder of its own in the core for WAV would make
 the fingerprint agree across browsers; lossy formats would still need the leniency.
 
+### Missing audio shows, and holds its blobs still
+
+A clip whose audio is missing is drawn in the warning colour with a dotted outline and a warning
+mark in its tab, so what needs relinking shows at a glance. Its blobs take no edit but Delete,
+Delete Clip and Rename (`app/missing.ts`): with no audio there is nothing to hear the edit
+against, and nothing to check a later relink's blobs against. Pressing one selects its whole
+source, ready to delete. An operation over the whole project, such as Correction, leaves a missing
+clip out rather than refusing. With every source missing Play stays pressable but says no audio
+is loaded, with a Relink link, instead of starting a transport that ends at once. Warnings stay
+until dismissed, since each names something still wrong, and the missing-audio warning offers
+Relink, which takes several files at once.
+
 ### A project can carry its audio
 
 Audio lives in the browser's own storage, so a `.axys.json` opened in another browser or on another

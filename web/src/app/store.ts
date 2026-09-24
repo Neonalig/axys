@@ -11,11 +11,12 @@ import type {
   MappingReport,
   MidiFile,
   PitchTrackArrays,
+  ReferenceId,
   RenderPlan,
   TimingConflict,
   ViewState,
 } from '../core/types.js';
-import { clipEnd } from '../core/types.js';
+import { clipEnd, clipOf } from '../core/types.js';
 import { barSecondsAt } from '../core/timeline.js';
 
 /** The whole application state. Replaced wholesale on each change, never mutated in place. */
@@ -69,7 +70,37 @@ export interface AppState {
   clipboard: ClipboardContent | null;
   /** The kept curve picked up with the selection, which Delete deletes. */
   activeStroke: number | null;
+  /** Clips and references whose audio is missing until relinked. */
+  offline: OfflineMedia;
   dirty: boolean;
+}
+
+/** Sources whose audio is missing. */
+export interface OfflineMedia {
+  clips: ClipId[];
+  references: ReferenceId[];
+}
+
+/**
+ * Whether nothing in the project has audio to play.
+ *
+ * @remarks True only with at least one clip, every clip missing and every reference missing.
+ */
+export function nothingToPlay(state: AppState): boolean {
+  const clips = state.edits?.clips ?? [];
+  const references = state.edits?.references ?? [];
+  if (clips.length === 0) return false;
+  const offline = new Set(state.offline.clips);
+  const offlineReferences = new Set(state.offline.references);
+  return (
+    clips.every((clip) => offline.has(clip.id)) &&
+    references.every((reference) => offlineReferences.has(reference.id))
+  );
+}
+
+/** Whether a blob belongs to a clip whose audio is missing. */
+export function blobOffline(state: AppState, blob: number): boolean {
+  return state.offline.clips.length > 0 && state.offline.clips.includes(clipOf(blob));
 }
 
 /**
@@ -239,6 +270,7 @@ export function initialState(): AppState {
     pitchCutFill: 'sung',
     clipboard: null,
     activeStroke: null,
+    offline: { clips: [], references: [] },
     dirty: false,
   };
 }

@@ -23,7 +23,7 @@ import type { ClipboardContent } from './clipboard.js';
 import { savePreferences } from './preferences.js';
 import { selectionForRanges, selectionInMode, selectionSpan } from './selection.js';
 import { othersOf, stepSource } from './sources.js';
-import { EDIT_MODES, editModeLabel, projectEnd, projectRate } from './store.js';
+import { EDIT_MODES, editModeLabel, nothingToPlay, projectEnd, projectRate } from './store.js';
 import type { AppState, AppStore, EditMode } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
 import { clipEnd, clipOf, clipStart, MIN_BLOB_SECONDS } from '../core/types.js';
@@ -146,6 +146,8 @@ export interface Workspace {
   saveProject(askWhere?: boolean): Promise<void>;
   /** Writes the project and its audio as one file, asking where. */
   saveProjectWithAudio(): Promise<void>;
+  /** Asks for files and relinks each to the audio the project is missing. */
+  relinkMissing(): Promise<void>;
 
   /** Closes what is open and returns the editor to an empty project. */
   newProject(): Promise<void>;
@@ -999,6 +1001,15 @@ export function buildCommands(): Command[] {
       run: async (ctx) => {
         if (ctx.audio.playing) {
           ctx.audio.pause();
+          return;
+        }
+        if (nothingToPlay(ctx.store.state)) {
+          ctx.toast.warn('No audio loaded. Relink', {
+            text: 'Relink',
+            run: () => {
+              void ctx.workspace.relinkMissing();
+            },
+          });
           return;
         }
         // Playing from a playhead already in sight is a request to watch it, so the view

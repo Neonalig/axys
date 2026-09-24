@@ -83,8 +83,27 @@ export async function openFile(kinds: readonly FileKind[]): Promise<PickedFile |
       throw thrown;
     }
   }
-  const file = await pickWithInput(acceptAttribute(kinds));
-  return file === null ? null : { file, handle: null };
+  const [file] = await pickWithInput(acceptAttribute(kinds), false);
+  return file === undefined ? null : { file, handle: null };
+}
+
+/**
+ * Opens any number of files, offering every kind in a single picker.
+ *
+ * @remarks Empty when the user cancelled, which is not a failure and is never reported as one.
+ */
+export async function openFiles(kinds: readonly FileKind[]): Promise<File[]> {
+  const host = pickers();
+  if (typeof host.showOpenFilePicker === 'function') {
+    try {
+      const handles = await host.showOpenFilePicker({ types: kinds, multiple: true });
+      return await Promise.all(handles.map((handle) => handle.getFile()));
+    } catch (thrown) {
+      if (isAbort(thrown)) return [];
+      throw thrown;
+    }
+  }
+  return pickWithInput(acceptAttribute(kinds), true);
 }
 
 /**
@@ -160,24 +179,25 @@ function acceptAttribute(kinds: readonly FileKind[]): string {
 }
 
 /** Opens the host file picker through a hidden input and resolves with what was chosen. */
-function pickWithInput(accept: string): Promise<File | null> {
-  return new Promise<File | null>((resolve) => {
+function pickWithInput(accept: string, multiple: boolean): Promise<File[]> {
+  return new Promise<File[]>((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
+    input.multiple = multiple;
     input.style.display = 'none';
     let settled = false;
-    const finish = (file: File | null): void => {
+    const finish = (files: File[]): void => {
       if (settled) return;
       settled = true;
       input.remove();
-      resolve(file);
+      resolve(files);
     };
     input.addEventListener('change', () => {
-      finish(input.files?.[0] ?? null);
+      finish([...(input.files ?? [])]);
     });
     input.addEventListener('cancel', () => {
-      finish(null);
+      finish([]);
     });
     document.body.append(input);
     input.click();

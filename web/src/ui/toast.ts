@@ -26,10 +26,14 @@ export interface Toast {
   dismiss(): void;
 }
 
-/** How long each severity stays before dismissing itself, in milliseconds. */
-const LIFETIME: Readonly<Record<ToastKind, number>> = {
+/**
+ * How long each severity stays before dismissing itself, in milliseconds.
+ *
+ * @remarks A warning stays until dismissed, since it names something still wrong.
+ */
+const LIFETIME: Readonly<Record<ToastKind, number | null>> = {
   info: 4000,
-  warn: 8000,
+  warn: null,
   error: 14000,
 };
 
@@ -50,18 +54,19 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 /**
- * Stack of auto-dismissing notifications.
+ * Stack of notifications. Information and errors dismiss themselves; warnings stay.
  *
  * @remarks Every toast is announced to assistive technology: an error assertively, anything
  * else politely. While the pointer is anywhere over the stack, gaps included, or focus is inside
- * it, none of them leaves. A line along each toast's foot shows the time it has left.
+ * it, none of them leaves. A line along the foot of each one that leaves on its own shows the
+ * time it has left.
  *
  * Ctrl+C over a toast copies its message when no text is selected.
  */
 export class ToastHost {
   readonly #element: HTMLElement;
   /** Each toast's countdown, drawn as the line along its foot; the toast leaves when it ends. */
-  readonly #countdowns = new Map<HTMLElement, Animation>();
+  readonly #countdowns = new Map<HTMLElement, Animation | null>();
   readonly #messages = new Map<HTMLElement, string>();
   #hovered = false;
   #focused = false;
@@ -194,10 +199,7 @@ export class ToastHost {
         this.#remove(toast);
       },
     });
-    const timer = document.createElement('span');
-    timer.className = 'axys-toast-timer';
-    timer.setAttribute('aria-hidden', 'true');
-    toast.append(copy, close, timer);
+    toast.append(copy, close);
 
     this.#element.append(toast);
     // Toasts still playing their exit are on their way out and do not count.
@@ -206,9 +208,31 @@ export class ToastHost {
       this.#remove(oldest);
     }
 
-    // The line is the clock, so a throttled background tab cannot leave the two disagreeing.
+    this.#countdowns.set(toast, this.#countdown(toast, LIFETIME[kind]));
+    this.#messages.set(toast, text.textContent);
+
+    return {
+      dismiss: () => {
+        this.#remove(toast);
+      },
+    };
+  }
+
+  /**
+   * Starts the line along a toast's foot that dismisses it when it runs out, or `null` for a
+   * toast that stays.
+   *
+   * @remarks The line is the clock, so a throttled background tab cannot leave the two
+   * disagreeing.
+   */
+  #countdown(toast: HTMLElement, lifetime: number | null): Animation | null {
+    if (lifetime === null) return null;
+    const timer = document.createElement('span');
+    timer.className = 'axys-toast-timer';
+    timer.setAttribute('aria-hidden', 'true');
+    toast.append(timer);
     const countdown = timer.animate([{ transform: 'scaleX(1)' }, { transform: 'scaleX(0)' }], {
-      duration: LIFETIME[kind],
+      duration: lifetime,
       fill: 'forwards',
     });
     if (this.#paused) countdown.pause();
@@ -220,14 +244,7 @@ export class ToastHost {
         // Cancelled by an earlier removal.
       },
     );
-    this.#countdowns.set(toast, countdown);
-    this.#messages.set(toast, text.textContent);
-
-    return {
-      dismiss: () => {
-        this.#remove(toast);
-      },
-    };
+    return countdown;
   }
 
   /** Pauses or resumes every countdown to match where the pointer and focus are. */
@@ -237,18 +254,17 @@ export class ToastHost {
     this.#paused = paused;
     for (const countdown of this.#countdowns.values()) {
       if (paused) {
-        countdown.pause();
+        countdown?.pause();
       } else {
-        countdown.play();
+        countdown?.play();
       }
     }
   }
 
   #remove(toast: HTMLElement): void {
-    const countdown = this.#countdowns.get(toast);
-    if (countdown === undefined) return;
+    if (!this.#countdowns.has(toast)) return;
+    this.#countdowns.get(toast)?.pause();
     this.#countdowns.delete(toast);
-    countdown.pause();
     this.#messages.delete(toast);
     animateOut(toast, 'is-leaving', () => {
       toast.remove();

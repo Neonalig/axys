@@ -12,7 +12,7 @@ import type {
 } from '../../core/types.js';
 import { clipOf, displayTitle } from '../../core/types.js';
 import type { Theme } from '../../ui/theme.js';
-import { sourceTheme } from '../../ui/theme.js';
+import { offlineTheme, sourceTheme } from '../../ui/theme.js';
 import type { Viewport } from '../view.js';
 import { LABEL_ALPHA, labelBaseline } from './label.js';
 
@@ -36,6 +36,12 @@ const HANDLE_HEIGHT = 18;
  * said it was muted or disabled, which is the one thing exclusion does not mean.
  */
 const EXCLUDED_DASH: readonly number[] = [4, 3];
+
+/** Dash pattern the outline of a blob whose audio is missing is drawn with. */
+const OFFLINE_DASH: readonly number[] = [2, 3];
+
+/** Width of the warning mark in a missing blob's tab, in pixels. */
+const WARNING_MARK_WIDTH = 12;
 
 /** Narrowest blob, in pixels, that draws its voicing regions and centre line. */
 const DETAIL_MIN_WIDTH = 8;
@@ -280,6 +286,7 @@ export function drawBlobs(
 ): boolean {
   let scrolling = false;
   const selected = new Set(state.selection.blobs);
+  const offline = new Set(state.offline.clips);
   // What is being heard is drawn solid and what is not is drawn transient, so the picture and
   // the mixer never disagree. Hearing both puts both between the two. Each clip has its own
   // strips, so each is drawn by what is heard of it.
@@ -322,12 +329,16 @@ export function drawBlobs(
     const monitor = monitorOf(blob);
     const alpha = monitor === 'processed' ? 1 : monitor === 'original' ? 0.28 : 0.55;
     const isSelected = selected.has(blob.id);
-    // Each clip has colours of its own, so a blob always says which source it belongs to.
-    const tint = sourceTheme(theme, clipOf(blob.id));
-    drawBlob(ctx, state, viewport, tint, blob, isSelected, alpha, showHandles);
+    // Each clip has colours of its own, so a blob always says which source it belongs to. A clip
+    // whose audio is missing is drawn in the warning colour instead, so what needs relinking
+    // shows at a glance.
+    const missing = offline.has(clipOf(blob.id));
+    const tint = missing ? offlineTheme(theme) : sourceTheme(theme, clipOf(blob.id));
+    drawBlob(ctx, state, viewport, tint, blob, isSelected, alpha, showHandles, missing);
     const scrolled = marquee !== null && marquee.blob === blob.id ? marquee.elapsed : null;
     scrolling =
-      drawTitle(ctx, state, viewport, tint, blob, isSelected, alpha, scrolled) || scrolling;
+      drawTitle(ctx, state, viewport, tint, blob, isSelected, alpha, scrolled, missing) ||
+      scrolling;
   }
 
   for (const conflict of state.conflicts) {
@@ -408,6 +419,7 @@ function drawBlob(
   isSelected: boolean,
   alpha: number,
   showHandles: boolean,
+  missing: boolean,
 ): void {
   const x0 = viewport.timeToX(blobOutputStart(blob));
   const x1 = viewport.timeToX(blobOutputEnd(blob));
@@ -446,7 +458,9 @@ function drawBlob(
   ctx.globalAlpha = alpha;
   ctx.lineWidth = bound;
   ctx.strokeStyle = isSelected ? theme.selection : theme.blobBounds;
-  if (blob.excluded) {
+  if (missing) {
+    ctx.setLineDash([...OFFLINE_DASH]);
+  } else if (blob.excluded) {
     ctx.setLineDash([...EXCLUDED_DASH]);
   }
   box();
@@ -500,6 +514,7 @@ function drawTitle(
   isSelected: boolean,
   alpha: number,
   scrolled: number | null,
+  missing: boolean,
 ): boolean {
   const rect = titleRect(blob, state.track, viewport);
   const clip = clipOfBlob(state, blob);
@@ -524,23 +539,52 @@ function drawTitle(
   ctx.fillStyle = theme.bg;
   const baseline = labelBaseline(ctx, top, top + rect.height, viewport.ratio);
   const title = displayTitle(clip);
-  const room = rect.width - TITLE_PADDING * 2;
+  const mark =
+    missing && rect.width >= WARNING_MARK_WIDTH + TITLE_PADDING * 2 ? WARNING_MARK_WIDTH : 0;
+  if (mark > 0) drawWarningMark(ctx, rect.x + TITLE_PADDING, top, rect.height, theme.bg);
+  const start = rect.x + TITLE_PADDING + mark;
+  const room = rect.width - TITLE_PADDING * 2 - mark;
   const overflow = scrolled === null ? 0 : ctx.measureText(title).width - room;
   if (overflow > 0 && scrolled !== null) {
     ctx.beginPath();
-    ctx.rect(rect.x + TITLE_PADDING, rect.y, room, rect.height);
+    ctx.rect(start, rect.y, room, rect.height);
     ctx.clip();
     const offset = marqueeOffset(overflow, scrolled);
-    ctx.fillText(title, rect.x + TITLE_PADDING + offset, baseline);
+    ctx.fillText(title, start + offset, baseline);
     ctx.restore();
     return true;
   }
   const text = fitText(ctx, title, room);
   if (text !== '') {
-    ctx.fillText(text, rect.x + TITLE_PADDING, baseline);
+    ctx.fillText(text, start, baseline);
   }
   ctx.restore();
   return false;
+}
+
+/** Draws a warning triangle with an exclamation mark, filling `height` from `top`. */
+function drawWarningMark(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  top: number,
+  height: number,
+  colour: string,
+): void {
+  const size = Math.min(WARNING_MARK_WIDTH - 2, height - 4);
+  const left = x;
+  const bottom = top + (height + size) / 2;
+  ctx.save();
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.moveTo(left + size / 2, bottom - size);
+  ctx.lineTo(left + size, bottom);
+  ctx.lineTo(left, bottom);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillRect(left + size / 2 - 0.75, bottom - size * 0.62, 1.5, size * 0.34);
+  ctx.fillRect(left + size / 2 - 0.75, bottom - size * 0.2, 1.5, 1.5);
+  ctx.restore();
 }
 
 /**

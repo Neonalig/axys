@@ -24,7 +24,7 @@ import {
 } from '../app/clipboard.js';
 import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
 import { othersOf } from '../app/sources.js';
-import { projectEnd } from '../app/store.js';
+import { blobOffline, projectEnd } from '../app/store.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Stroke, ViewState } from '../core/types.js';
 import { clipEnd, clipOf, clipStart, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
@@ -727,6 +727,13 @@ export class EditorController {
     const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
     const modifiers = modifiersOf(event);
     this.#canvas.focus();
+    // A blob whose audio is missing cannot be edited, so pressing one selects its whole source,
+    // ready to delete, and starts nothing that would move it.
+    if (hit.blob !== null && blobOffline(state, hit.blob)) {
+      this.#selectClip(clipOf(hit.blob));
+      event.preventDefault();
+      return;
+    }
     capturePointer(this.#canvas, event.pointerId);
     this.#pointerId = event.pointerId;
     this.#origin = point;
