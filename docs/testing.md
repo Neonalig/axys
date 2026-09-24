@@ -19,6 +19,11 @@ runs the bindings and the suites only.
 The bindings come first because `web/src/wasm/` is generated rather than committed: type-checking
 and the tests both import it, so neither can run on a fresh clone until it exists.
 
+The deployment and offline suites read `dist/`. Vitest's global setup (`tests/helpers/build-dist.ts`)
+builds it once when missing, before any suite starts, and reuses an existing build otherwise. It
+calls Node and Vite directly because nested `npm run` calls grow `PATH` past the Windows limit in a
+deep checkout such as a worktree.
+
 Individual suites:
 
 ```bash

@@ -6,10 +6,9 @@
  * editor makes without a network.
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '..');
 const dist = join(root, 'dist');
@@ -152,15 +151,6 @@ async function answer(worker: LoadedWorker, asked: FakeRequest): Promise<Respons
 }
 
 describe('offline install', () => {
-  beforeAll(() => {
-    if (existsSync(join(dist, 'sw.js'))) return;
-    execFileSync('npm', ['run', 'build'], {
-      cwd: root,
-      stdio: 'inherit',
-      shell: process.platform === 'win32',
-    });
-  }, 600_000);
-
   it('caches the whole build in one cache under one name', async () => {
     const worker = loadWorker();
     await dispatch(worker, 'install');
