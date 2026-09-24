@@ -276,6 +276,19 @@ export function showContextMenu(
   return close;
 }
 
+/**
+ * Takes a right-click for the app's own menu, preventing the browser's.
+ *
+ * @remarks A second right-click on the control whose menu is open closes that menu and is left to
+ * the browser, so its own menu is still one more press away. Returns whether the press was
+ * taken.
+ */
+export function claimContextMenu(event: Event, opener: Element): boolean {
+  if (dismissedBy(opener)) return false;
+  event.preventDefault();
+  return true;
+}
+
 /** Closes whichever menu is open, if any. */
 export function closeOpenMenu(): void {
   openMenu?.();

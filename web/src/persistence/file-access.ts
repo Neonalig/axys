@@ -83,8 +83,27 @@ export async function openFile(kinds: readonly FileKind[]): Promise<PickedFile |
       throw thrown;
     }
   }
-  const file = await pickWithInput(acceptAttribute(kinds));
-  return file === null ? null : { file, handle: null };
+  const [file] = await pickWithInput(acceptAttribute(kinds), false);
+  return file === undefined ? null : { file, handle: null };
+}
+
+/**
+ * Opens any number of files, offering every kind in a single picker.
+ *
+ * @remarks Empty when the user cancelled, which is not a failure and is never reported as one.
+ */
+export async function openFiles(kinds: readonly FileKind[]): Promise<File[]> {
+  const host = pickers();
+  if (typeof host.showOpenFilePicker === 'function') {
+    try {
+      const handles = await host.showOpenFilePicker({ types: kinds, multiple: true });
+      return await Promise.all(handles.map((handle) => handle.getFile()));
+    } catch (thrown) {
+      if (isAbort(thrown)) return [];
+      throw thrown;
+    }
+  }
+  return pickWithInput(acceptAttribute(kinds), true);
 }
 
 /**
@@ -112,6 +131,43 @@ export async function saveFileAs(
   }
   downloadFile(data, suggestedName, mime);
   return null;
+}
+
+/** Where a save goes: a file chosen in the host's picker, or a download. */
+export type SaveTarget =
+  { kind: 'file'; handle: FileHandle } | { kind: 'download'; name: string; mime: string };
+
+/**
+ * Asks where a save goes, before its data exists.
+ *
+ * @remarks The host's picker only opens straight after a press, so a save that takes a while to
+ * build asks first and writes with {@link writeSaveTarget} once it is built. `null` when the user
+ * cancelled.
+ */
+export async function chooseSaveTarget(
+  suggestedName: string,
+  kinds: readonly FileKind[],
+  mime: string,
+): Promise<SaveTarget | null> {
+  const host = pickers();
+  if (typeof host.showSaveFilePicker !== 'function') {
+    return { kind: 'download', name: suggestedName, mime };
+  }
+  try {
+    return { kind: 'file', handle: await host.showSaveFilePicker({ suggestedName, types: kinds }) };
+  } catch (thrown) {
+    if (isAbort(thrown)) return null;
+    throw thrown;
+  }
+}
+
+/** Writes a save to where {@link chooseSaveTarget} said it goes. */
+export async function writeSaveTarget(target: SaveTarget, data: BlobPart): Promise<void> {
+  if (target.kind === 'file') {
+    await writeFile(target.handle, data);
+  } else {
+    downloadFile(data, target.name, target.mime);
+  }
 }
 
 /** Writes to a file chosen earlier, without asking again. */
@@ -160,24 +216,25 @@ function acceptAttribute(kinds: readonly FileKind[]): string {
 }
 
 /** Opens the host file picker through a hidden input and resolves with what was chosen. */
-function pickWithInput(accept: string): Promise<File | null> {
-  return new Promise<File | null>((resolve) => {
+function pickWithInput(accept: string, multiple: boolean): Promise<File[]> {
+  return new Promise<File[]>((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
+    input.multiple = multiple;
     input.style.display = 'none';
     let settled = false;
-    const finish = (file: File | null): void => {
+    const finish = (files: File[]): void => {
       if (settled) return;
       settled = true;
       input.remove();
-      resolve(file);
+      resolve(files);
     };
     input.addEventListener('change', () => {
-      finish(input.files?.[0] ?? null);
+      finish([...(input.files ?? [])]);
     });
     input.addEventListener('cancel', () => {
-      finish(null);
+      finish([]);
     });
     document.body.append(input);
     input.click();
@@ -191,7 +248,9 @@ function pickWithInput(accept: string): Promise<File | null> {
  * open project rather than opening one, so it has its own command and its own picker.
  */
 export const OPENABLE: readonly FileKind[] = [
-  { description: 'Axys Project', accept: { 'application/json': ['.axys.json', '.json'] } },
+  // Projects saved by earlier builds, which wrote the document alone.
+  { description: 'Axys Project (JSON)', accept: { 'application/json': ['.axys.json', '.json'] } },
+  { description: 'Axys Project', accept: { 'application/vnd.axys.project+zip': ['.axys'] } },
   {
     description: 'Audio',
     accept: {
@@ -206,7 +265,7 @@ export const MIDI_KIND: readonly FileKind[] = [
 ];
 
 /** The audio kinds a vocal or a reference is imported from. */
-const AUDIO_KIND: readonly FileKind[] = [
+export const AUDIO_KIND: readonly FileKind[] = [
   {
     description: 'Audio',
     accept: {
@@ -218,9 +277,9 @@ const AUDIO_KIND: readonly FileKind[] = [
 /** What Import offers: audio for a vocal or a reference, or a MIDI guide. */
 export const IMPORTABLE: readonly FileKind[] = [...AUDIO_KIND, ...MIDI_KIND];
 
-/** The project document kind, for saving. */
-export const PROJECT_KIND: readonly FileKind[] = [
-  { description: 'Axys Project', accept: { 'application/json': ['.axys.json'] } },
+/** The project kind every save writes, with or without its audio. */
+export const PACKAGE_KIND: readonly FileKind[] = [
+  { description: 'Axys Project', accept: { 'application/vnd.axys.project+zip': ['.axys'] } },
 ];
 
 /** The audio kinds an export may be written as. */

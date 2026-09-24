@@ -93,6 +93,32 @@
   overflow: hidden;
 }
 
+/* A source whose audio is missing, drawn as its blobs are: the warning colour, dotted, marked */
+
+.axys-mixer-track.is-offline,
+.axys-mixer-strip.is-reference.is-offline {
+  border-style: dotted;
+}
+
+.axys-mixer-track.is-offline > .axys-mixer-track-name::before,
+.axys-mixer-strip.is-offline > .axys-mixer-name::before {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' d='M12 2 1 21h22zM11 9h2v6h-2zm0 8h2v2h-2z'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+/* The reference picked on the canvas or the desk, which reference commands act on */
+
+.axys-mixer-strip.is-reference.is-selected {
+  box-shadow: inset 0 0 0 2px var(--axys-selection);
+}
+
 /* The source in front, which the editor edits */
 
 .axys-mixer-track.is-active {

@@ -158,12 +158,14 @@ function bridge(columns: Columns, framePixels: number): void {
  * rather than dropped, so the display never invents a stable note the analysis did not find. The
  * target follows the compiled plan when the state carries one, so scale correction and MIDI
  * guidance show as well as drawn pitch, and falls back to the blob edits alone until then.
+ * `drawnAlpha` scales the target, the kept curves and the anchors.
  */
 export function drawPitch(
   ctx: CanvasRenderingContext2D,
   state: AppState,
   viewport: Viewport,
   theme: Theme,
+  drawnAlpha = 1,
 ): void {
   if (state.track === null) {
     return;
@@ -186,9 +188,16 @@ export function drawPitch(
     drawDetected(ctx, collect(outside, viewport), viewport, theme, OUTSIDE_STYLE);
   }
   drawBridges(ctx, state.track, state.blobs, viewport, theme);
+  // While a new line is drawn, every line already drawn steps back behind it.
+  ctx.save();
+  ctx.globalAlpha *= drawnAlpha;
   drawTarget(ctx, state, viewport, theme);
-  drawStrokes(ctx, state, viewport, theme);
+  ctx.restore();
+  drawStrokes(ctx, state, viewport, theme, drawnAlpha);
+  ctx.save();
+  ctx.globalAlpha *= drawnAlpha;
   drawAnchors(ctx, state, viewport, theme);
+  ctx.restore();
 
   ctx.restore();
 }
@@ -628,13 +637,15 @@ const JOIN_SECONDS = 0.005;
  * line drawn over nothing still shows where it runs. The one picked up is drawn bright.
  *
  * @remarks Drawn from the curve itself rather than left to the target line, which breaks wherever
- * a frame has no pitch to move, so a single stroke reads as one line.
+ * a frame has no pitch to move, so a single stroke reads as one line. `alpha` scales every curve,
+ * lowered while a new one is being drawn.
  */
 function drawStrokes(
   ctx: CanvasRenderingContext2D,
   state: AppState,
   viewport: Viewport,
   theme: Theme,
+  alpha: number,
 ): void {
   // Only the curves of the clips being edited: a clip behind the layer keeps its own track.
   const layer = new Set(state.layer);
@@ -665,11 +676,11 @@ function drawStrokes(
     }
     ctx.strokeStyle = active ? theme.handleActive : theme.pitchTarget;
     ctx.lineWidth = 2;
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = alpha;
     ctx.setLineDash([]);
     ctx.stroke(carried);
     ctx.lineWidth = 1.5;
-    ctx.globalAlpha = active ? 1 : 0.55;
+    ctx.globalAlpha = (active ? 1 : 0.55) * alpha;
     ctx.setLineDash([2, 3]);
     ctx.stroke(loose);
   }
@@ -688,7 +699,7 @@ function drawStrokes(
   }
   ctx.strokeStyle = theme.pitchTarget;
   ctx.lineWidth = 2;
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = alpha;
   ctx.setLineDash([]);
   ctx.stroke(joins);
   ctx.restore();

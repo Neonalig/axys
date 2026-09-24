@@ -19,6 +19,9 @@ export const RENDER_CHUNK_FRAMES = 1 << 16;
 /** Where the analysis worker has reached. */
 export type AnalysisStage = 'Load Engine' | 'Analyse Audio' | 'Read Pitch' | 'Read Blobs';
 
+/** Where the decode worker has reached. */
+export type DecodeStage = 'Load Engine' | 'Decode Audio' | 'Resample Audio';
+
 /** Where the render worker has reached. */
 export type RenderStage = 'Load Engine' | 'Prepare Render' | 'Render Audio' | 'Encode WAV';
 
@@ -34,6 +37,31 @@ export interface AnalyseRequest {
   /** Segmentation parameters; the core's defaults apply when omitted. */
   segment?: SegmentParams;
 }
+
+/** Decodes one media file in the core, the same way in every browser. */
+export interface DecodeRequest {
+  type: 'decode';
+  id: RequestId;
+  bytes: ArrayBuffer;
+  /** The file's extension without the dot, or empty. */
+  extension: string;
+  /** Rate to hand the audio back at, or `null` for the file's own. */
+  sampleRate: number | null;
+}
+
+/** Audio the decode worker produced. */
+export interface DecodedAudio {
+  sampleRate: number;
+  /** Rate the file declared. */
+  declaredRate: number;
+  frames: number;
+  channels: Float32Array[];
+  mono: Float32Array;
+  fingerprint: string;
+}
+
+/** Everything the decode worker accepts. */
+export type DecodeWorkerRequest = DecodeRequest | CancelRequest | WarmRequest;
 
 /** Abandons the job with the given id as soon as the worker reaches a checkpoint. */
 export interface CancelRequest {
@@ -200,6 +228,13 @@ export interface AnalysedMessage {
   result: AnalysisResult;
 }
 
+/** A finished decode. */
+export interface DecodedMessage {
+  type: 'decoded';
+  id: RequestId;
+  result: DecodedAudio;
+}
+
 /** A finished render. */
 export interface RenderedMessage {
   type: 'rendered';
@@ -233,6 +268,10 @@ export interface CancelledMessage {
 export type AnalysisResponse =
   ProgressMessage<AnalysisStage> | AnalysedMessage | FailedMessage | CancelledMessage;
 
+/** Everything the decode worker posts back. */
+export type DecodeResponse =
+  ProgressMessage<DecodeStage> | DecodedMessage | FailedMessage | CancelledMessage;
+
 /** Everything a span worker posts back. */
 export type SpanResponse = ObservedMessage | FailedMessage;
 
@@ -256,9 +295,26 @@ export class WorkerCancelled extends Error {
   }
 }
 
+/** Raised in place of a result when a worker stopped reporting and was taken down. */
+export class WorkerStalled extends Error {
+  /** What the stalled job was, for a log line. */
+  readonly operation: string;
+
+  constructor(operation: string) {
+    super(`${operation} stopped responding`);
+    this.name = 'WorkerStalled';
+    this.operation = operation;
+  }
+}
+
 /** Buffers to transfer alongside an {@link AnalysisResult}. */
 export function analysisTransfers(result: AnalysisResult): Transferable[] {
   return [result.times, result.midi, result.confidence, result.rms, result.samples].map(bufferOf);
+}
+
+/** Buffers to transfer alongside {@link DecodedAudio}. */
+export function decodedTransfers(result: DecodedAudio): Transferable[] {
+  return [...result.channels, result.mono].map(bufferOf);
 }
 
 /** Buffers to transfer alongside {@link SpanMeasures}. */

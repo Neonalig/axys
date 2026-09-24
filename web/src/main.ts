@@ -11,6 +11,9 @@
 
 import { buildCommands, findCommand } from './app/commands.js';
 import { estimateEdits } from './app/estimate.js';
+import { withoutOffline } from './app/missing.js';
+import { fitFrames, likeliestSource, relinkMatch } from './app/relink.js';
+import type { RelinkMatch } from './app/relink.js';
 import { SHARP_NAMES } from './core/notes.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { startOffline } from './app/offline.js';
@@ -27,7 +30,8 @@ import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js'
 import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { PitchCutFill } from './app/clipboard.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
-import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
+import { cancelDecoding, decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
+import type { DecodedSource } from './audio/decode.js';
 import { referencePeaksKey } from './editor/layers/references.js';
 import { AudioEngine } from './audio/engine.js';
 import type { EngineReport, MeterReport } from './audio/engine.js';
@@ -38,7 +42,7 @@ import { isViewState } from './core/json.js';
 import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, ClipPart, PasteMode, Session } from './core/wasm.js';
-import { clipEnd, clipStart, sourceTitle } from './core/types.js';
+import { clipEnd, clipStart, displayTitle, sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
   Clip,
@@ -61,7 +65,7 @@ import type {
 import { EditorController } from './editor/interaction.js';
 import { freePosition, modifiersOf, rippleInsert } from './editor/tools.js';
 import type { PendingClip } from './editor/tools.js';
-import { buildPeaks, clearPeaks } from './editor/peaks.js';
+import { buildPeaks, clearPeaks, dropPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
 import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN, snapViewTo } from './editor/view.js';
 import { Autosave } from './persistence/autosave.js';
@@ -69,31 +73,39 @@ import { PersistenceError, ProjectStore } from './persistence/db.js';
 import type { ProjectSummary } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import {
+  AUDIO_KIND,
+  chooseSaveTarget,
   EXPORT_KIND,
   IMPORTABLE,
   openFile,
+  openFiles,
   OPENABLE,
-  PROJECT_KIND,
+  PACKAGE_KIND,
   saveFileAs,
-  writeFile,
+  writeSaveTarget,
 } from './persistence/file-access.js';
-import type { FileHandle } from './persistence/file-access.js';
+import type { FileHandle, SaveTarget } from './persistence/file-access.js';
 import { importProject } from './persistence/project-io.js';
+import { isPackage, PACKAGE_EXTENSION, packProject, unpackProject } from './persistence/package.js';
+import type { PackagedMedia } from './persistence/package.js';
+import { restoreAudio, storeAudio } from './persistence/stored-audio.js';
+import type { AudioOrigin, StoredAudio, StoredRole } from './persistence/stored-audio.js';
 import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
 import { openImportPanel, storedAnalysis } from './ui/import-dialog.js';
+import { openRelinkDialog } from './ui/relink-dialog.js';
 import type { AnalysisOutcome } from './ui/import-dialog.js';
 import { sourceMenu } from './ui/sources-menu.js';
-import type { MenuEntry } from './ui/menu.js';
-import type { IconName } from './ui/icons.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
+import { SEPARATOR } from './ui/shell.js';
 import type { AccentName } from './ui/accent.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
-import type { ToastHost } from './ui/toast.js';
+import type { ProgressToast, Toast, ToastHost } from './ui/toast.js';
+import { askToCancel } from './ui/cancel-import.js';
 import { AnalysisClient, RenderClient } from './workers/client.js';
 import { WorkerCancelled } from './workers/protocol.js';
 
@@ -142,6 +154,46 @@ interface WorkspaceDeps {
 interface MissingMedia {
   clips: { clip: ClipId; source: SourceInfo }[];
   references: Reference[];
+}
+
+/**
+ * Audio one relink replaces.
+ *
+ * @remarks Clips pasted from one another share their source, so one file relinks all of them.
+ */
+type AudioTarget =
+  | { kind: 'clip'; clips: ClipId[]; source: SourceInfo; label: string }
+  | { kind: 'reference'; reference: Reference; source: SourceInfo; label: string };
+
+/** What a target held before a relink preview, so Cancel can put it back. */
+interface AudioSnapshot {
+  target: AudioTarget;
+  /** Each clip's samples, or `null` for a clip that had none. */
+  clips: Map<ClipId, Float32Array | null>;
+  /** The reference's channels, or `null` for a reference that had none. */
+  channels: Float32Array[] | null;
+}
+
+/** Share of one file's import progress its decoding fills; analysis takes the rest. */
+const DECODE_SHARE = 0.3;
+
+/**
+ * A batch of files being imported or relinked one after another.
+ *
+ * @remarks `stop` is what the user asked to cancel: nothing, the file being worked on, or it and
+ * every file after it. `gate` holds the batch at its next checkpoint while the question is open.
+ */
+interface FileBatch {
+  /** What the batch is doing, such as Import, for the cancel question. */
+  noun: string;
+  /** What the batch is doing, such as Importing, for the toast. */
+  verb: string;
+  total: number;
+  index: number;
+  file: string;
+  stop: 'none' | 'file' | 'all';
+  gate: Promise<void> | null;
+  toast: ProgressToast;
 }
 
 /** A fresh id for a project's recovery copy, never shared with another project. */
@@ -223,6 +275,8 @@ class AxysWorkspace implements Workspace {
   #previewing = false;
   /** Where Save Project last wrote, so a later save needs no picker. */
   #projectFile: FileHandle | null = null;
+  /** Whether the file Save writes to bundles the audio. */
+  #projectFileAudio = false;
   #onPending: ((clip: PendingClip | null) => void) | null = null;
   /** Media writes to the device still running. */
   #writes = 0;
@@ -292,18 +346,22 @@ class AxysWorkspace implements Workspace {
       selection: emptySelection(),
       transport: fresh.transport,
       analysis: fresh.analysis,
+      offline: fresh.offline,
       dirty: false,
     });
   }
 
   /** Lets go of the session, its media and its autosave. */
   #close(): void {
+    this.#missingToast?.dismiss();
+    this.#missingToast = null;
     this.#autosave?.dispose();
     this.#autosave = null;
     this.#session?.free();
     this.#session = null;
     this.#missing = { clips: [], references: [] };
     this.#references.clear();
+    this.#origins.clear();
     this.#clipTracks.clear();
     this.#projectId = null;
     clearPeaks();
@@ -408,10 +466,11 @@ class AxysWorkspace implements Workspace {
   previewEdits(ops: readonly EditOp[]): void {
     const session = this.#session;
     if (!session) return;
+    const kept = withoutOffline({ type: 'group', ops: [...ops] }, this.#offlineClips());
     try {
       if (this.#previewing) session.undo();
-      if (ops.length > 0) {
-        session.applyEdit({ type: 'group', ops: [...ops] });
+      if (kept !== null) {
+        session.applyEdit(kept);
         this.#previewing = true;
       } else {
         this.#previewing = false;
@@ -449,8 +508,13 @@ class AxysWorkspace implements Workspace {
     // previewing is kept rather than unwound out from under the edit that followed it.
     this.commitPreview();
     const guide = this.#store.state.edits?.guide ?? null;
+    const kept = withoutOffline(op, this.#offlineClips());
+    if (kept === null) {
+      this.#refuseOffline();
+      return;
+    }
     try {
-      session.applyEdit(op);
+      session.applyEdit(kept);
     } catch (error) {
       this.#fail('Apply Edit', error);
       return;
@@ -464,6 +528,168 @@ class AxysWorkspace implements Workspace {
     if (op.type === 'setMappings' || op.type === 'setMapping') {
       this.#store.update({ drift: session.drift() });
     }
+  }
+
+  /** Clips whose audio is missing. */
+  #offlineClips(): Set<ClipId> {
+    return new Set(this.#missing.clips.map((entry) => entry.clip));
+  }
+
+  /** The toast naming what the project is missing, while it is on screen. */
+  #missingToast: Toast | null = null;
+
+  /**
+   * The file each source was imported or relinked from this session, by media store key, where
+   * decoding that file again gives exactly the samples the source holds.
+   */
+  readonly #origins = new Map<string, AudioOrigin>();
+
+  /** Remembers the file a source's samples came from, when it gives them back exactly. */
+  #noteOrigin(key: string, decoded: DecodedSource, exact = true): void {
+    if (exact && decoded.exact) {
+      this.#origins.set(key, { file: decoded.file, fingerprint: decoded.fingerprint });
+    } else {
+      this.#origins.delete(key);
+    }
+  }
+
+  /** The batch of files being worked through, while there is one. */
+  #batch: FileBatch | null = null;
+
+  /** Whether an export is being rendered. */
+  #exporting = false;
+
+  /** Starts following a batch of files: the progress toast, and what the cover names. */
+  #beginBatch(files: readonly File[], noun: string, verb: string): void {
+    this.#batch?.toast.dismiss();
+    this.#batch = {
+      noun,
+      verb,
+      total: files.length,
+      index: 0,
+      file: files[0]?.name ?? '',
+      stop: 'none',
+      gate: null,
+      toast: this.#toast.progress('', `Cancel ${noun}`, () => {
+        void this.#askToCancel();
+      }),
+    };
+    this.#showBatch(0);
+  }
+
+  /** Moves the batch on to the file at `index`. */
+  #nextFile(index: number, file: File): void {
+    const batch = this.#batch;
+    if (!batch) return;
+    batch.index = index;
+    batch.file = file.name;
+    if (batch.stop === 'file') batch.stop = 'none';
+    this.#showBatch(0);
+  }
+
+  #endBatch(): void {
+    this.#batch?.toast.dismiss();
+    this.#batch = null;
+  }
+
+  /** Whether the user asked to cancel every file left in the batch. */
+  #batchStopped(): boolean {
+    return this.#batch?.stop === 'all';
+  }
+
+  /** Shows the batch's file and overall progress in its toast. */
+  #showBatch(progress: number): void {
+    const batch = this.#batch;
+    if (!batch) return;
+    const count = batch.total > 1 ? `, ${String(batch.index + 1)} of ${String(batch.total)}` : '';
+    const overall =
+      batch.total > 1 ? (batch.index + Math.max(0, progress)) / batch.total : progress;
+    batch.toast.update(`${batch.verb} ${batch.file}${count}`, overall);
+  }
+
+  /**
+   * Waits while the cancel question is open, then stops the file if it was cancelled.
+   *
+   * @throws WorkerCancelled when the file being worked on, or the whole batch, was cancelled.
+   */
+  async #checkpoint(): Promise<void> {
+    const batch = this.#batch;
+    if (!batch) return;
+    if (batch.gate !== null) await batch.gate;
+    if (batch.stop !== 'none') throw new WorkerCancelled(`${batch.noun} ${batch.file}`);
+  }
+
+  /** Holds the batch and asks whether to cancel the file, every file, or neither. */
+  async #askToCancel(): Promise<void> {
+    const batch = this.#batch;
+    if (!batch || batch.gate !== null) return;
+    let release = (): void => {};
+    batch.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const choice = await askToCancel({
+      noun: batch.noun,
+      verb: batch.verb,
+      file: batch.file,
+      index: batch.index,
+      total: batch.total,
+    });
+    if (choice !== 'continue') {
+      batch.stop = choice;
+      cancelDecoding();
+      this.#analysis.cancel();
+    }
+    batch.gate = null;
+    release();
+  }
+
+  /** Relinks files one after another as one batch. */
+  async #relinkAll(files: readonly File[]): Promise<void> {
+    if (files.length === 0) return;
+    this.#beginBatch(files, 'Relink', 'Relinking');
+    try {
+      for (const [index, file] of files.entries()) {
+        if (this.#batchStopped()) break;
+        this.#nextFile(index, file);
+        await this.#relink(file);
+      }
+    } finally {
+      this.#endBatch();
+    }
+  }
+
+  /** When the last refused edit was reported, from `performance.now()`. */
+  #refusedAt = -Infinity;
+
+  /**
+   * Says an edit was refused because its audio is missing.
+   *
+   * @remarks Once a second at most, since a drag asks on every move.
+   */
+  #refuseOffline(): void {
+    const now = performance.now();
+    if (now - this.#refusedAt < 1000) return;
+    this.#refusedAt = now;
+    this.#toast.warn('Audio missing. Relink to edit', {
+      text: 'Relink',
+      run: () => {
+        void this.relinkMissing();
+      },
+    });
+  }
+
+  /** Asks for any number of files and relinks each to the audio the project is missing. */
+  async relinkMissing(): Promise<void> {
+    let files: File[];
+    try {
+      files = await openFiles(AUDIO_KIND);
+    } catch (error) {
+      this.#fail('Relink Audio', error);
+      return;
+    }
+    // The link that asked took its toast away, so a cancelled picker puts it back.
+    if (files.length === 0) this.#askForMissing();
+    await this.#relinkAll(files);
   }
 
   pasteClips(parts: readonly ClipPart[], at: number, mode: PasteMode = 'overlap'): void {
@@ -484,6 +710,11 @@ class AxysWorkspace implements Workspace {
   cutClips(parts: readonly { clip: ClipId; start: number; end: number }[], ripple = false): void {
     const session = this.#session;
     if (!session) return;
+    const offline = this.#offlineClips();
+    if (parts.some((part) => offline.has(part.clip))) {
+      this.#refuseOffline();
+      return;
+    }
     this.commitPreview();
     const before = new Set(session.state().clips.map((clip) => clip.id));
     try {
@@ -559,7 +790,7 @@ class AxysWorkspace implements Workspace {
     const [first, ...rest] = files;
     if (first === undefined) return;
     if (this.#hasMissing()) {
-      for (const file of files) await this.#relink(file);
+      await this.#relinkAll(files);
       return;
     }
     if (ask && !(await this.#mayReplaceProject())) return;
@@ -573,13 +804,20 @@ class AxysWorkspace implements Workspace {
       askRole: false,
       fresh: true,
       importVocals: async (params) => {
-        if (!(await this.#startProject(first, params))) return null;
-        clips.push(0);
-        for (const file of rest) {
-          const added = await this.importClipFile(file, undefined, 'free', params);
-          if (added !== null) clips.push(added.clip);
+        this.#beginBatch(files, 'Import', 'Importing');
+        try {
+          if (!(await this.#startProject(first, params))) return null;
+          clips.push(0);
+          for (const [index, file] of rest.entries()) {
+            if (this.#batchStopped()) break;
+            this.#nextFile(index + 1, file);
+            const added = await this.importClipFile(file, undefined, 'free', params);
+            if (added !== null) clips.push(added.clip);
+          }
+          return this.#outcome(clips);
+        } finally {
+          this.#endBatch();
         }
-        return this.#outcome(clips);
       },
       importReferences: () => Promise.resolve(),
       analyse: (params) => this.#reanalyseClips(clips, params),
@@ -597,11 +835,15 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return false;
     }
-    this.#progress('Decode Audio', 0.05);
+    this.#progress('Decode Audio', 0);
     this.#importing = true;
     try {
-      const decoded = await decodeAudioFile(file);
+      const decoded = await decodeAudioFile(file, undefined, (done) => {
+        this.#progress('Decode Audio', done * DECODE_SHARE);
+      });
+      await this.#checkpoint();
       const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name, params);
+      await this.#checkpoint();
       const session = this.#core.openSessionFromAnalysis({
         samples: analysed.samples,
         sampleRate: analysed.sampleRate,
@@ -611,6 +853,7 @@ class AxysWorkspace implements Workspace {
         f0: params,
       });
       this.#close();
+      this.#noteOrigin(decoded.fingerprint, decoded);
       await this.#install(session, null, null);
       this.estimate(true);
       if (decoded.resampled) {
@@ -645,6 +888,7 @@ class AxysWorkspace implements Workspace {
           rate,
           entry.source.name,
           params,
+          0,
         );
         session.reanalyse(clip, {
           trackJson: analysed.trackJson,
@@ -716,11 +960,14 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return null;
     }
-    this.#progress('Decode Audio', 0.05);
+    this.#progress('Decode Audio', 0);
     this.#importing = true;
     try {
       const rate = session.sampleRate();
-      const decoded = await decodeAudioFile(file, rate);
+      const decoded = await decodeAudioFile(file, rate, (done) => {
+        this.#progress('Decode Audio', done * DECODE_SHARE);
+      });
+      await this.#checkpoint();
       const edits = this.#store.state.edits;
       const spans = (edits?.clips ?? []).map((clip): [number, number] => [
         clipStart(clip),
@@ -742,6 +989,7 @@ class AxysWorkspace implements Workspace {
       });
       this.#reveal(at);
       const analysed = await this.#analyse(decoded.mono, rate, decoded.name, params);
+      await this.#checkpoint();
       const clip = session.addClip({
         samples: analysed.samples,
         name: analysed.name,
@@ -760,6 +1008,7 @@ class AxysWorkspace implements Workspace {
       this.#publish();
       const placed = session.state().clips.find((entry) => entry.id === clip);
       if (placed) this.#reveal(placed.position);
+      this.#noteOrigin(fingerprintOf(analysed.samples), decoded);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
       return placed === undefined ? null : { clip, end: clipEnd(placed) };
@@ -802,7 +1051,7 @@ class AxysWorkspace implements Workspace {
    */
   async dropAudio(files: readonly File[], position: number | null, ripple = false): Promise<void> {
     if (this.#hasMissing()) {
-      for (const file of files) await this.#relink(file);
+      await this.#relinkAll(files);
       return;
     }
     const clips: ClipId[] = [];
@@ -810,24 +1059,40 @@ class AxysWorkspace implements Workspace {
       what: describeFiles(files),
       askRole: true,
       importVocals: async (params) => {
-        let next = position;
-        for (const file of files) {
-          let added: { clip: ClipId; end: number } | null;
-          if (position !== null && !ripple) {
-            added = await this.importClipFile(file, position, 'exact', params);
-          } else if (next !== null) {
-            added = await this.importClipFile(file, next, 'ripple', params);
-          } else {
-            added = await this.importClipFile(file, undefined, 'free', params);
+        this.#beginBatch(files, 'Import', 'Importing');
+        try {
+          let next = position;
+          for (const [index, file] of files.entries()) {
+            if (this.#batchStopped()) break;
+            this.#nextFile(index, file);
+            let added: { clip: ClipId; end: number } | null;
+            if (position !== null && !ripple) {
+              added = await this.importClipFile(file, position, 'exact', params);
+            } else if (next !== null) {
+              added = await this.importClipFile(file, next, 'ripple', params);
+            } else {
+              added = await this.importClipFile(file, undefined, 'free', params);
+            }
+            if (added === null) continue;
+            clips.push(added.clip);
+            if (position === null || ripple) next = added.end;
           }
-          if (added === null) continue;
-          clips.push(added.clip);
-          if (position === null || ripple) next = added.end;
+          return clips.length > 0 ? this.#outcome(clips) : null;
+        } finally {
+          this.#endBatch();
         }
-        return clips.length > 0 ? this.#outcome(clips) : null;
       },
       importReferences: async () => {
-        for (const file of files) await this.importReferenceFile(file, position ?? 0);
+        this.#beginBatch(files, 'Import', 'Importing');
+        try {
+          for (const [index, file] of files.entries()) {
+            if (this.#batchStopped()) break;
+            this.#nextFile(index, file);
+            await this.importReferenceFile(file, position ?? 0);
+          }
+        } finally {
+          this.#endBatch();
+        }
       },
       analyse: (params) => this.#reanalyseClips(clips, params),
       cancel: () => {
@@ -891,11 +1156,14 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return;
     }
-    this.#progress('Decode Audio', 0.1);
+    this.#progress('Decode Audio', 0);
     this.#importing = true;
     try {
       const rate = session.sampleRate();
-      const decoded = await decodeAudioFile(file, rate);
+      const decoded = await decodeAudioFile(file, rate, (done) => {
+        this.#progress('Decode Audio', done);
+      });
+      await this.#checkpoint();
       const channels = stereoOf(decoded.channelData);
       const source: SourceInfo = {
         name: decoded.name,
@@ -907,6 +1175,7 @@ class AxysWorkspace implements Workspace {
         mime: decoded.mime,
       };
       const reference = session.addReference(source, position);
+      this.#noteOrigin(referenceKey(source.fingerprint), decoded);
       this.#keepReference(reference, source, channels);
       this.#audio.loadReference(
         reference,
@@ -919,7 +1188,7 @@ class AxysWorkspace implements Workspace {
       void this.#cacheReference(source, channels);
       this.#toast.info(`Imported ${sourceTitle(file.name)} as a reference`);
     } catch (error) {
-      this.#fail('Import Reference', error);
+      this.#importFailed('Import Reference', error);
     } finally {
       this.#importing = false;
     }
@@ -940,12 +1209,17 @@ class AxysWorkspace implements Workspace {
     );
   }
 
-  /** Runs the analysis worker over mono audio, reporting its stages as import progress. */
+  /**
+   * Runs the analysis worker over mono audio, reporting its stages as import progress.
+   *
+   * @remarks `from` is the share of the file's progress already done before analysis starts.
+   */
   async #analyse(
     samples: Float32Array,
     sampleRate: number,
     name: string,
     f0: F0Params,
+    from = DECODE_SHARE,
   ): Promise<{
     samples: Float32Array;
     sampleRate: number;
@@ -956,7 +1230,8 @@ class AxysWorkspace implements Workspace {
     const result = await this.#analysis.analyse(
       { samples, sampleRate, name, f0 },
       (stage, progress) => {
-        this.#progress(stage, progress);
+        // A stage that reports nothing stays unknown rather than pinned where decoding ended.
+        this.#progress(stage, progress === 0 ? 0 : from + (1 - from) * progress);
       },
     );
     this.#lastThreshold = result.threshold;
@@ -974,8 +1249,14 @@ class AxysWorkspace implements Workspace {
   }
 
   cancelImport(): void {
-    if (!this.#importing) return;
-    this.#analysis.cancel();
+    if (this.#batch) {
+      void this.#askToCancel();
+    } else if (this.#exporting) {
+      this.#render.cancel();
+    } else if (this.#importing) {
+      cancelDecoding();
+      this.#analysis.cancel();
+    }
   }
 
   /**
@@ -1002,6 +1283,33 @@ class AxysWorkspace implements Workspace {
     return true;
   }
 
+  /**
+   * Opens files the operating system started Axys with, such as a project double-clicked in the
+   * file manager.
+   *
+   * @remarks A project opens in place of what is open, asking about unsaved work first, and Save
+   * goes back to the same file. Audio is imported, and a MIDI file becomes the guide.
+   */
+  async openLaunched(handles: readonly FileHandle[]): Promise<void> {
+    const launched = await Promise.all(
+      handles.map(async (handle) => ({ handle, file: await handle.getFile() })),
+    );
+    const project = launched.find(({ file }) => kindOf(file) === 'project');
+    if (project !== undefined) {
+      if (!(await this.#mayReplaceProject())) return;
+      await this.openProjectFile(project.file);
+      if (this.#session) this.#projectFile = project.handle;
+      return;
+    }
+    const midi = launched.find(({ file }) => kindOf(file) === 'midi');
+    const audio = launched.filter(({ file }) => kindOf(file) === 'audio').map(({ file }) => file);
+    if (audio.length > 0) {
+      if (this.#session) await this.dropAudio(audio, null);
+      else await this.openVocals(audio);
+    }
+    if (midi !== undefined) await this.openMidiFile(midi.file);
+  }
+
   async openMidiFile(file: File): Promise<void> {
     const session = this.#session;
     if (!session) {
@@ -1021,11 +1329,32 @@ class AxysWorkspace implements Workspace {
     }
   }
 
+  /**
+   * Opens a project file, either a document or a package carrying its own audio.
+   *
+   * @remarks A package's audio is attached as it opens and kept on the device, so nothing in it
+   * needs relinking here or later.
+   */
   async openProjectFile(file: File, ask = false): Promise<void> {
     if (ask && !(await this.#mayReplaceProject())) return;
     try {
-      const imported = await importProject(file, (json) => this.#core.readProject(json));
-      await this.#openProject(imported.json, null);
+      if (!(await isPackage(file))) {
+        const imported = await importProject(file, (json) => this.#core.readProject(json));
+        await this.#openProject(imported.json, null);
+        this.#projectFileAudio = false;
+        return;
+      }
+      this.#progress('Open Project', 0);
+      const unpacked = await unpackProject(file, (done) => {
+        this.#progress('Open Project', done);
+      });
+      // Saving back to a file that carried its audio carries it again.
+      this.#projectFileAudio = unpacked.media.length > 0;
+      const preloaded = new Map<string, StoredAudio>();
+      for (const item of unpacked.media) preloaded.set(item.key, item.stored);
+      await this.#openProject(this.#core.readProject(unpacked.json).json, null, preloaded);
+      // Kept as the package carried it: the same file, so nothing is repacked.
+      for (const [key, stored] of preloaded) void this.#keepStored(key, stored);
     } catch (error) {
       this.#fail('Open Project', error);
     }
@@ -1078,42 +1407,135 @@ class AxysWorkspace implements Workspace {
   }
 
   /**
-   * Writes the project document, and keeps a copy on the device as a safety net.
+   * Writes the project as a `.axys` file, and keeps a copy on the device as a safety net.
    *
-   * @remarks The file it last wrote to is reused without a dialog, which is the whole point of a
-   * Save worth pressing often. `askWhere` forces the picker so a copy can go elsewhere, and
-   * leaves the remembered file alone so the original stays the one Save writes to.
+   * @remarks Save reuses the file it last wrote to, or the one the project was opened from,
+   * without a dialog, which is the whole point of a Save worth pressing often, and bundles the
+   * audio when that file did. `askWhere` forces the picker so a copy can go elsewhere, and leaves
+   * the remembered file alone so the original stays the one Save writes to. `withAudio` bundles
+   * every source's audio; without it the file holds the project alone. A `.axys.json` opened from
+   * an earlier build is written back as a document, the shape it already has.
    */
-  async saveProject(askWhere = false): Promise<void> {
+  async saveProject(
+    askWhere = false,
+    fileName = this.projectName,
+    withAudio = this.#projectFileAudio,
+  ): Promise<void> {
     const json = this.#projectJson();
     if (json === null) {
       this.#toast.error('Nothing to save');
       return;
     }
+    const existing = askWhere ? null : this.#projectFile;
+    let target: SaveTarget | null;
+    if (existing !== null) {
+      target = { kind: 'file', handle: existing };
+    } else {
+      // Asked first, while the press that asked for it still lets a picker open.
+      try {
+        target = await chooseSaveTarget(
+          `${fileName}${PACKAGE_EXTENSION}`,
+          PACKAGE_KIND,
+          'application/zip',
+        );
+      } catch (error) {
+        this.#fail('Save Project', error);
+        return;
+      }
+      if (target === null) return;
+    }
+    const operation = withAudio ? 'Save with Audio' : 'Save Project';
     try {
-      const existing = this.#projectFile;
-      if (!askWhere && existing !== null) {
-        await writeFile(existing, json);
-        this.#store.update({ dirty: false });
-        this.#toast.info(`Saved ${existing.name}`);
-      } else {
-        const name = `${this.projectName}.axys.json`;
-        const handle = await saveFileAs(json, name, PROJECT_KIND, 'application/json');
-        if (handle === null && !hasHandleSupport()) {
-          this.#toast.info(`Saved ${name}`);
-        } else if (handle !== null) {
-          if (!askWhere) this.#projectFile = handle;
-          this.#toast.info(`Saved ${handle.name}`);
-        } else {
-          return;
+      const legacy = target.kind === 'file' && target.handle.name.endsWith('.axys.json');
+      const data = legacy ? json : await this.#projectFileData(json, withAudio, operation);
+      await writeSaveTarget(target, data);
+      this.#idle();
+      if (!askWhere) {
+        if (target.kind === 'file') {
+          this.#projectFile = target.handle;
+          this.#projectFileAudio = withAudio;
         }
-        if (!askWhere) this.#store.update({ dirty: false });
+        this.#store.update({ dirty: false });
+      }
+      const saved = target.kind === 'file' ? target.handle.name : target.name;
+      const missing = this.#missing.clips.length + this.#missing.references.length;
+      if (withAudio && missing > 0) {
+        this.#toast.warn(
+          `Saved ${saved} without ${String(missing)} missing ${missing === 1 ? 'file' : 'files'}`,
+        );
+      } else {
+        this.#toast.info(`Saved ${saved}`);
       }
     } catch (error) {
-      this.#fail('Save Project', error);
+      this.#fail(operation, error);
       return;
     }
     await this.#keepLocalCopy(json);
+  }
+
+  /** Writes the project and every source's audio as one file, always asking where. */
+  async saveProjectWithAudio(fileName = this.projectName): Promise<void> {
+    await this.saveProject(true, fileName, true);
+  }
+
+  /**
+   * The `.axys` file for a project: the document, and every source's audio when `withAudio`.
+   *
+   * @remarks Each source goes in as it is kept on the device, and is only packed here when it is
+   * not. Audio still missing is left out.
+   */
+  async #projectFileData(json: string, withAudio: boolean, operation: string): Promise<Blob> {
+    const session = this.#session;
+    if (!withAudio || !session) return packProject(json, []);
+    const rate = session.sampleRate();
+    this.#progress(operation, 0);
+    const sources: {
+      key: string;
+      name: string;
+      channels: () => Float32Array[];
+      role: StoredRole;
+    }[] = [];
+    const packed = new Set<string>();
+    for (const entry of session.media().clips) {
+      if (!entry.attached || packed.has(entry.source.fingerprint)) continue;
+      packed.add(entry.source.fingerprint);
+      sources.push({
+        key: entry.source.fingerprint,
+        name: entry.source.name,
+        channels: () => [session.clipSamples(entry.clip)],
+        role: 'mono',
+      });
+    }
+    for (const reference of session.media().references) {
+      const channels = this.#references.get(reference.id);
+      const key = referenceKey(reference.source.fingerprint);
+      if (channels === undefined || packed.has(key)) continue;
+      packed.add(key);
+      sources.push({
+        key,
+        name: reference.source.name,
+        channels: () => channels,
+        role: 'channels',
+      });
+    }
+    const media: PackagedMedia[] = [];
+    for (const [index, source] of sources.entries()) {
+      const stored =
+        (await this.#media?.readStored(source.key).catch(() => null)) ??
+        (await storeAudio({
+          channels: source.channels(),
+          role: source.role,
+          sampleRate: rate,
+          origin: this.#origins.get(source.key),
+        }));
+      media.push({ key: source.key, name: source.name, stored });
+      this.#progress(operation, ((index + 1) / sources.length) * 0.5);
+    }
+    const blob = await packProject(json, media, (done) => {
+      this.#progress(operation, 0.5 + done * 0.5);
+    });
+    this.#progress(operation, 1);
+    return blob;
   }
 
   /** Mirrors the document into device storage, so a lost file is not a lost session. */
@@ -1149,7 +1571,8 @@ class AxysWorkspace implements Workspace {
       this.#toast.error(`Relink ${unlinked.source.name} to export references`);
       return;
     }
-    this.#progress('Export WAV', 0.02);
+    this.#exporting = true;
+    this.#progress('Export WAV', 0, 'Cancel Export');
     try {
       const clips = session
         .media()
@@ -1172,9 +1595,11 @@ class AxysWorkspace implements Workspace {
           sampleRate: choice.sampleRate,
         },
         (stage, progress) => {
-          this.#progress(stage, progress);
+          this.#progress(stage, progress, 'Cancel Export');
         },
       );
+      this.#exporting = false;
+      this.#idle();
       await saveFileAs(toBytes(encoded.bytes), `${this.projectName}.wav`, EXPORT_KIND, 'audio/wav');
       if (encoded.report.clippedSamples > 0) {
         this.#toast.warn(
@@ -1186,8 +1611,13 @@ class AxysWorkspace implements Workspace {
         );
       }
     } catch (error) {
-      this.#fail('Export WAV', error);
+      if (error instanceof WorkerCancelled) {
+        this.#toast.info('Export cancelled');
+      } else {
+        this.#fail('Export WAV', error);
+      }
     } finally {
+      this.#exporting = false;
       this.#idle();
     }
   }
@@ -1307,16 +1737,35 @@ class AxysWorkspace implements Workspace {
    *
    * @remarks A project whose audio is not all here still opens and edits. What is missing is
    * named, and the next audio file opened is checked against it. `id` is the recovery copy it
-   * was restored from, or `null` for a project that gets a copy of its own.
+   * was restored from, or `null` for a project that gets a copy of its own. `preloaded` holds
+   * audio by media store key, read ahead of the device's own.
    */
-  async #openProject(json: string, id: string | null): Promise<void> {
-    this.#progress('Open Project', 0.3);
+  async #openProject(
+    json: string,
+    id: string | null,
+    preloaded?: ReadonlyMap<string, StoredAudio>,
+  ): Promise<void> {
+    this.#progress('Open Project', 0);
     const session = this.#core.openSession(json);
+    const rate = session.sampleRate();
+    // Pasted copies share their source, so each is read once.
+    const loaded = new Map<string, Promise<Float32Array[] | null>>();
+    const load = (key: string, role: StoredRole, channels: number) => {
+      let pending = loaded.get(key);
+      if (pending === undefined) {
+        pending = this.#loadSource(key, role, channels, rate, preloaded);
+        loaded.set(key, pending);
+      }
+      return pending;
+    };
     const references = new Map<ReferenceId, Float32Array[]>();
     const missing: MissingMedia = { clips: [], references: [] };
     const media = session.media();
+    const count = Math.max(1, media.clips.length + media.references.length);
+    let read = 0;
     for (const entry of media.clips) {
-      const samples = await this.#readMedia(entry.source.fingerprint);
+      this.#progress('Open Project', read++ / count);
+      const samples = (await load(entry.source.fingerprint, 'mono', 1))?.[0] ?? null;
       if (samples === null) {
         missing.clips.push({ clip: entry.clip, source: entry.source });
         continue;
@@ -1324,16 +1773,23 @@ class AxysWorkspace implements Workspace {
       try {
         session.attachClip(entry.clip, samples);
       } catch {
-        missing.clips.push({ clip: entry.clip, source: entry.source });
+        // Audio relinked without a matching fingerprint is cached under the recorded one.
+        try {
+          session.relinkClip(entry.clip, samples);
+        } catch {
+          missing.clips.push({ clip: entry.clip, source: entry.source });
+        }
       }
     }
     for (const reference of media.references) {
-      const stored = await this.#readMedia(referenceKey(reference.source.fingerprint));
-      if (stored === null) {
+      this.#progress('Open Project', read++ / count);
+      const key = referenceKey(reference.source.fingerprint);
+      const channels = await load(key, 'channels', reference.source.channels);
+      if (channels === null) {
         missing.references.push(reference);
         continue;
       }
-      references.set(reference.id, splitChannels(stored, reference.source.channels));
+      references.set(reference.id, channels);
     }
     this.#close();
     for (const [id, channels] of references) this.#references.set(id, channels);
@@ -1358,72 +1814,328 @@ class AxysWorkspace implements Workspace {
 
   /** Names the first piece of audio the open project is still waiting for. */
   #askForMissing(): void {
-    const first = this.#missing.clips[0]?.source ?? this.#missing.references[0]?.source;
+    this.#missingToast?.dismiss();
+    this.#missingToast = null;
+    const targets = this.#missingTargets();
+    const first = targets[0];
     if (first === undefined) return;
-    const count = this.#missing.clips.length + this.#missing.references.length;
-    this.#toast.warn(
-      count === 1
-        ? `Open ${first.name} to relink`
-        : `${String(count)} files missing. Open ${first.name} to relink.`,
-    );
+    const message =
+      targets.length === 1
+        ? `${first.source.name} missing. Relink`
+        : `${String(targets.length)} files missing. Relink`;
+    this.#missingToast = this.#toast.warn(message, {
+      text: 'Relink',
+      run: () => {
+        void this.relinkMissing();
+      },
+    });
   }
 
   /**
-   * Accepts a file as audio the open project is waiting for, when it is.
+   * Accepts a file as audio the open project is waiting for.
    *
-   * @remarks Matched by fingerprint rather than by name, so a different file with the same name
-   * is refused and a renamed copy of the right one is taken.
+   * @remarks A file matching a missing source by fingerprint, or by name and length, is taken
+   * straight away. Any other file opens Relink Audio on the likeliest missing source.
    */
   async #relink(file: File): Promise<void> {
-    const session = this.#session;
-    if (!session) return;
-    this.#progress('Relink Audio', 0.2);
+    const decoded = await this.#decodeForRelink(file);
+    if (decoded === null) return;
+    const targets = this.#missingTargets();
+    const found =
+      targets.find((target) => relinkMatch(decoded, target.source) === 'exact') ??
+      targets.find((target) => relinkMatch(decoded, target.source) === 'same');
+    if (found) {
+      this.#relinkNow(found, decoded, relinkMatch(decoded, found.source));
+      return;
+    }
+    if (targets.length === 0) return;
+    const sources = targets.map((target) => target.source);
+    await this.#confirmRelink(decoded, targets, likeliestSource(decoded, sources));
+  }
+
+  /**
+   * Asks for a file and relinks one clip's or reference's audio to it.
+   *
+   * @remarks Works whether or not the audio is missing. A file that does not match opens Relink
+   * Audio, which previews it until Apply.
+   */
+  async relinkAudio(what: { clip: ClipId } | { reference: ReferenceId }): Promise<void> {
+    const target =
+      'clip' in what ? this.#clipTarget(what.clip) : this.#referenceTarget(what.reference);
+    if (target === null) return;
+    let picked;
     try {
-      const rate = session.sampleRate();
-      const decoded = await decodeAudioFile(file, rate);
-      const clip = this.#missing.clips.find(
-        (entry) => entry.source.fingerprint === decoded.fingerprint,
-      );
-      const reference = this.#missing.references.find(
-        (entry) => entry.source.fingerprint === decoded.fingerprint,
-      );
-      if (clip) {
-        // A pasted copy shares its audio with the clip it came from, so one file relinks both.
-        const matching = this.#missing.clips.filter(
-          (entry) => entry.source.fingerprint === decoded.fingerprint,
-        );
-        for (const entry of matching) {
-          session.attachClip(entry.clip, decoded.mono);
-          this.#audio.loadClip(
-            entry.clip,
-            session.clipSamples(entry.clip),
-            session.clipTrackJson(entry.clip),
-            null,
-          );
-        }
-        this.#missing.clips = this.#missing.clips.filter((entry) => !matching.includes(entry));
-        buildPeaks(decoded.mono, rate, decoded.fingerprint);
-        void this.#cacheMedia(decoded.fingerprint, decoded.mono);
-      } else if (reference) {
-        const channels = stereoOf(decoded.channelData);
-        this.#keepReference(reference.id, reference.source, channels);
-        this.#missing.references = this.#missing.references.filter((entry) => entry !== reference);
-        this.#audio.loadReference(
-          reference.id,
-          channels.map((channel) => channel.slice()),
-          reference.position,
-        );
-        void this.#cacheReference(reference.source, channels);
-      } else {
-        throw new PersistenceError('corrupt', `${file.name} does not match any missing audio.`);
-      }
+      picked = await openFile(AUDIO_KIND);
+    } catch (error) {
+      this.#fail('Relink Audio', error);
+      return;
+    }
+    if (picked === null) return;
+    const decoded = await this.#decodeForRelink(picked.file);
+    if (decoded === null) return;
+    const match = relinkMatch(decoded, target.source);
+    if (match !== 'different') {
+      this.#relinkNow(target, decoded, match);
+      return;
+    }
+    await this.#confirmRelink(decoded, [target], 0);
+  }
+
+  /** Decodes a file at the project rate, or reports why not and returns `null`. */
+  async #decodeForRelink(file: File): Promise<DecodedSource | null> {
+    const session = this.#session;
+    if (!session) return null;
+    this.#progress('Relink Audio', 0);
+    try {
+      const decoded = await decodeAudioFile(file, session.sampleRate(), (done) => {
+        this.#progress('Relink Audio', done);
+      });
       this.#idle();
-      this.#publish();
-      this.#toast.info('Audio relinked');
-      this.#askForMissing();
+      await this.#checkpoint();
+      return decoded;
+    } catch (error) {
+      if (error instanceof WorkerCancelled) {
+        this.#idle();
+      } else {
+        this.#fail('Relink Audio', error);
+      }
+      return null;
+    }
+  }
+
+  /** Relinks a target that matches, without asking. */
+  #relinkNow(target: AudioTarget, decoded: DecodedSource, match: RelinkMatch): void {
+    try {
+      this.#putAudio(target, decoded, match);
+      this.#settle(target, decoded, match);
     } catch (error) {
       this.#fail('Relink Audio', error);
     }
+  }
+
+  /** Opens Relink Audio over `targets`, resolving once it is answered. */
+  #confirmRelink(
+    decoded: DecodedSource,
+    targets: readonly AudioTarget[],
+    initial: number,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      let snapshot: AudioSnapshot | null = null;
+      const revert = (): void => {
+        if (snapshot === null) return;
+        try {
+          this.#restoreAudio(snapshot);
+        } catch (error) {
+          this.#fail('Relink Audio', error);
+        }
+        snapshot = null;
+        this.#publish();
+      };
+      openRelinkDialog({
+        file: { name: decoded.name, duration: decoded.duration },
+        targets: targets.map((target) => ({ label: target.label, source: target.source })),
+        initial,
+        preview: (index) => {
+          revert();
+          const target = targets[index];
+          if (target === undefined) return;
+          snapshot = this.#snapshot(target);
+          try {
+            this.#putAudio(target, decoded, 'different');
+          } catch (error) {
+            this.#fail('Relink Audio', error);
+          }
+          this.#publish();
+        },
+        apply: (index) => {
+          const target = targets[index];
+          if (target !== undefined) this.#settle(target, decoded, 'different');
+          snapshot = null;
+          resolve();
+        },
+        cancel: () => {
+          revert();
+          resolve();
+        },
+      });
+    });
+  }
+
+  /** A clip's audio, shared with every clip pasted from the same source. */
+  #clipTarget(clip: ClipId): AudioTarget | null {
+    const session = this.#session;
+    if (!session) return null;
+    const entries = session.media().clips;
+    const source = entries.find((entry) => entry.clip === clip)?.source;
+    if (source === undefined) return null;
+    const clips = entries
+      .filter((entry) => entry.source.fingerprint === source.fingerprint)
+      .map((entry) => entry.clip);
+    return { kind: 'clip', clips, source, label: this.#clipLabel(clip, source) };
+  }
+
+  #referenceTarget(id: ReferenceId): AudioTarget | null {
+    const reference = this.#store.state.edits?.references.find((entry) => entry.id === id);
+    if (reference === undefined) return null;
+    return {
+      kind: 'reference',
+      reference,
+      source: reference.source,
+      label: displayTitle(reference),
+    };
+  }
+
+  #clipLabel(clip: ClipId, source: SourceInfo): string {
+    const found = this.#store.state.edits?.clips.find((entry) => entry.id === clip);
+    return found === undefined ? sourceTitle(source.name) : displayTitle(found);
+  }
+
+  /** Everything the open project is still waiting for, one target per source. */
+  #missingTargets(): AudioTarget[] {
+    const targets: AudioTarget[] = [];
+    for (const entry of this.#missing.clips) {
+      const shared = targets.find(
+        (target) =>
+          target.kind === 'clip' && target.source.fingerprint === entry.source.fingerprint,
+      );
+      if (shared?.kind === 'clip') {
+        shared.clips.push(entry.clip);
+        continue;
+      }
+      targets.push({
+        kind: 'clip',
+        clips: [entry.clip],
+        source: entry.source,
+        label: this.#clipLabel(entry.clip, entry.source),
+      });
+    }
+    for (const reference of this.#missing.references) {
+      targets.push({
+        kind: 'reference',
+        reference,
+        source: reference.source,
+        label: displayTitle(reference),
+      });
+    }
+    return targets;
+  }
+
+  #snapshot(target: AudioTarget): AudioSnapshot {
+    const session = this.#session;
+    const clips = new Map<ClipId, Float32Array | null>();
+    if (target.kind === 'reference') {
+      const kept = this.#references.get(target.reference.id);
+      return { target, clips, channels: kept?.map((channel) => channel.slice()) ?? null };
+    }
+    const attached = new Set(
+      session?.media().clips.flatMap((entry) => (entry.attached ? [entry.clip] : [])) ?? [],
+    );
+    for (const clip of target.clips) {
+      clips.set(clip, session && attached.has(clip) ? session.clipSamples(clip) : null);
+    }
+    return { target, clips, channels: null };
+  }
+
+  /** Gives a target the decoded audio, fitted to the recorded length unless it matches exactly. */
+  #putAudio(target: AudioTarget, decoded: DecodedSource, match: RelinkMatch): void {
+    const session = this.#session;
+    if (!session) return;
+    const frames = target.source.frames;
+    // The file gives the samples back only when they were kept as it decoded them.
+    const untouched =
+      decoded.frames === frames &&
+      (target.kind === 'clip' || decoded.channels === target.source.channels);
+    this.#noteOrigin(
+      target.kind === 'clip' ? target.source.fingerprint : referenceKey(target.source.fingerprint),
+      decoded,
+      untouched,
+    );
+    if (target.kind === 'clip') {
+      const mono = match === 'exact' ? decoded.mono : fitFrames(decoded.mono, frames);
+      for (const clip of target.clips) {
+        if (match === 'exact') {
+          session.attachClip(clip, mono);
+        } else {
+          session.relinkClip(clip, mono);
+        }
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      }
+      buildPeaks(mono, session.sampleRate(), target.source.fingerprint);
+      return;
+    }
+    const channels = fitChannels(decoded.channelData, target.source.channels).map((channel) =>
+      fitFrames(channel, frames),
+    );
+    this.#keepReference(target.reference.id, target.source, channels);
+    this.#audio.loadReference(
+      target.reference.id,
+      channels.map((channel) => channel.slice()),
+      target.reference.position,
+    );
+  }
+
+  /** Puts back what a target held before a preview. */
+  #restoreAudio(snapshot: AudioSnapshot): void {
+    const session = this.#session;
+    if (!session) return;
+    const { target } = snapshot;
+    // The preview's file is not the audio put back, so nothing is known about where that came from.
+    this.#origins.delete(
+      target.kind === 'clip' ? target.source.fingerprint : referenceKey(target.source.fingerprint),
+    );
+    if (target.kind === 'clip') {
+      for (const [clip, samples] of snapshot.clips) {
+        if (samples === null) {
+          session.detachClip(clip);
+          // Empty audio is how the engine is told a clip has none.
+          this.#audio.loadClip(clip, new Float32Array(0), session.clipTrackJson(clip), null);
+          dropPeaks(target.source.fingerprint);
+          continue;
+        }
+        session.relinkClip(clip, samples);
+        buildPeaks(samples, session.sampleRate(), target.source.fingerprint);
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      }
+      return;
+    }
+    const id = target.reference.id;
+    if (snapshot.channels === null) {
+      this.#references.delete(id);
+      dropPeaks(referencePeaksKey(target.source.fingerprint));
+      this.#audio.loadReference(id, [new Float32Array(0)], target.reference.position);
+      return;
+    }
+    this.#keepReference(id, target.source, snapshot.channels);
+    this.#audio.loadReference(
+      id,
+      snapshot.channels.map((channel) => channel.slice()),
+      target.reference.position,
+    );
+  }
+
+  /** Marks a relinked target found, caches its audio and reports it. */
+  #settle(target: AudioTarget, decoded: DecodedSource, match: RelinkMatch): void {
+    const session = this.#session;
+    if (!session) return;
+    if (target.kind === 'clip') {
+      this.#missing.clips = this.#missing.clips.filter(
+        (entry) => !target.clips.includes(entry.clip),
+      );
+      const first = target.clips[0];
+      if (first !== undefined) {
+        void this.#cacheMedia(target.source.fingerprint, session.clipSamples(first), true);
+      }
+    } else {
+      const id = target.reference.id;
+      this.#missing.references = this.#missing.references.filter((entry) => entry.id !== id);
+      const channels = this.#references.get(id);
+      if (channels) void this.#cacheReference(target.source, channels, true);
+    }
+    this.#publish();
+    this.#toast.info(
+      match === 'different' ? `Relinked ${target.label} to ${decoded.name}` : 'Audio relinked',
+    );
+    this.#askForMissing();
   }
 
   /**
@@ -1435,7 +2147,10 @@ class AxysWorkspace implements Workspace {
   async #install(session: Session, view: ViewState | null, id: string | null): Promise<void> {
     this.#session = session;
     // A fresh import has no file of its own yet, so the next Save asks where it goes.
-    if (view === null) this.#projectFile = null;
+    if (view === null) {
+      this.#projectFile = null;
+      this.#projectFileAudio = false;
+    }
 
     const edits = session.state();
     this.#projectId = id ?? newProjectId();
@@ -1492,6 +2207,10 @@ class AxysWorkspace implements Workspace {
       view: { ...framed, playhead: 0 },
       transport: { ...this.#store.state.transport, playing: false, position: 0, loop: null },
       analysis: { running: false, progress: 1, stage: '' },
+      offline: {
+        clips: this.#missing.clips.map((entry) => entry.clip),
+        references: this.#missing.references.map((reference) => reference.id),
+      },
       dirty: false,
     });
     this.#audio.setTail(endLeniency(this.#store.state));
@@ -1524,18 +2243,80 @@ class AxysWorkspace implements Workspace {
     });
   }
 
-  async #cacheMedia(fingerprint: string, mono: Float32Array): Promise<void> {
+  /** Keeps a clip's audio on the device. `replace` overwrites what is already kept. */
+  async #cacheMedia(
+    fingerprint: string,
+    mono: Float32Array,
+    replace = false,
+    rate = this.#session?.sampleRate() ?? 48_000,
+  ): Promise<void> {
+    await this.#storeSource(fingerprint, [mono], 'mono', rate, replace);
+  }
+
+  /**
+   * Keeps a source's audio on the device as the smaller exact file: the one it was imported from,
+   * or a WAV of its samples.
+   *
+   * @remarks `replace` overwrites what is already kept.
+   */
+  async #storeSource(
+    key: string,
+    channels: readonly Float32Array[],
+    role: StoredRole,
+    rate: number,
+    replace: boolean,
+  ): Promise<void> {
     const media = this.#media;
     if (!media) return;
+    const origin = this.#origins.get(key);
     this.#writes += 1;
     try {
-      if (await media.has(fingerprint)) return;
-      await media.write(fingerprint, mono);
+      if (!replace && (await media.hasAny(key))) return;
+      const stored = await storeAudio({ channels, role, sampleRate: rate, origin });
+      await media.writeStored(key, stored);
     } catch {
       this.#toast.warn('Audio not cached');
     } finally {
       this.#writes -= 1;
     }
+  }
+
+  /** Keeps a source's audio on the device as a file it already has, such as one a package held. */
+  async #keepStored(key: string, stored: StoredAudio): Promise<void> {
+    const media = this.#media;
+    if (!media) return;
+    this.#writes += 1;
+    try {
+      await media.writeStored(key, stored);
+    } catch {
+      this.#toast.warn('Audio not cached');
+    } finally {
+      this.#writes -= 1;
+    }
+  }
+
+  /**
+   * A source's samples at `rate`, from what the device or a package keeps, or `null` when there
+   * are none or they no longer decode to the audio they were kept for.
+   *
+   * @remarks Audio an earlier build kept as raw PCM is read as it is and kept again in the new
+   * shape, which replaces it.
+   */
+  async #loadSource(
+    key: string,
+    role: StoredRole,
+    channels: number,
+    rate: number,
+    preloaded?: ReadonlyMap<string, StoredAudio>,
+  ): Promise<Float32Array[] | null> {
+    const stored =
+      preloaded?.get(key) ?? (await this.#media?.readStored(key).catch(() => null)) ?? null;
+    if (stored !== null) return restoreAudio(stored, rate);
+    const legacy = await this.#readMedia(key);
+    if (legacy === null) return null;
+    const restored = role === 'mono' ? [legacy] : splitChannels(legacy, channels);
+    void this.#storeSource(key, restored, role, rate, true);
+    return restored;
   }
 
   /**
@@ -1557,20 +2338,23 @@ class AxysWorkspace implements Workspace {
     void this.#autosave?.flush();
   }
 
-  /** Keeps a reference's channels on the device, one after the other in one buffer. */
-  async #cacheReference(source: SourceInfo, channels: readonly Float32Array[]): Promise<void> {
-    const media = this.#media;
-    if (!media) return;
-    const key = referenceKey(source.fingerprint);
-    this.#writes += 1;
-    try {
-      if (await media.has(key)) return;
-      await media.write(key, joinChannels(channels));
-    } catch {
-      this.#toast.warn('Audio not cached');
-    } finally {
-      this.#writes -= 1;
-    }
+  /**
+   * Keeps a reference's channels on the device, one after the other in one buffer.
+   *
+   * @remarks `replace` overwrites what is already kept.
+   */
+  async #cacheReference(
+    source: SourceInfo,
+    channels: readonly Float32Array[],
+    replace = false,
+  ): Promise<void> {
+    await this.#storeSource(
+      referenceKey(source.fingerprint),
+      channels,
+      'channels',
+      this.#session?.sampleRate() ?? source.sampleRate,
+      replace,
+    );
   }
 
   #projectJson(): string | null {
@@ -1635,6 +2419,10 @@ class AxysWorkspace implements Workspace {
           selectionForRanges(blobs, this.#store.state.selection.ranges),
           this.#store.state.editMode,
         ),
+        offline: {
+          clips: this.#missing.clips.map((entry) => entry.clip),
+          references: this.#missing.references.map((reference) => reference.id),
+        },
         dirty: true,
       });
       this.#audio.setTail(endLeniency(this.#store.state));
@@ -1696,11 +2484,34 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  #progress(stage: string, progress: number): void {
+  /**
+   * Covers the editor with work in progress.
+   *
+   * @remarks `progress` is the current file's fraction, 0 while unknown. A batch adds which file
+   * it is and how many there are, and its own cancel. `cancel` labels the cover's cancel button
+   * for work outside a batch; without one the cover offers none.
+   */
+  #progress(stage: string, progress: number, cancel?: string): void {
+    const batch = this.#batch;
     this.#store.update({
       phase: this.#session ? this.#store.state.phase : 'loading',
-      analysis: { running: true, progress, stage },
+      analysis: {
+        running: true,
+        progress,
+        stage,
+        ...(batch
+          ? {
+              file: batch.file,
+              index: batch.index,
+              total: batch.total,
+              cancel: `Cancel ${batch.noun}`,
+            }
+          : cancel === undefined
+            ? {}
+            : { cancel }),
+      },
     });
+    this.#showBatch(progress);
   }
 
   #idle(): void {
@@ -1742,17 +2553,15 @@ function stereoOf(channels: readonly Float32Array[]): Float32Array[] {
   return channels.slice(0, 2).map((channel) => channel.slice());
 }
 
-/** Channels one after the other in one buffer, which is how the media store keeps them. */
-function joinChannels(channels: readonly Float32Array[]): Float32Array {
-  const frames = channels[0]?.length ?? 0;
-  const joined = new Float32Array(frames * channels.length);
-  channels.forEach((channel, index) => {
-    joined.set(channel.subarray(0, frames), index * frames);
-  });
-  return joined;
+/** Channels mixed or doubled to `count`, one or two, the way a reference recorded them. */
+function fitChannels(channels: readonly Float32Array[], count: number): Float32Array[] {
+  const [left, right] = channels;
+  if (left === undefined) return [];
+  if (count <= 1) return [mixToMono(channels.slice(0, 2), left.length)];
+  return [left.slice(), (right ?? left).slice()];
 }
 
-/** Undoes {@link joinChannels}. */
+/** A reference's channels from the one buffer an earlier build kept them in, one after the other. */
 function splitChannels(joined: Float32Array, count: number): Float32Array[] {
   const channels = Math.max(1, Math.min(2, count));
   const frames = Math.floor(joined.length / channels);
@@ -1803,11 +2612,6 @@ function toBytes(bytes: Uint8Array): ArrayBuffer {
   return copy;
 }
 
-/** Whether a save can hand back a file to write to again without asking. */
-function hasHandleSupport(): boolean {
-  return typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker === 'function';
-}
-
 function describe(error: unknown): string {
   if (error instanceof AxysError || error instanceof PersistenceError) return error.message;
   if (error instanceof Error) return error.message;
@@ -1815,58 +2619,32 @@ function describe(error: unknown): string {
   return 'Unknown error';
 }
 
-/**
- * The menu shown over the editor.
- *
- * @remarks Every entry runs a command and takes its key and its icon from that command, so the
- * menu, the toolbar and the keyboard cannot drift apart, and the key shown is the one that works
- * whether or not the menu is open. Over open canvas the blob entries are shown disabled rather
- * than removed, so the menu keeps its shape.
- */
-function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHooks): MenuEntry[] {
-  const item = (id: string, label: string, icon: IconName, needsBlob = true): MenuEntry => ({
-    label,
-    icon,
-    key: findCommand(commands, id)?.shortcut,
-    enabled: (!needsBlob || onBlob) && hooks.isCommandEnabled(id),
-    run: () => {
-      hooks.runCommand(id);
-    },
-  });
-  return [
-    item('edit.cut', 'Cut', 'cut', false),
-    item('edit.copy', 'Copy', 'copy', false),
-    item('edit.paste', 'Paste', 'paste', false),
-    { separator: true },
-    item('edit.reset', 'Reset to Origin', 'reset'),
-    item('edit.joinBlobs', 'Join Blobs', 'join'),
-    { separator: true },
-    item('edit.excludeBlob', 'Exclude Blob', 'exclude'),
-    { separator: true },
-    item('edit.deleteBlobs', 'Delete Blobs', 'delete'),
-    item('edit.deleteClip', 'Delete Clip', 'delete'),
-    { separator: true },
-    item('edit.trimStart', 'Trim Start', 'trimStart', false),
-    item('edit.trimEnd', 'Trim End', 'trimEnd', false),
-    item('edit.resetTrim', 'Reset Trim', 'reset'),
-    { separator: true },
-    item('transport.loopSelection', 'Loop Selection', 'loop', false),
-    item('file.exportWav', 'Export Audio', 'export', false),
-  ];
-}
+/** The menu shown over a blob or open canvas, as command ids. */
+const BLOB_MENU: readonly string[] = [
+  'edit.cut',
+  'edit.copy',
+  'edit.paste',
+  SEPARATOR,
+  'edit.reset',
+  'edit.joinBlobs',
+  SEPARATOR,
+  'edit.excludeBlob',
+  SEPARATOR,
+  'edit.deleteBlobs',
+  'edit.deleteClip',
+  SEPARATOR,
+  'file.relinkAudio',
+  SEPARATOR,
+  'edit.trimStart',
+  'edit.trimEnd',
+  'edit.resetTrim',
+  SEPARATOR,
+  'transport.loopSelection',
+  'file.exportWav',
+];
 
-/** The menu shown over a reference's band. */
-function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
-  return [
-    {
-      label: 'Delete Reference',
-      icon: 'delete',
-      run: () => {
-        hooks.applyEdit({ type: 'removeReference', reference });
-      },
-    },
-  ];
-}
+/** The menu shown over a reference's band, as command ids. */
+const REFERENCE_MENU: readonly string[] = ['file.relinkAudio', SEPARATOR, 'edit.deleteReference'];
 
 /** Which import a dropped file is, from its name and media type. */
 /** Names files being imported: one file's title, or how many there are. */
@@ -1878,9 +2656,28 @@ function describeFiles(files: readonly File[]): string {
 
 function kindOf(file: File): 'project' | 'midi' | 'audio' {
   const name = file.name.toLowerCase();
-  if (name.endsWith('.axys.json') || name.endsWith('.json')) return 'project';
+  if (name.endsWith('.axys.json') || name.endsWith('.json') || name.endsWith(PACKAGE_EXTENSION)) {
+    return 'project';
+  }
   if (name.endsWith('.mid') || name.endsWith('.midi') || file.type === 'audio/midi') return 'midi';
   return 'audio';
+}
+
+/** The slice of the File Handling API's launch queue this app reads. */
+interface LaunchQueue {
+  setConsumer(consumer: (params: { files: readonly FileHandle[] }) => void): void;
+}
+
+/**
+ * Opens the files an installed Axys was started with, from the manifest's file handlers.
+ *
+ * @remarks A browser without the File Handling API has no launch queue, and nothing happens.
+ */
+function consumeLaunches(workspace: AxysWorkspace): void {
+  const queue = (globalThis as { launchQueue?: LaunchQueue }).launchQueue;
+  queue?.setConsumer((params) => {
+    if (params.files.length > 0) void workspace.openLaunched(params.files);
+  });
 }
 
 /** Accepts audio, MIDI and project files dropped anywhere on the window. */
@@ -2247,6 +3044,14 @@ function buildHooks(
     focusSource(clip) {
       workspace()?.focus(clip);
     },
+    selectSource(target) {
+      if ('reference' in target) {
+        store.update({ selectedReference: target.reference, selection: emptySelection() });
+        return;
+      }
+      workspace()?.focus(target.clip);
+      context()?.editor.selectClip(target.clip);
+    },
     sourceMenu() {
       return sourceMenu(store.state, (clip, others) => {
         workspace()?.focus(clip, others);
@@ -2262,6 +3067,11 @@ function buildHooks(
       const ctx = context();
       const command = findCommand(commands, id);
       return ctx !== null && command !== undefined && command.enabled(ctx);
+    },
+    isCommandChecked(id: string): boolean | undefined {
+      const ctx = context();
+      const command = findCommand(commands, id);
+      return ctx === null || command?.checked === undefined ? undefined : command.checked(ctx);
     },
     applyEdit(op: EditOp): void {
       workspace()?.apply(op);
@@ -2467,11 +3277,14 @@ async function start(): Promise<void> {
     },
     contextMenu: (hit, at) => {
       const reference = hit.reference;
+      // A reference's menu acts on that reference, so it becomes the one selected first.
+      if (reference !== null) {
+        store.update({ selectedReference: reference, selection: emptySelection() });
+      }
       showContextMenu(
-        reference === null
-          ? blobMenu(hit.blob !== null, commands, hooks)
-          : referenceMenu(reference, hooks),
+        shell.commandMenu(reference === null ? BLOB_MENU : REFERENCE_MENU),
         at,
+        shell.canvas,
       );
     },
     focus: (clip) => {
@@ -2543,6 +3356,9 @@ async function start(): Promise<void> {
   });
 
   await restoreLastProject(workspace, projects, toast);
+  // After the restore, so a file the system opened Axys with replaces what reopened rather than
+  // being replaced by it.
+  consumeLaunches(workspace);
   noteDegradedCapabilities(caps, toast, () => {
     hooks.runCommand('help.showDiagnostics');
   });

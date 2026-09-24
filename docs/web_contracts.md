@@ -117,7 +117,9 @@ draws from; with one clip at zero it is that clip's own plan. Playback and expor
 joined with an unvoiced frame between them and deleted material unvoiced. `conflicts()` are
 measured inside each clip, across every clip. `proposeMappingsPreview(clips)` maps each listed
 clip to the guide on its own, or every clip when none are listed. `addClip` takes mono samples at the project rate and
-is one undo step; `attachClip` refuses audio whose fingerprint is not the clip's.
+is one undo step; `attachClip` refuses audio whose fingerprint is not the clip's. `relinkClip(clip,
+samples)` takes any audio exactly as long as the recorded source and keeps the recorded source, and
+`detachClip(clip)` takes a clip's audio away again.
 
 `AnalysedSessionInput` carries `samples`, `sampleRate`, `name`, the analysis worker's `trackJson`
 and `blobsJson`, and the optional `f0` and `segment` parameters it ran with. It is the import path:
@@ -255,7 +257,10 @@ export interface Command {
   shortcut?: string;
   /** A second key that runs the same command, never shown. */
   altShortcut?: string;
+  /** Whether the command can run against the current state, which is its context. */
   enabled(ctx: CommandContext): boolean;
+  /** Whether the setting the command turns on is on; absent for an action. */
+  checked?(ctx: CommandContext): boolean;
   run(ctx: CommandContext): void | Promise<void>;
 }
 
@@ -280,6 +285,15 @@ Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics. New Proje
 editor and comes before Open, asking the same question about unsaved work.
 
 Not every command is drawn where its group is: the mixer is opened from the footer, beside the zoom.
+
+Every action is a command. Every command has a shortcut, which `app/commands.test.ts` enforces,
+and a key is shared only by commands that are never enabled together. A menu is a list of command
+ids built by `commandMenu` in `ui/shell.ts`, reading each item's label, icon, key, enabled state
+and check mark from the command; only data lists, such as recent projects and the sources, carry
+items of their own. Toolbar, inspector and footer buttons run commands, and tooltips read keys
+from them. A command that needs context is enabled only while that context exists: a source
+command acts on `sourceTarget(state)`, the selected reference or the one clip the selected blobs
+belong to, and `AppState.selectedReference` is set by pressing a reference's band or its strip.
 
 One Open covers a project or a vocal, and replaces what is open. Import adds to the open project:
 a MIDI file becomes the guide, and audio is asked about, Import Vocal putting it on the lane after
@@ -399,9 +413,11 @@ the clip's position; a clip left out of `setPlans` is off the lane and silent bu
 renderer for a redo. References are read straight from their channels at output time, never
 through a plan, and their pan is a balance.
 
-`audio/decode.ts` exports `decodeAudioFile(file: File, sampleRate?: number): Promise<DecodedSource>`
-using `AudioContext.decodeAudioData`, preserving the original sample rate, channel count and a
-fingerprint, and reporting an unsupported format clearly. `sampleRate` decodes at the project's
+`audio/decode.ts` exports `decodeAudioFile(file: File, sampleRate?: number, onProgress?):
+Promise<DecodedSource>`, decoding in the core through the decode worker and falling back to
+`AudioContext.decodeAudioData` for a format the core does not read. It preserves the original
+sample rate, channel count and a fingerprint, and reports an unsupported format clearly.
+`cancelDecoding()` abandons decodes in flight and `warmDecoder()` loads the worker early. `sampleRate` decodes at the project's
 rate instead, which is how a second vocal or a reference joins a project.
 
 ## Workers
@@ -411,7 +427,11 @@ posting `{ stage, progress }` messages and honouring a cancel message. `workers/
 runs offline rendering and WAV encoding at `Quality.Offline`, with progress and cancel, taking the
 chosen `depth`, `sampleRate`, `references` and `withReferences` on its `exportWav` request. The import path runs through the
 analysis worker rather than the main thread, reports its real stage and progress, and is
-cancellable by the Cancel Import command. Both are typed by `workers/protocol.ts`, which exports the request and response unions.
+cancellable by the Cancel Import command. `workers/decode.worker.ts` decodes media with the core's
+`AudioDecoder`, reporting progress between batches of packets. A client with a stall limit takes
+its worker down when a job goes that long without reporting, failing the job with
+`WorkerStalled`: 20 seconds for a decode, two minutes for an analysis. All are typed by
+`workers/protocol.ts`, which exports the request and response unions.
 
 ## Editor: `editor/`
 
@@ -630,13 +650,30 @@ export class MediaStore {
 }
 ```
 
+`persistence/package.ts` exports `packProject(json, media, onProgress?)` and
+`unpackProject(file, onProgress?)` for a `.axys` package: a zip of `project.axys.json`,
+`manifest.json` and each source's PCM as a WAV at the smallest exact depth, 16-bit, 24-bit or
+32-bit float, under `audio/`, keyed in the manifest by its media store key. Every save writes
+one, with no audio unless it is bundled, and Open, Import, a drop and a launch from the file
+manager open one, attaching and caching its audio. `isPackage(file)` tells one from a `.axys.json`
+document an earlier build wrote. The manifest declares `file_handlers` for `.axys`, audio and
+MIDI, and `main.ts` reads the File Handling API's `launchQueue` after the startup restore, so a
+launched project replaces what reopened and Save writes back to it.
+
 `persistence/project-io.ts` exports `exportProject(json, name)` writing a `.axys.json` download and
 `importProject(file, read)` reading one back through the core's migration, plus
 `relink(file, expected: SourceInfo)` which verifies the fingerprint and refuses a different file
 with a clear message. A reopened project opens with whatever audio the device holds and names
 what is missing; audio opened or dropped while it waits is matched to a missing clip or
-reference by fingerprint. `MediaStore` keys a reference's channels, one after the other, by its
-fingerprint with a `-reference` suffix. `persistence/autosave.ts` debounces
+reference by `app/relink.ts`: a matching fingerprint, or the recorded name and length. Anything
+else opens Relink Audio, which previews the file on a chosen source until Apply or Cancel. Relink
+Audio on a blob, a reference or a mixer strip does the same for audio that is not missing. Relinked
+audio is fitted to the recorded length and cached under the recorded fingerprint. `MediaStore`
+keeps each source as a `persistence/stored-audio.ts` entry under its fingerprint, a reference's
+with a `-reference` suffix: the original file where decoding it again gives the exact samples and
+it is the smaller, and otherwise a WAV at the smallest exact depth. `readStored` and `writeStored`
+read and write one; the raw PCM an earlier build kept under the same key is still read, and is
+replaced the next time the source is kept. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
 
 `persistence/restore.ts` exports `restoreNewest(source, open, preferred)`, which picks the stored

@@ -37,6 +37,8 @@ import type { VocalStrip } from '../audio/mixer.js';
 import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
+import { claimContextMenu, showContextMenu } from './menu.js';
+import type { MenuEntry } from './menu.js';
 import { setTooltip } from './tooltip.js';
 import { referenceColour, resolveTheme, sourceTheme } from './theme.js';
 import type { AppState } from '../app/store.js';
@@ -51,7 +53,17 @@ export interface MixerHooks {
   meters(): MeterReport | null;
   /** Brings a clip forward in the editor. */
   focus(clip: ClipId): void;
+  /** Makes a clip's blobs, or a reference, the selection, so commands act on it. */
+  selectSource(target: { clip: ClipId } | { reference: ReferenceId }): void;
+  /** A menu of commands by id. */
+  commandMenu(ids: readonly string[]): MenuEntry[];
 }
+
+/** The menu a clip's track carries, as command ids. */
+const CLIP_MENU: readonly string[] = ['file.relinkAudio', '-', 'edit.deleteClip'];
+
+/** The menu a reference's strip carries, as command ids. */
+const REFERENCE_MENU: readonly string[] = ['file.relinkAudio', '-', 'edit.deleteReference'];
 
 /** Which strip on the desk a control belongs to. */
 type StripKey =
@@ -199,6 +211,8 @@ export class MixerPanel {
   #tracks = new Map<ClipId, HTMLElement>();
   /** Each reference's strip, by the fingerprint its colour comes from. */
   #references = new Map<HTMLElement, string>();
+  /** Each reference's strip, by the reference it belongs to. */
+  #referenceIds = new Map<HTMLElement, ReferenceId>();
   #lineup: string | null = null;
 
   #mixer: MixerSettings = DEFAULT_MIXER;
@@ -262,12 +276,26 @@ export class MixerPanel {
     }
     this.#mixer = state.edits?.mixer ?? DEFAULT_MIXER;
     const theme = resolveTheme();
+    // A source whose audio is missing is drawn as its blobs are: the warning colour, dotted.
+    const offline = new Set(state.offline.clips);
+    const offlineReferences = new Set(state.offline.references);
     for (const [clip, track] of this.#tracks) {
       track.classList.toggle('is-active', state.layer[0] === clip && this.#tracks.size > 1);
-      track.style.setProperty('--axys-source', sourceTheme(theme, clip).blobBounds);
+      track.classList.toggle('is-offline', offline.has(clip));
+      track.style.setProperty(
+        '--axys-source',
+        offline.has(clip) ? 'var(--axys-warning)' : sourceTheme(theme, clip).blobBounds,
+      );
     }
     for (const [strip, fingerprint] of this.#references) {
-      strip.style.setProperty('--axys-source', referenceColour(fingerprint));
+      const id = this.#referenceIds.get(strip);
+      const missing = id !== undefined && offlineReferences.has(id);
+      strip.classList.toggle('is-offline', missing);
+      strip.classList.toggle('is-selected', id !== undefined && state.selectedReference === id);
+      strip.style.setProperty(
+        '--axys-source',
+        missing ? 'var(--axys-warning)' : referenceColour(fingerprint),
+      );
     }
     const ready = state.edits !== null;
     // While anything is soloed, the solos decide what is heard and the mutes wait, so the mutes
@@ -324,6 +352,7 @@ export class MixerPanel {
     this.#strips = [];
     this.#tracks = new Map();
     this.#references = new Map();
+    this.#referenceIds = new Map();
     const sources = group('is-sources');
     const references = group('is-references');
     const outputs = group('is-outputs');
@@ -345,6 +374,7 @@ export class MixerPanel {
       head.addEventListener('click', () => {
         this.#hooks.focus(clip.id);
       });
+      this.#bindMenu(track, { clip: clip.id });
       this.#tracks.set(clip.id, track);
       const pair = document.createElement('div');
       pair.className = 'axys-mixer-track-strips';
@@ -369,7 +399,9 @@ export class MixerPanel {
         true,
       );
       strip.classList.add('is-reference');
+      this.#bindMenu(strip, { reference: reference.id });
       this.#references.set(strip, reference.source.fingerprint);
+      this.#referenceIds.set(strip, reference.id);
       const head = strip.querySelector<HTMLElement>('.axys-mixer-name');
       if (head !== null) {
         this.#bindSourceName(strip, head, title, reference.source.name, (name) => ({
@@ -385,6 +417,27 @@ export class MixerPanel {
       this.#buildStrip({ kind: 'master' }, MASTER_NAME, MASTER_NAME, true),
     );
     this.#element.replaceChildren(sources, references, outputs);
+  }
+
+  /** Opens Relink Audio from a right-click anywhere on a source's track or strip. */
+  /**
+   * Opens a source's command menu from a right-click anywhere on its track or strip.
+   *
+   * @remarks The source becomes the selected one first, so the menu's commands act on it.
+   */
+  #bindMenu(element: HTMLElement, target: { clip: ClipId } | { reference: ReferenceId }): void {
+    element.addEventListener('contextmenu', (event) => {
+      if (!claimContextMenu(event, element)) return;
+      this.#hooks.selectSource(target);
+      showContextMenu(
+        this.#hooks.commandMenu('clip' in target ? CLIP_MENU : REFERENCE_MENU),
+        {
+          x: event.clientX,
+          y: event.clientY,
+        },
+        element,
+      );
+    });
   }
 
   /**

@@ -11,11 +11,12 @@ import type {
   MappingReport,
   MidiFile,
   PitchTrackArrays,
+  ReferenceId,
   RenderPlan,
   TimingConflict,
   ViewState,
 } from '../core/types.js';
-import { clipEnd } from '../core/types.js';
+import { clipEnd, clipOf } from '../core/types.js';
 import { barSecondsAt } from '../core/timeline.js';
 
 /** The whole application state. Replaced wholesale on each change, never mutated in place. */
@@ -46,7 +47,7 @@ export interface AppState {
   selection: Selection;
   tool: ToolId;
   transport: TransportState;
-  analysis: { running: boolean; progress: number; stage: string };
+  analysis: WorkProgress;
   /** Whether the view scrolls to keep the playhead in sight. Panning the view clears it. */
   follow: boolean;
   /** How the view keeps up while following. */
@@ -69,7 +70,56 @@ export interface AppState {
   clipboard: ClipboardContent | null;
   /** The kept curve picked up with the selection, which Delete deletes. */
   activeStroke: number | null;
+  /** Clips and references whose audio is missing until relinked. */
+  offline: OfflineMedia;
+  /** The reference picked on the canvas or the mixer, which reference commands act on. */
+  selectedReference: ReferenceId | null;
   dirty: boolean;
+}
+
+/**
+ * Long-running work the editor is covered by, such as an import.
+ *
+ * @remarks `progress` is the current item's fraction done, 0 while it is unknown. A batch of
+ * files names the one being worked on in `file` and counts them with `index`, from 0, and
+ * `total`. `cancel` labels the button that stops the work, or is absent where it cannot stop.
+ */
+export interface WorkProgress {
+  running: boolean;
+  progress: number;
+  stage: string;
+  file?: string;
+  index?: number;
+  total?: number;
+  cancel?: string;
+}
+
+/** Sources whose audio is missing. */
+export interface OfflineMedia {
+  clips: ClipId[];
+  references: ReferenceId[];
+}
+
+/**
+ * Whether nothing in the project has audio to play.
+ *
+ * @remarks True only with at least one clip, every clip missing and every reference missing.
+ */
+export function nothingToPlay(state: AppState): boolean {
+  const clips = state.edits?.clips ?? [];
+  const references = state.edits?.references ?? [];
+  if (clips.length === 0) return false;
+  const offline = new Set(state.offline.clips);
+  const offlineReferences = new Set(state.offline.references);
+  return (
+    clips.every((clip) => offline.has(clip.id)) &&
+    references.every((reference) => offlineReferences.has(reference.id))
+  );
+}
+
+/** Whether a blob belongs to a clip whose audio is missing. */
+export function blobOffline(state: AppState, blob: number): boolean {
+  return state.offline.clips.length > 0 && state.offline.clips.includes(clipOf(blob));
 }
 
 /**
@@ -239,6 +289,8 @@ export function initialState(): AppState {
     pitchCutFill: 'sung',
     clipboard: null,
     activeStroke: null,
+    offline: { clips: [], references: [] },
+    selectedReference: null,
     dirty: false,
   };
 }

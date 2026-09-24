@@ -377,6 +377,35 @@ const SOURCE_ACCENTS: readonly AccentName[] = [
 /** Each theme's colours per clip, made once per theme. */
 const SOURCE_THEMES = new WeakMap<Theme, Map<number, Theme>>();
 
+/** Themes already turned into their missing-audio colours. */
+const OFFLINE_THEMES = new WeakMap<Theme, Theme>();
+
+/** `colour` at `alpha`, for a `#rrggbb` colour; any other colour comes back as it is. */
+function withAlpha(colour: string, alpha: number): string {
+  if (!/^#[0-9a-f]{6}$/i.test(colour)) return colour;
+  const byte = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
+  return `${colour}${byte.toString(16).padStart(2, '0')}`;
+}
+
+/**
+ * The colours a blob whose audio is missing is drawn in: the warning colour throughout.
+ */
+export function offlineTheme(theme: Theme): Theme {
+  const known = OFFLINE_THEMES.get(theme);
+  if (known !== undefined) return known;
+  const tinted: Theme = {
+    ...theme,
+    blobFill: withAlpha(theme.warning, 0.08),
+    blobFillSelected: withAlpha(theme.warning, 0.2),
+    blobBounds: theme.warning,
+    selection: theme.warning,
+    handle: theme.warning,
+    handleActive: theme.warning,
+  };
+  OFFLINE_THEMES.set(theme, tinted);
+  return tinted;
+}
+
 /**
  * The colours a clip's blobs are drawn in.
  *

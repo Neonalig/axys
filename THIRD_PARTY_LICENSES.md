@@ -10,27 +10,35 @@ project.
 
 These crates compile into the WebAssembly module in `dist/`.
 
-| Crate                                 | Licence                   |
-| ------------------------------------- | ------------------------- |
-| `bumpalo`                             | MIT OR Apache-2.0         |
-| `cfg-if`                              | MIT OR Apache-2.0         |
-| `console_error_panic_hook`            | MIT OR Apache-2.0         |
-| `js-sys`                              | MIT OR Apache-2.0         |
-| `itoa`                                | MIT OR Apache-2.0         |
-| `memchr`                              | Unlicense OR MIT          |
-| `midly`                               | Unlicense                 |
-| `num-complex`                         | MIT OR Apache-2.0         |
-| `num-integer`                         | MIT OR Apache-2.0         |
-| `num-traits`                          | MIT OR Apache-2.0         |
-| `once_cell`                           | MIT OR Apache-2.0         |
-| `primal-check`                        | MIT OR Apache-2.0         |
-| `rustfft`                             | MIT OR Apache-2.0         |
-| `serde`, `serde_core`, `serde_derive` | MIT OR Apache-2.0         |
-| `serde_json`                          | MIT OR Apache-2.0         |
-| `strength_reduce`                     | MIT OR Apache-2.0 OR Zlib |
-| `transpose`                           | MIT OR Apache-2.0         |
-| `wasm-bindgen` and its macro crates   | MIT OR Apache-2.0         |
-| `zmij`                                | MIT                       |
+| Crate                                    | Licence                              |
+| ---------------------------------------- | ------------------------------------ |
+| `arrayvec`                               | MIT OR Apache-2.0                    |
+| `bitflags`                               | MIT OR Apache-2.0                    |
+| `bumpalo`                                | MIT OR Apache-2.0                    |
+| `bytemuck`                               | Zlib OR Apache-2.0 OR MIT            |
+| `cfg-if`                                 | MIT OR Apache-2.0                    |
+| `console_error_panic_hook`               | MIT OR Apache-2.0                    |
+| `encoding_rs`                            | (Apache-2.0 OR MIT) AND BSD-3-Clause |
+| `extended`                               | MIT                                  |
+| `js-sys`                                 | MIT OR Apache-2.0                    |
+| `itoa`                                   | MIT OR Apache-2.0                    |
+| `lazy_static`                            | MIT OR Apache-2.0                    |
+| `log`                                    | MIT OR Apache-2.0                    |
+| `memchr`                                 | Unlicense OR MIT                     |
+| `midly`                                  | Unlicense                            |
+| `num-complex`                            | MIT OR Apache-2.0                    |
+| `num-integer`                            | MIT OR Apache-2.0                    |
+| `num-traits`                             | MIT OR Apache-2.0                    |
+| `once_cell`                              | MIT OR Apache-2.0                    |
+| `primal-check`                           | MIT OR Apache-2.0                    |
+| `rustfft`                                | MIT OR Apache-2.0                    |
+| `serde`, `serde_core`, `serde_derive`    | MIT OR Apache-2.0                    |
+| `serde_json`                             | MIT OR Apache-2.0                    |
+| `strength_reduce`                        | MIT OR Apache-2.0 OR Zlib            |
+| `symphonia` and its `symphonia-*` crates | MPL-2.0                              |
+| `transpose`                              | MIT OR Apache-2.0                    |
+| `wasm-bindgen` and its macro crates      | MIT OR Apache-2.0                    |
+| `zmij`                                   | MIT                                  |
 
 No JavaScript library is bundled into `dist/`. The application's own TypeScript is the only script
 that ships.

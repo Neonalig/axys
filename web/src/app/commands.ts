@@ -23,7 +23,7 @@ import type { ClipboardContent } from './clipboard.js';
 import { savePreferences } from './preferences.js';
 import { selectionForRanges, selectionInMode, selectionSpan } from './selection.js';
 import { othersOf, stepSource } from './sources.js';
-import { EDIT_MODES, editModeLabel, projectEnd, projectRate } from './store.js';
+import { EDIT_MODES, editModeLabel, nothingToPlay, projectEnd, projectRate } from './store.js';
 import type { AppState, AppStore, EditMode } from './store.js';
 import type { AudioEngine } from '../audio/engine.js';
 import { clipEnd, clipOf, clipStart, MIN_BLOB_SECONDS } from '../core/types.js';
@@ -32,6 +32,7 @@ import type {
   ClipId,
   EditOp,
   OthersView,
+  ReferenceId,
   ExportPreview,
   MappingProposal,
   TimelineMap,
@@ -45,8 +46,13 @@ import { showAlignGuide } from '../ui/align-guide.js';
 import { openDiagnostics } from '../ui/diagnostics.js';
 import { showCorrection, showVoiceCharacter } from '../ui/operations.js';
 import { showExportDialog } from '../ui/export-dialog.js';
+import { showSaveAs } from '../ui/save-as-dialog.js';
 import type { ExportChoice, ExportRange } from '../ui/export-dialog.js';
 import type { ToastHost } from '../ui/toast.js';
+import type { ThemeChoice } from './preferences.js';
+import { ACCENT_LABELS, ACCENT_NAMES } from '../ui/accent.js';
+import { othersLabel } from '../ui/sources-menu.js';
+import type { AccentName } from '../ui/accent.js';
 
 /** A user-invocable action with a stable id, label and optional shortcut. */
 export interface Command {
@@ -61,7 +67,13 @@ export interface Command {
    * for, such as Ctrl+Y for redo, and the one the toolbar names stays the one it names.
    */
   altShortcut?: string;
+  /** Whether the command can run against the current state, which is its context. */
   enabled(ctx: CommandContext): boolean;
+  /**
+   * Whether the setting the command turns on is on, for a menu's check mark and a button's
+   * pressed state. Absent for a command that is an action rather than a setting.
+   */
+  checked?(ctx: CommandContext): boolean;
   run(ctx: CommandContext): void | Promise<void>;
 }
 
@@ -143,7 +155,11 @@ export interface Workspace {
    * @remarks Goes back to the file it was last written to without asking. `askWhere` forces the
    * picker, which is how a copy is saved somewhere else.
    */
-  saveProject(askWhere?: boolean): Promise<void>;
+  saveProject(askWhere?: boolean, fileName?: string, withAudio?: boolean): Promise<void>;
+  /** Writes the project and its audio as one file, asking where. */
+  saveProjectWithAudio(fileName?: string): Promise<void>;
+  /** Asks for files and relinks each to the audio the project is missing. */
+  relinkMissing(): Promise<void>;
 
   /** Closes what is open and returns the editor to an empty project. */
   newProject(): Promise<void>;
@@ -188,6 +204,10 @@ export interface Workspace {
    * not an edit, so it is never undone.
    */
   focus(clip: ClipId | null, others?: OthersView): void;
+  /** Sets the tempo, meter, start and key from what the vocal's notes suggest. */
+  estimate(): void;
+  /** Asks for a file and relinks one clip's or reference's audio to it. */
+  relinkAudio(target: SourceTarget): Promise<void>;
 
   /** Source time a source time snaps to on the musical grid. */
   snapTime(seconds: number): number;
@@ -215,7 +235,41 @@ export interface Chrome {
   toggleCommandPalette(): void;
   /** Opens the keyboard cheatsheet, or closes it when it is already open. */
   toggleCheatsheet(): void;
+  /** The theme chosen now. */
+  readonly themeChoice: ThemeChoice;
+  /** Applies and remembers a theme. */
+  chooseTheme(choice: ThemeChoice): void;
+  /** The accent chosen now. */
+  readonly accent: AccentName;
+  /** Applies and remembers an accent. */
+  chooseAccent(accent: AccentName): void;
+  /** Opens the project tab with the name ready to be typed over. */
+  renameProject(): void;
+  /** Opens one of the inspector's tabs. */
+  showInspectorTab(tab: 'project' | 'properties'): void;
 }
+
+/** One clip's or one reference's audio, which Relink Audio acts on. */
+export type SourceTarget = { clip: ClipId } | { reference: ReferenceId };
+
+/**
+ * The source a source command acts on: the selected reference, or the one clip the selected blobs
+ * belong to. `null` with nothing selected or blobs of several clips selected.
+ */
+export function sourceTarget(state: AppState): SourceTarget | null {
+  if (state.selectedReference !== null) return { reference: state.selectedReference };
+  const clips = new Set(state.selection.blobs.map((blob) => clipOf(blob)));
+  const [only] = clips;
+  return clips.size === 1 && only !== undefined ? { clip: only } : null;
+}
+
+/** How each theme command is named. */
+const THEME_COMMAND_LABELS: Readonly<Record<ThemeChoice, string>> = {
+  system: 'Follow System Theme',
+  dark: 'Dark Theme',
+  light: 'Light Theme',
+  contrast: 'High Contrast Theme',
+};
 
 /** Brings forward the source `step` places after the one in front. */
 function stepFocus(ctx: CommandContext, step: number): void {
@@ -533,6 +587,7 @@ function toolCommand(
     ...(alt === undefined ? {} : { altShortcut: alt }),
     enabled: (ctx) =>
       ctx.store.state.phase === 'ready' && toolWorksIn(id, ctx.store.state.editMode),
+    checked: (ctx) => ctx.store.state.tool === id,
     run: (ctx) => {
       ctx.store.update({ tool: id });
     },
@@ -612,7 +667,29 @@ export function buildCommands(): Command[] {
       shortcut: 'Ctrl+Shift+S',
       enabled: ready,
       run: async (ctx) => {
-        await ctx.workspace.saveProject(true);
+        showSaveAs({
+          name: ctx.workspace.projectName,
+          format: 'project',
+          save: (name, format) => {
+            void ctx.workspace.saveProject(true, name, format === 'package');
+          },
+        });
+      },
+    },
+    {
+      id: 'file.saveProjectWithAudio',
+      label: 'Save with Audio',
+      group: 'File',
+      shortcut: 'Ctrl+Alt+S',
+      enabled: ready,
+      run: async (ctx) => {
+        showSaveAs({
+          name: ctx.workspace.projectName,
+          format: 'package',
+          save: (name, format) => {
+            void ctx.workspace.saveProject(true, name, format === 'package');
+          },
+        });
       },
     },
     {
@@ -651,6 +728,7 @@ export function buildCommands(): Command[] {
       id: 'file.cancelImport',
       label: 'Cancel Import',
       group: 'File',
+      shortcut: 'Escape',
       enabled: (ctx) => ctx.store.state.analysis.running,
       run: (ctx) => {
         ctx.workspace.cancelImport();
@@ -806,6 +884,7 @@ export function buildCommands(): Command[] {
       id: 'edit.resetTrim',
       label: 'Reset Trim',
       group: 'Edit',
+      shortcut: 'Alt+\\',
       enabled: (ctx) =>
         editable(ctx) &&
         targetClips(ctx.store.state).some(
@@ -990,6 +1069,15 @@ export function buildCommands(): Command[] {
           ctx.audio.pause();
           return;
         }
+        if (nothingToPlay(ctx.store.state)) {
+          ctx.toast.warn('No audio loaded. Relink', {
+            text: 'Relink',
+            run: () => {
+              void ctx.workspace.relinkMissing();
+            },
+          });
+          return;
+        }
         // Playing from a playhead already in sight is a request to watch it, so the view
         // takes the playhead back up. Playing from one off screen leaves the view alone.
         // A loop whose bounds are both on screen is watched where it is, so following it is
@@ -1050,6 +1138,7 @@ export function buildCommands(): Command[] {
       group: 'Transport',
       shortcut: 'M',
       enabled: (ctx) => timelineOf(ctx.store.state) !== null,
+      checked: (ctx) => ctx.store.state.transport.metronome,
       run: (ctx) => {
         const timeline = timelineOf(ctx.store.state);
         if (!timeline) return;
@@ -1061,7 +1150,9 @@ export function buildCommands(): Command[] {
       id: 'transport.toggleCountIn',
       label: 'Count In',
       group: 'Transport',
+      shortcut: 'Shift+M',
       enabled: (ctx) => timelineOf(ctx.store.state) !== null,
+      checked: (ctx) => ctx.store.state.transport.countIn,
       run: (ctx) => {
         ctx.audio.setCountIn(!ctx.store.state.transport.countIn);
       },
@@ -1151,6 +1242,7 @@ export function buildCommands(): Command[] {
       group: 'View',
       shortcut: 'F',
       enabled: () => true,
+      checked: (ctx) => ctx.store.state.follow,
       run: (ctx) => {
         const state = ctx.store.state;
         if (state.follow) {
@@ -1192,11 +1284,13 @@ export function buildCommands(): Command[] {
         setEditMode(ctx, EDIT_MODES[(index + count - 1) % count] ?? 'both');
       },
     },
-    ...EDIT_MODES.map((mode): Command => ({
+    ...EDIT_MODES.map((mode, index): Command => ({
       id: `tools.editMode.${mode}`,
       label: `${editModeLabel(mode)} Mode`,
       group: 'Tools',
+      shortcut: `Ctrl+Alt+${String(index + 1)}`,
       enabled: ready,
+      checked: (ctx) => ctx.store.state.editMode === mode,
       run: (ctx) => {
         setEditMode(ctx, mode);
       },
@@ -1260,6 +1354,155 @@ export function buildCommands(): Command[] {
       enabled: () => true,
       run: async () => {
         await openDiagnostics();
+      },
+    },
+    {
+      id: 'file.relinkAudio',
+      label: 'Relink Audio...',
+      group: 'File',
+      shortcut: 'Ctrl+Alt+R',
+      enabled: (ctx) => ready(ctx) && sourceTarget(ctx.store.state) !== null,
+      run: async (ctx) => {
+        const target = sourceTarget(ctx.store.state);
+        if (target !== null) await ctx.workspace.relinkAudio(target);
+      },
+    },
+    {
+      id: 'file.relinkMissing',
+      label: 'Relink Missing Audio...',
+      group: 'File',
+      shortcut: 'Ctrl+Alt+Shift+R',
+      enabled: (ctx) =>
+        ctx.store.state.offline.clips.length + ctx.store.state.offline.references.length > 0,
+      run: async (ctx) => {
+        await ctx.workspace.relinkMissing();
+      },
+    },
+    {
+      id: 'edit.deleteReference',
+      label: 'Delete Reference',
+      group: 'Edit',
+      shortcut: 'Delete',
+      altShortcut: 'Backspace',
+      enabled: (ctx) => editable(ctx) && ctx.store.state.selectedReference !== null,
+      run: (ctx) => {
+        const reference = ctx.store.state.selectedReference;
+        if (reference === null) return;
+        ctx.store.update({ selectedReference: null });
+        ctx.workspace.apply({ type: 'removeReference', reference });
+      },
+    },
+    {
+      id: 'edit.estimate',
+      label: 'Estimate From Vocal',
+      group: 'Edit',
+      shortcut: 'Ctrl+Alt+E',
+      enabled: (ctx) => editable(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 0,
+      run: (ctx) => {
+        ctx.workspace.estimate();
+      },
+    },
+    ...(['show', 'dim', 'hide'] as const).map((mode, index): Command => ({
+      id: `view.${mode}Others`,
+      label: othersLabel(mode),
+      group: 'View',
+      shortcut: `Ctrl+Alt+${String(index + 4)}`,
+      enabled: (ctx) => ready(ctx) && (ctx.store.state.edits?.clips.length ?? 0) > 1,
+      checked: (ctx) => othersOf(ctx.store.state.view) === mode,
+      run: (ctx) => {
+        ctx.workspace.focus(ctx.store.state.layer[0] ?? null, mode);
+      },
+    })),
+    ...(['page', 'centre'] as const).map((mode): Command => ({
+      id: `view.follow.${mode}`,
+      label: mode === 'page' ? 'Page Ahead' : 'Keep Centred',
+      group: 'View',
+      shortcut: mode === 'page' ? 'Shift+F' : 'Ctrl+Alt+F',
+      enabled: () => true,
+      checked: (ctx) => ctx.store.state.follow && ctx.store.state.followMode === mode,
+      run: (ctx) => {
+        savePreferences({ followMode: mode });
+        ctx.store.update({ followMode: mode, follow: true });
+      },
+    })),
+    ...(['system', 'dark', 'light', 'contrast'] as const).map((choice, index): Command => ({
+      id: `view.theme.${choice}`,
+      label: THEME_COMMAND_LABELS[choice],
+      group: 'View',
+      shortcut: `Ctrl+Alt+${String((index + 7) % 10)}`,
+      enabled: () => true,
+      checked: (ctx) => ctx.chrome.themeChoice === choice,
+      run: (ctx) => {
+        ctx.chrome.chooseTheme(choice);
+      },
+    })),
+    ...ACCENT_NAMES.map((accent, index): Command => ({
+      id: `view.accent.${accent}`,
+      label: `${ACCENT_LABELS[accent]} Accent`,
+      group: 'View',
+      shortcut: `Ctrl+Shift+${String(index + 1)}`,
+      enabled: (ctx) => ctx.chrome.themeChoice !== 'contrast',
+      checked: (ctx) => ctx.chrome.accent === accent,
+      run: (ctx) => {
+        ctx.chrome.chooseAccent(accent);
+      },
+    })),
+    {
+      id: 'view.nextAccent',
+      label: 'Next Accent',
+      group: 'View',
+      shortcut: 'Ctrl+Alt+C',
+      enabled: () => true,
+      run: (ctx) => {
+        const at = ACCENT_NAMES.indexOf(ctx.chrome.accent);
+        const next = ACCENT_NAMES[(at + 1) % ACCENT_NAMES.length];
+        if (next !== undefined) ctx.chrome.chooseAccent(next);
+      },
+    },
+    {
+      id: 'view.toggleInspector',
+      label: 'Toggle Inspector',
+      group: 'View',
+      shortcut: 'Ctrl+Alt+I',
+      enabled: () => true,
+      checked: (ctx) => !ctx.store.state.inspectorCollapsed,
+      run: (ctx) => {
+        const collapsed = !ctx.store.state.inspectorCollapsed;
+        savePreferences({ inspectorCollapsed: collapsed });
+        ctx.store.update({ inspectorCollapsed: collapsed });
+      },
+    },
+    {
+      id: 'file.renameProject',
+      label: 'Rename Project',
+      group: 'File',
+      shortcut: 'F2',
+      enabled: ready,
+      run: (ctx) => {
+        ctx.chrome.renameProject();
+      },
+    },
+    ...(['project', 'properties'] as const).map((tab): Command => ({
+      id: `view.${tab}Tab`,
+      label: tab === 'project' ? 'Project Panel' : 'Properties Panel',
+      group: 'View',
+      shortcut: tab === 'project' ? 'Ctrl+Alt+J' : 'Ctrl+Alt+K',
+      enabled: () => true,
+      run: (ctx) => {
+        ctx.chrome.showInspectorTab(tab);
+      },
+    })),
+    {
+      id: 'view.toggleToolbarLabels',
+      label: 'Toolbar Labels',
+      group: 'View',
+      shortcut: 'Ctrl+Alt+L',
+      enabled: () => true,
+      checked: (ctx) => ctx.store.state.toolbarLabels,
+      run: (ctx) => {
+        const on = !ctx.store.state.toolbarLabels;
+        savePreferences({ toolbarLabels: on });
+        ctx.store.update({ toolbarLabels: on });
       },
     },
   ];

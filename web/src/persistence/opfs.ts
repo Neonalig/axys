@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Decoded source audio storage.
+ * Source audio storage.
  *
- * PCM is written to the Origin Private File System where it exists, and to IndexedDB where it
- * does not, so a browser without OPFS still reopens a project with its audio attached.
+ * Each source is kept as a `stored-audio.ts` entry, written to the Origin Private File System where
+ * it exists and to IndexedDB where it does not, so a browser without OPFS still reopens a project
+ * with its audio attached. Raw PCM kept by an earlier build is still read.
  */
 
 import {
@@ -12,10 +13,14 @@ import {
   PersistenceError,
   hasMediaRecord,
   openDatabase,
+  readMediaBytes,
   readMediaRecord,
   toPersistenceError,
+  writeMediaBytes,
   writeMediaRecord,
 } from './db';
+import { parseStored, serialiseStored } from './stored-audio';
+import type { StoredAudio } from './stored-audio';
 
 /** Where a `MediaStore` keeps its PCM. */
 export type MediaBackend = 'opfs' | 'indexeddb';
@@ -23,13 +28,23 @@ export type MediaBackend = 'opfs' | 'indexeddb';
 /** Directory inside the origin private file system holding source PCM. */
 const MEDIA_DIRECTORY = 'media';
 
-function fileName(fingerprint: string): string {
+function checkedKey(fingerprint: string): string {
   // A fingerprint, or one with a lowercase suffix naming a second copy of the same audio kept in
   // another shape, the way a reference keeps its channels beside a clip's mono.
   if (!/^[0-9a-f]{16}(-[a-z]+)?$/.test(fingerprint)) {
     throw new PersistenceError('corrupt', `Not an audio fingerprint: ${fingerprint}`);
   }
-  return `${fingerprint}.pcm`;
+  return fingerprint;
+}
+
+/** The file an earlier build kept a source's PCM in. */
+function fileName(fingerprint: string): string {
+  return `${checkedKey(fingerprint)}.pcm`;
+}
+
+/** The file a source's audio is kept in, as `stored-audio.ts` describes. */
+function storedName(fingerprint: string): string {
+  return `${checkedKey(fingerprint)}.audio`;
 }
 
 async function openMediaDirectory(): Promise<FileSystemDirectoryHandle | null> {
@@ -165,6 +180,73 @@ export class MediaStore {
     } catch (error) {
       throw toPersistenceError(error, 'Cache audio');
     }
+  }
+
+  /** A source's audio as kept by {@link writeStored}, or `null` when none is kept. */
+  async readStored(fingerprint: string): Promise<StoredAudio | null> {
+    const name = storedName(fingerprint);
+    let bytes: Uint8Array<ArrayBuffer> | null;
+    const directory = this.#directory;
+    try {
+      if (directory !== null) {
+        const handle = await directory.getFileHandle(name);
+        bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
+      } else if (this.#db !== null) {
+        bytes = await readMediaBytes(this.#db, name);
+      } else {
+        return null;
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') return null;
+      throw toPersistenceError(error, 'Read cached audio');
+    }
+    return bytes === null ? null : parseStored(bytes);
+  }
+
+  /**
+   * Keeps a source's audio, replacing any earlier copy, and drops the PCM an earlier build kept.
+   *
+   * @throws PersistenceError with kind `quota` when the origin is out of storage.
+   */
+  async writeStored(fingerprint: string, stored: StoredAudio): Promise<void> {
+    const name = storedName(fingerprint);
+    const bytes = serialiseStored(stored);
+    const directory = this.#directory;
+    try {
+      if (directory !== null) {
+        const handle = await directory.getFileHandle(name, { create: true });
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(bytes);
+          await writable.close();
+        } catch (error) {
+          await writable.abort().catch(() => undefined);
+          throw error;
+        }
+      } else if (this.#db !== null) {
+        await writeMediaBytes(this.#db, name, bytes);
+      } else {
+        throw new PersistenceError('unavailable', 'This browser cannot store decoded audio');
+      }
+    } catch (error) {
+      throw toPersistenceError(error, 'Cache audio');
+    }
+    await this.remove(fingerprint).catch(() => undefined);
+  }
+
+  /** True when a source's audio is kept, in either shape. */
+  async hasAny(fingerprint: string): Promise<boolean> {
+    if (await this.has(fingerprint)) return true;
+    const directory = this.#directory;
+    if (directory !== null) {
+      try {
+        await directory.getFileHandle(storedName(fingerprint));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return this.#db !== null && (await hasMediaRecord(this.#db, storedName(fingerprint)));
   }
 
   /** Deletes the stored PCM for a fingerprint. Deleting absent audio succeeds. */

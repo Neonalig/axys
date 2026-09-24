@@ -25,8 +25,26 @@
   font-size: var(--axys-size-lg);
 }
 
+.axys-busy > [hidden] {
+  display: none;
+}
+
+.axys-busy-file {
+  max-width: min(480px, 80%);
+  margin: 0;
+  overflow: hidden;
+  color: var(--axys-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .axys-busy-progress {
   width: min(320px, 60%);
+}
+
+/* The bar across every file sits above the file's own, separated from it by the stage. */
+.axys-busy-progress.is-overall {
+  margin-bottom: var(--axys-space-2);
 }
 
 .axys-drop {

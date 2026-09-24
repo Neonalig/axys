@@ -65,9 +65,13 @@ export function drawReferences(
   ctx.beginPath();
   ctx.rect(PITCH_LABEL_GUTTER, viewport.plotTop, viewport.width, viewport.plotHeight);
   ctx.clip();
+  const missing = new Set(state.offline.references);
   references.forEach((reference, index) => {
     const title = index === hovered ? HOVERED_TITLE_ALPHA : 1;
-    drawReferenceBand(ctx, viewport, theme, reference, index, reference.position, 1, title);
+    drawReferenceBand(ctx, viewport, theme, reference, index, reference.position, 1, title, {
+      selected: state.selectedReference === reference.id,
+      missing: missing.has(reference.id),
+    });
   });
   ctx.restore();
 }
@@ -167,7 +171,15 @@ function drawBandTitle(
   ctx.restore();
 }
 
-/** Draws one reference's band at a position, at an opacity. */
+/** Dash pattern the outline of a reference whose audio is missing is drawn with. */
+const MISSING_DASH: readonly number[] = [2, 3];
+
+/**
+ * Draws one reference's band at a position, at an opacity.
+ *
+ * @remarks A selected band is outlined in the selection colour. A band whose audio is missing is
+ * drawn in the warning colour with a dotted outline, as a missing clip's blobs are.
+ */
 export function drawReferenceBand(
   ctx: CanvasRenderingContext2D,
   viewport: Viewport,
@@ -177,12 +189,13 @@ export function drawReferenceBand(
   position: number,
   alpha: number,
   titleAlpha = 1,
+  mark: { selected: boolean; missing: boolean } = { selected: false, missing: false },
 ): void {
   const rect = referenceRect(reference, index, viewport, position);
   if (rect.x + rect.width < 0 || rect.x > viewport.width) {
     return;
   }
-  const colour = referenceColour(reference.source.fingerprint);
+  const colour = mark.missing ? theme.warning : referenceColour(reference.source.fingerprint);
   // Fill and outline share edges on the device grid. A fill at the band's fractional edges
   // covers the pixel beside the outline by a different amount each frame, which reads as the
   // outline shimmering while the band slides.
@@ -223,11 +236,13 @@ export function drawReferenceBand(
   }
 
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = colour;
-  ctx.lineWidth = line;
+  ctx.strokeStyle = mark.selected ? theme.selection : colour;
+  ctx.lineWidth = mark.selected ? viewport.crispWidth(2) : line;
+  if (mark.missing) ctx.setLineDash([...MISSING_DASH]);
   ctx.beginPath();
   ctx.roundRect(x0, y0, x1 - x0, y1 - y0, CORNER_RADIUS);
   ctx.stroke();
+  ctx.setLineDash([]);
   const title = titleRect(ctx, viewport, reference, index, position);
   if (title !== null) {
     drawBandTitle(ctx, viewport, theme, displayTitle(reference), colour, title, alpha * titleAlpha);

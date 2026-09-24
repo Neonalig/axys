@@ -10,13 +10,16 @@
 
 import type { BitDepth, F0Params, SegmentParams } from '../core/types';
 import { AxysError } from '../core/wasm';
-import { bufferOf, WorkerCancelled } from './protocol';
+import { bufferOf, WorkerCancelled, WorkerStalled } from './protocol';
 import type {
   AnalyseRequest,
   AnalysedMessage,
+  DecodeRequest,
   AnalysisResult,
   CancelRequest,
   CancelledMessage,
+  DecodedAudio,
+  DecodedMessage,
   EncodedMessage,
   ClipAudio,
   EncodedWav,
@@ -71,9 +74,9 @@ export interface ExportJob {
   sampleRate: number;
 }
 
-type JobRequest = AnalyseRequest | RenderRangeRequest | ExportWavRequest;
+type JobRequest = AnalyseRequest | DecodeRequest | RenderRangeRequest | ExportWavRequest;
 
-type TerminalMessage = AnalysedMessage | RenderedMessage | EncodedMessage;
+type TerminalMessage = AnalysedMessage | DecodedMessage | RenderedMessage | EncodedMessage;
 
 type ClientResponse = ProgressMessage<string> | TerminalMessage | FailedMessage | CancelledMessage;
 
@@ -83,6 +86,8 @@ interface Pending {
   /** Settles the promise from a terminal message; false when the message is not its result. */
   settle(message: TerminalMessage): boolean;
   fail(error: Error): void;
+  /** The watchdog, restarted by every report from the worker. */
+  watchdog: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -109,7 +114,10 @@ abstract class WorkerClient {
     this.#worker = null;
     const pending = [...this.#pending.values()];
     this.#pending.clear();
-    for (const job of pending) job.fail(new WorkerCancelled(job.operation));
+    for (const job of pending) {
+      if (job.watchdog !== null) clearTimeout(job.watchdog);
+      job.fail(new WorkerCancelled(job.operation));
+    }
   }
 
   /**
@@ -128,6 +136,17 @@ abstract class WorkerClient {
 
   /** Builds the worker this client drives. */
   protected abstract spawn(): Worker;
+
+  /**
+   * Milliseconds a job may go without a report before the worker is taken down, or `null` for
+   * no limit.
+   *
+   * @remarks A worker stuck in one call never answers a cancel, so stopping it is the only way
+   * to free whatever waits on it.
+   */
+  protected stallLimit(): number | null {
+    return null;
+  }
 
   /**
    * Posts one job and resolves when the worker reports its result.
@@ -154,7 +173,9 @@ abstract class WorkerClient {
           return true;
         },
         fail: reject,
+        watchdog: null,
       });
+      this.#watch(id);
       try {
         const { request, transfer } = build(id);
         worker.postMessage(request, transfer);
@@ -181,9 +202,31 @@ abstract class WorkerClient {
     return worker;
   }
 
+  /** Restarts a job's watchdog. */
+  #watch(id: RequestId): void {
+    const limit = this.stallLimit();
+    const pending = this.#pending.get(id);
+    if (limit === null || pending === undefined) return;
+    if (pending.watchdog !== null) clearTimeout(pending.watchdog);
+    pending.watchdog = setTimeout(() => {
+      const worker = this.#worker;
+      this.#worker = null;
+      worker?.terminate();
+      const jobs = [...this.#pending.values()];
+      this.#pending.clear();
+      for (const job of jobs) {
+        if (job.watchdog !== null) clearTimeout(job.watchdog);
+        job.fail(new WorkerStalled(job.operation));
+      }
+    }, limit);
+  }
+
   #receive(message: ClientResponse): void {
     const pending = this.#pending.get(message.id);
     if (!pending) return;
+    if (pending.watchdog !== null) clearTimeout(pending.watchdog);
+    pending.watchdog = null;
+    if (message.type === 'progress') this.#watch(message.id);
     switch (message.type) {
       case 'progress':
         pending.progress?.(message.stage, message.progress);
@@ -205,9 +248,54 @@ abstract class WorkerClient {
   #breakDown(message: string): void {
     const pending = [...this.#pending.values()];
     this.#pending.clear();
-    for (const job of pending) job.fail(new AxysError(job.operation, message));
+    for (const job of pending) {
+      if (job.watchdog !== null) clearTimeout(job.watchdog);
+      job.fail(new AxysError(job.operation, message));
+    }
   }
 }
+
+/** Decodes media in the decode worker. */
+export class DecodeClient extends WorkerClient {
+  /**
+   * Decodes one file's bytes, at `sampleRate` or at the file's own rate when it is `null`.
+   *
+   * @remarks `bytes` is transferred to the worker.
+   */
+  decode(
+    bytes: ArrayBuffer,
+    extension: string,
+    sampleRate: number | null,
+    onProgress?: ProgressListener,
+  ): Promise<DecodedAudio> {
+    return this.start<DecodedAudio>(
+      'Decode Audio',
+      (id) => ({
+        request: { type: 'decode', id, bytes, extension, sampleRate },
+        transfer: [bytes],
+      }),
+      (message) => (message.type === 'decoded' ? message.result : null),
+      onProgress,
+    );
+  }
+
+  protected override stallLimit(): number {
+    return DECODE_STALL_MS;
+  }
+
+  protected override spawn(): Worker {
+    return new Worker(new URL('./decode.worker.ts', import.meta.url), {
+      type: 'module',
+      name: 'axys-decode',
+    });
+  }
+}
+
+/** Milliseconds a decode may go without reporting progress before it is stopped. */
+const DECODE_STALL_MS = 20_000;
+
+/** Milliseconds an analysis may go without reporting progress before it is stopped. */
+const ANALYSIS_STALL_MS = 120_000;
 
 /** Runs pitch, energy and segmentation analysis in the analysis worker. */
 export class AnalysisClient extends WorkerClient {
@@ -235,6 +323,10 @@ export class AnalysisClient extends WorkerClient {
       (message) => (message.type === 'analysed' ? message.result : null),
       onProgress,
     );
+  }
+
+  protected override stallLimit(): number {
+    return ANALYSIS_STALL_MS;
   }
 
   protected override spawn(): Worker {

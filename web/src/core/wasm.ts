@@ -385,6 +385,25 @@ export class Session {
   }
 
   /**
+   * Gives a clip audio the user chose for it, whether or not it is the file it was made from.
+   *
+   * @remarks `samples` must be exactly as long as the clip's recorded source. The recorded source
+   * is kept, so a later relink is still checked against the original.
+   */
+  relinkClip(clip: ClipId, samples: Float32Array): void {
+    call('Relink Audio', () => {
+      this.#alive().relinkClip(clip, samples);
+    });
+  }
+
+  /** Takes a clip's audio away, leaving the clip waiting for a relink. */
+  detachClip(clip: ClipId): void {
+    call('Relink Audio', () => {
+      this.#alive().detachClip(clip);
+    });
+  }
+
+  /**
    * Pastes copied parts of clips as new clips, as one undoable edit, returning their ids.
    *
    * @remarks Each part is the clip as it was copied and the project span taken from it. The

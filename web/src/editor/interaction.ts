@@ -24,7 +24,8 @@ import {
 } from '../app/clipboard.js';
 import type { OutsideRun, PitchPoint } from '../app/clipboard.js';
 import { othersOf } from '../app/sources.js';
-import { projectEnd } from '../app/store.js';
+import { blobOffline, projectEnd } from '../app/store.js';
+import { claimContextMenu } from '../ui/menu.js';
 import type { AppState, AppStore, Selection, ToolId } from '../app/store.js';
 import type { Blob, BlobId, Edge, EditOp, Stroke, ViewState } from '../core/types.js';
 import { clipEnd, clipOf, clipStart, displayTitle, MIN_BLOB_SECONDS } from '../core/types.js';
@@ -727,6 +728,13 @@ export class EditorController {
     const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
     const modifiers = modifiersOf(event);
     this.#canvas.focus();
+    // A blob whose audio is missing cannot be edited, so pressing one selects its whole source,
+    // ready to delete, and starts nothing that would move it.
+    if (hit.blob !== null && blobOffline(state, hit.blob)) {
+      this.#selectClip(clipOf(hit.blob));
+      event.preventDefault();
+      return;
+    }
     capturePointer(this.#canvas, event.pointerId);
     this.#pointerId = event.pointerId;
     this.#origin = point;
@@ -889,7 +897,7 @@ export class EditorController {
     if (state.phase !== 'ready') {
       return;
     }
-    event.preventDefault();
+    if (!claimContextMenu(event, this.#canvas)) return;
     const point = this.#pointOf(event);
     const hit = this.#bringForward(point, this.hitTest(point.x, point.y));
     if (hit.blob !== null && !this.#store.state.selection.blobs.includes(hit.blob)) {
@@ -1009,6 +1017,11 @@ export class EditorController {
     if (hit.kind === 'reference' && hit.reference !== null) {
       const reference = state.edits?.references.find((entry) => entry.id === hit.reference);
       if (reference !== undefined) {
+        // Pressing a reference picks it, so reference commands such as Delete act on it.
+        this.#store.update({
+          selection: { blobs: [], anchors: [], ranges: [] },
+          selectedReference: reference.id,
+        });
         return {
           kind: 'reference',
           reference: reference.id,
@@ -1920,6 +1933,11 @@ export class EditorController {
   }
 
   /** Selects every blob of one clip, which is what a double-click on its title means. */
+  /** Selects every blob of one clip, as a double-click on its title does. */
+  selectClip(clip: number): void {
+    this.#selectClip(clip);
+  }
+
   #selectClip(clip: number): void {
     const state = this.#store.state;
     const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);
@@ -2157,9 +2175,11 @@ export class EditorController {
   }
 
   #setSelection(selection: Selection, stroke: number | null = null): void {
+    // Picking blobs, or open canvas, puts down whatever reference was picked.
     this.#store.update({
       selection: selectionInMode(selection, this.#store.state.editMode),
       activeStroke: stroke,
+      selectedReference: null,
     });
   }
 

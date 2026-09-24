@@ -20,20 +20,22 @@ linker the design bible rules out. Rejected: `trunk` (assumes a Rust-side fronte
 
 Every crate in the tree is pure Rust: `serde`, `serde_json`, `midly`, `rustfft`, `wasm-bindgen`,
 `js-sys`, `console_error_panic_hook`. No `cc` build script is pulled in, so the documented
-workflow needs no MSVC, Clang, GCC or CMake. Rejected for this reason: `symphonia` was considered
-for decoding and is pure Rust and MPL-2.0 compatible, but it is a large build for a capability the
-browser already provides (see below); `rubato` and `hound` were unnecessary once resampling and
-RIFF handling were written directly against the product's needs.
+workflow needs no MSVC, Clang, GCC or CMake. `symphonia` is pure Rust and MPL-2.0, which is
+compatible, and is accepted for decoding (see below). `rubato` and `hound` were unnecessary once
+resampling and RIFF handling were written directly against the product's needs.
 
-### Audio decoding uses the browser, WAV handling is ours
+### Audio decoding is the core's, the browser is the fallback
 
-`AudioContext.decodeAudioData` decodes every format the host browser supports, which covers WAV,
-FLAC, MP3, AAC/M4A and Ogg without shipping a decoder. Axys keeps its own RIFF WAVE reader and
-writer in `axys-core::audio::wav` because export needs a writer anyway, because it gives exact
-source facts for WAV without trusting the browser's resampling, and because it is testable
-natively. Limitation: a format the user's browser cannot decode is reported as unsupported rather
-than handled, and `decodeAudioData` resamples to the AudioContext rate, so Axys opens a context at
-the file's own rate where the browser allows it and records the original rate either way.
+A project identifies its audio by a fingerprint of the decoded PCM, and browsers do not decode
+alike: the same WAV digested differently in Firefox and in Chrome, so a project moved between them
+could not find its own audio. `axys-core::audio::decode` decodes WAV, FLAC, MP3, AAC/M4A and Ogg
+Vorbis through `symphonia` and resamples with the core's own resampler, so the same file becomes
+the same samples in every browser. It runs in `workers/decode.worker.ts` a batch of packets at a
+time, which gives import real progress and keeps a long file off the main thread. The cost is
+about 1.1 MB of WebAssembly. A format `symphonia` does not read, such as Opus, still goes to
+`AudioContext.decodeAudioData`, which is not bit-exact across browsers; relinking such a file
+relies on the name and length rule. Axys keeps its own RIFF WAVE writer in
+`axys-core::audio::wav` because export needs one.
 
 ### Canvas 2D is the editor renderer, WebGPU is detected and reported
 
@@ -689,10 +691,12 @@ had, which is what made the migration a rename.
 
 ### Operations say which sources they change
 
-Correction and Align Guide tick the sources they change, starting from those holding the
-selection, or every source with nothing selected. Correction leaves an unticked source out by
-excluding its blobs, the same way it already confined itself to a selection. Align Guide maps
-each ticked source to the guide on its own, so a double follows the same notes as its lead, and
+Correction and Align Guide choose the sources they change from one Source drop-down: All Sources
+or one source. It starts on the source holding the selection, on All Sources when the selection
+spans several, and otherwise on the source in front. A drop-down keeps the panel narrow however
+many sources there are. Correction leaves an unchosen source out by excluding its blobs, the same
+way it already confined itself to a selection. Align Guide maps each chosen source to the guide on
+its own, so a double follows the same notes as its lead, and
 every other source keeps its mappings. Voice Character is compiled over every take and says so,
 naming them. A project with one source shows none of this.
 
@@ -1398,6 +1402,71 @@ rate, so no hardware device is opened and the digest is comparable. `MediaStore`
 IndexedDB once at `open()` and keeps it, so a project never has half its audio in one and half in
 the other.
 
+### Relinking accepts the same file from another decoder
+
+A fingerprint digests decoded PCM, and browsers do not decode alike: the same WAV opened in Firefox
+and in Chrome digests differently. A file with the recorded name and exact length is therefore taken
+as the same audio without asking. Any other file can still be relinked, but only through Relink
+Audio, which previews it and waits for Apply. Relinked audio is padded or trimmed to the recorded
+length so every blob stays where it was, and the clip keeps its recorded `SourceInfo`, so the next
+relink is still checked against the original. A decoder of its own in the core for WAV would make
+the fingerprint agree across browsers; lossy formats would still need the leniency.
+
+### A batch of files says which one it is on
+
+Importing or relinking several files runs them one at a time as one batch. A toast follows it,
+naming the file and its count, with a bar across the whole batch and a trash button in place of
+the dismiss button; it goes when the batch ends. The cover shows the same count over two bars,
+the batch and the file, and the file's bar is fed by the decoder and the analysis as they go.
+The trash button, or the cover's Cancel Import, holds the batch at its next checkpoint and asks:
+Continue, Cancel the file, or Cancel All. Work already in a worker is cancelled at once rather
+than waited for. The cover's cancel button is named for what it stops, Cancel Import or Cancel
+Export, and is absent for work that cannot stop, such as Open Project. The decode and analysis
+workers are taken down when they stop reporting, so a file that hangs a decoder fails on its own
+instead of holding the page.
+
+### Missing audio shows, and holds its blobs still
+
+A clip whose audio is missing is drawn in the warning colour with a dotted outline and a warning
+mark in its tab, so what needs relinking shows at a glance. Its blobs take no edit but Delete,
+Delete Clip and Rename (`app/missing.ts`): with no audio there is nothing to hear the edit
+against, and nothing to check a later relink's blobs against. Pressing one selects its whole
+source, ready to delete. An operation over the whole project, such as Correction, leaves a missing
+clip out rather than refusing. With every source missing Play stays pressable but says no audio
+is loaded, with a Relink link, instead of starting a transport that ends at once. Warnings stay
+until dismissed, since each names something still wrong, and the missing-audio warning offers
+Relink, which takes several files at once.
+
+### One project file, with or without its audio
+
+Audio lives in the browser's own storage, so a project opened in another browser or on another
+machine has none, however deterministic the decoding. Every save writes one kind of file, `.axys`:
+a plain zip holding the document, and each source's audio as the device keeps it when the audio is
+bundled. Save writes it without the audio, Save with Audio and the Format field of Save As write
+it with. Save goes back to the file it last wrote, or the one the project was opened from, and
+bundles the audio when that file did. Save As and Save with Audio write a copy and leave that file
+alone. A save asks where the file goes before it packs, since the save picker only opens straight
+after a press, and packs with progress. One extension is also what lets the installed app open a
+project from the file manager: the manifest's `file_handlers` claim `.axys`, which `.axys.json`
+could not be without claiming every `.json` file, and `launch_handler` sends the file to the
+window already open. A `.axys.json` from an earlier build still opens, and Save writes one back
+as a document.
+
+### Audio is kept as the smaller of its original and an exact WAV
+
+Each source is kept on the device, and carried in a package, as one of two files that both give
+back exactly the samples in use, whichever is smaller. One is the file it was imported from: the
+core decodes a file the same way everywhere, so decoding it again at the project rate gives the
+same samples, and a fingerprint kept beside it is checked when it is. The other is a WAV at the
+smallest depth that holds the samples exactly: audio decoded from a 16-bit file is whole 16-bit
+steps and goes back to 16 bits, and a vocal mixed to mono from stereo 16-bit fits 24 bits. So a
+16-bit WAV is kept at its own size, an MP3 or a FLAC as itself, and a file resampled to the
+project rate as its smaller original. Only the WAV is possible for a format only the browser
+decodes, since that decode differs between browsers, and for audio a relink padded or trimmed.
+Keeping the file in place of the float PCM an earlier build kept costs a decode when a project
+opens. An original that no longer decodes to its fingerprint, after a decoder change, shows as
+missing audio rather than as different audio.
+
 ### File access prefers the host's own picker
 
 `persistence/file-access.ts` uses the File System Access API where it exists, which gives one picker
@@ -1695,9 +1764,23 @@ Export Audio without anybody maintaining a keyword list. A label prefix sorts fi
 substring, then the toolbar's own order. The row Enter would run is marked rather than focused,
 because the caret stays in the search field.
 
-Opening either needs the chrome, so `CommandContext` carries a `Chrome` with exactly two methods.
-Everything else a command opens is a dialog the command builds, because the chrome has no business
-knowing what an export looks like.
+Opening either needs the chrome, so `CommandContext` carries a `Chrome`. Besides the two panels it
+chooses the theme and the accent, renames the project and opens an inspector tab, which are the
+chrome's to do. Everything else a command opens is a dialog the command builds, because the chrome
+has no business knowing what an export looks like.
+
+### Everything is a command
+
+Menus, toolbar buttons, the inspector's buttons, the palette and the cheatsheet all read one command
+list, so an action exists once and is reachable everywhere: from a menu, from its key and from the
+palette. A fixed menu is a list of command ids, so its labels, keys and check marks cannot drift from
+the commands'. A setting a command turns on carries `checked`, which is how the Follow, Metronome,
+Sources and Theme menus mark the current choice. Every command has a key, checked by a test. The
+keys past the single letters are Ctrl+Alt chords, since plain letters and Ctrl chords are taken by
+editing and by the browser; digits are matched by the physical key, so Shift and the layout do not
+change them. A focused control keeps only the keys it acts on (`app/key-owner.ts`): a slider its
+arrows, a number field what it types. Everything else, Space included, reaches the shortcuts, so
+focus left on a control does not stop playback.
 
 ### A shifted punctuation key ignores Shift
 

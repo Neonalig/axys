@@ -10,12 +10,12 @@
  *
  * With a span selected the operation applies to that span, by leaving every blob outside it out
  * of correction. With nothing selected it applies to the whole project. With more than one vocal
- * source, the sources it changes are ticked in the panel and every other source is left out.
+ * source, the sources it changes are chosen in the panel and every other source is left out.
  */
 
 import { Dialog } from './dialog.js';
 import { scopeLine } from './inspector.js';
-import { initialSources, sourcePicker } from './source-picker.js';
+import { sourcePicker } from './source-picker.js';
 import { sourceNames } from '../app/sources.js';
 import {
   checkboxInput,
@@ -199,7 +199,7 @@ export function showCorrection(ctx: CommandContext): Dialog {
 
   // Rebuilt from `apply`, which the picker runs, so it is defined before either needs it.
   let scope: HTMLElement = document.createElement('p');
-  const picker = sourcePicker(state, initialSources(state), () => {
+  const picker = sourcePicker(state, () => {
     apply();
   });
 

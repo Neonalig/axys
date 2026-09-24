@@ -3,9 +3,14 @@
 /**
  * Decoding of imported audio files into the PCM the analysis, editor and worklet read.
  *
- * Decoding is the browser's, through `BaseAudioContext.decodeAudioData`, so every format the
- * host supports is accepted and nothing else ships a decoder.
+ * The core decodes WAV, FLAC, MP3, AAC and Ogg Vorbis in a worker, so the same file becomes the
+ * same samples in every browser. Anything else goes through `BaseAudioContext.decodeAudioData`,
+ * so every format the host supports is still accepted.
  */
+
+import { DecodeClient } from '../workers/client.js';
+import { WorkerCancelled, WorkerStalled } from '../workers/protocol.js';
+import type { DecodedAudio } from '../workers/protocol.js';
 
 /** Why a file could not be decoded. */
 export type DecodeFailure = 'empty' | 'tooLarge' | 'tooLong' | 'unreadable' | 'unsupported';
@@ -46,6 +51,13 @@ export interface DecodedSource {
   mono: Float32Array;
   /** Decoded audio channel by channel. */
   channelData: readonly Float32Array[];
+  /**
+   * Whether the core decoded the file, so decoding it again anywhere gives the same samples. False
+   * for a format only the browser reads.
+   */
+  exact: boolean;
+  /** The file the audio was decoded from. */
+  file: File;
 }
 
 const MAX_FILE_BYTES = 512 * 1024 * 1024;
@@ -55,15 +67,37 @@ const MIN_CONTEXT_RATE = 8000;
 const MAX_CONTEXT_RATE = 96000;
 const FALLBACK_CONTEXT_RATE = 48000;
 
+/** Decodes in the core, off the main thread, for every file the core can read. */
+const decoder = new DecodeClient();
+
+/** Receives the completed fraction of a decode, 0 to 1. */
+export type DecodeProgress = (progress: number) => void;
+
+/** Starts the decode worker and has it load its core now rather than on the first import. */
+export function warmDecoder(): void {
+  decoder.warm();
+}
+
+/** Abandons every decode in flight. Each rejects with a cancellation. */
+export function cancelDecoding(): void {
+  decoder.cancel();
+}
+
 /**
- * Decodes one imported file, keeping the source rate and channel count where the browser allows.
+ * Decodes one imported file, keeping the source rate and channel count.
  *
  * @remarks Rejects with an {@link AudioDecodeError} naming the reason, never with a bare decoder
- * error. Decoding runs on an `OfflineAudioContext`, so it needs no user gesture. `sampleRate`
- * decodes at that rate instead of the file's own, which is how a second source joins a project
- * whose every source is held at one rate.
+ * error. The core decodes every format it reads, identically in every browser, so a fingerprint
+ * taken in one browser matches in another. Only a format the core does not read goes to the
+ * browser's own decoder. `sampleRate` decodes at that rate instead of the file's own, which is
+ * how a second source joins a project whose every source is held at one rate. A cancelled decode
+ * rejects with the worker's cancellation, not an {@link AudioDecodeError}.
  */
-export async function decodeAudioFile(file: File, sampleRate?: number): Promise<DecodedSource> {
+export async function decodeAudioFile(
+  file: File,
+  sampleRate?: number,
+  onProgress?: DecodeProgress,
+): Promise<DecodedSource> {
   if (file.size === 0) {
     throw new AudioDecodeError('empty', `"${file.name}" holds no audio.`);
   }
@@ -75,12 +109,79 @@ export async function decodeAudioFile(file: File, sampleRate?: number): Promise<
   }
 
   const declared = await sniffSampleRate(file);
-  const bytes = await readBytes(file);
-  const context = openDecodeContext(sampleRate ?? declared);
+  const own =
+    declared === null || (declared >= MIN_CONTEXT_RATE && declared <= MAX_CONTEXT_RATE)
+      ? null
+      : FALLBACK_CONTEXT_RATE;
+  const target = sampleRate ?? own;
+  let decoded: DecodedAudio;
+  let exact = true;
+  try {
+    decoded = await decoder.decode(
+      await readBytes(file),
+      extensionOf(file.name),
+      target,
+      (_, done) => onProgress?.(done),
+    );
+  } catch (thrown) {
+    if (thrown instanceof WorkerCancelled) throw thrown;
+    if (thrown instanceof WorkerStalled) {
+      throw new AudioDecodeError(
+        'unreadable',
+        `Decoding "${file.name}" stopped responding.`,
+        thrown,
+      );
+    }
+    decoded = await decodeInBrowser(file, target ?? declared);
+    exact = false;
+  }
+  return { ...checked(file, decoded, declared, sampleRate === undefined), exact, file };
+}
 
+/** Rejects decoded audio that breaks an import rule, and describes the rest. */
+function checked(
+  file: File,
+  decoded: DecodedAudio,
+  declared: number | null,
+  ownRate: boolean,
+): Omit<DecodedSource, 'exact' | 'file'> {
+  if (decoded.frames === 0 || decoded.channels.length === 0) {
+    throw new AudioDecodeError('empty', `"${file.name}" decoded to no audio.`);
+  }
+  const duration = decoded.frames / decoded.sampleRate;
+  if (duration > MAX_SECONDS) {
+    throw new AudioDecodeError(
+      'tooLong',
+      `"${file.name}" runs ${duration.toFixed(0)} seconds, over the ${String(MAX_SECONDS / 60)} minute import limit.`,
+    );
+  }
+  const rate = declared ?? decoded.declaredRate;
+  return {
+    name: file.name,
+    mime: file.type === '' ? null : file.type,
+    sampleRate: decoded.sampleRate,
+    declaredSampleRate: rate,
+    resampled: rate !== decoded.sampleRate && ownRate,
+    channels: decoded.channels.length,
+    frames: decoded.frames,
+    duration,
+    fingerprint: decoded.fingerprint,
+    mono: decoded.mono,
+    channelData: decoded.channels,
+  };
+}
+
+/**
+ * Decodes through the browser, for a format the core does not read.
+ *
+ * @remarks Runs on an `OfflineAudioContext`, so it needs no user gesture. The result is not
+ * bit-exact across browsers.
+ */
+async function decodeInBrowser(file: File, rate: number | null): Promise<DecodedAudio> {
+  const context = openDecodeContext(rate);
   let buffer: AudioBuffer;
   try {
-    buffer = await context.decodeAudioData(bytes);
+    buffer = await context.decodeAudioData(await readBytes(file));
   } catch (thrown) {
     throw new AudioDecodeError(
       'unsupported',
@@ -88,36 +189,25 @@ export async function decodeAudioFile(file: File, sampleRate?: number): Promise<
       thrown,
     );
   }
-
-  if (buffer.length === 0 || buffer.numberOfChannels === 0) {
-    throw new AudioDecodeError('empty', `"${file.name}" decoded to no audio.`);
-  }
-  if (buffer.duration > MAX_SECONDS) {
-    throw new AudioDecodeError(
-      'tooLong',
-      `"${file.name}" runs ${buffer.duration.toFixed(0)} seconds, over the ${String(MAX_SECONDS / 60)} minute import limit.`,
-    );
-  }
-
-  const channelData: Float32Array[] = [];
+  const channels: Float32Array[] = [];
   for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    channelData.push(buffer.getChannelData(channel));
+    channels.push(buffer.getChannelData(channel));
   }
-  const mono = mixToMono(channelData, buffer.length);
-
+  const mono = mixToMono(channels, buffer.length);
   return {
-    name: file.name,
-    mime: file.type === '' ? null : file.type,
     sampleRate: buffer.sampleRate,
-    declaredSampleRate: declared,
-    resampled: declared !== null && declared !== buffer.sampleRate && sampleRate === undefined,
-    channels: buffer.numberOfChannels,
+    declaredRate: buffer.sampleRate,
     frames: buffer.length,
-    duration: buffer.duration,
-    fingerprint: fingerprintOf(mono),
+    channels,
     mono,
-    channelData,
+    fingerprint: fingerprintOf(mono),
   };
+}
+
+/** A file name's last extension, lower case and without the dot, or empty. */
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
 /**

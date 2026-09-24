@@ -317,6 +317,33 @@ export async function readMediaRecord(
   return new Float32Array(row.samples);
 }
 
+/** Reads the bytes kept under a key in the IndexedDB media store, or `null` when there are none. */
+export async function readMediaBytes(
+  db: IDBDatabase,
+  key: string,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  const tx = db.transaction(MEDIA_STORE, 'readonly');
+  const row: unknown = await promisify(tx.objectStore(MEDIA_STORE).get(key));
+  await settled(tx);
+  if (row === undefined) return null;
+  if (!isMediaRecord(row)) {
+    throw new PersistenceError('corrupt', 'The stored audio record is unreadable');
+  }
+  return new Uint8Array(row.samples);
+}
+
+/** Keeps bytes under a key in the IndexedDB media store. */
+export async function writeMediaBytes(
+  db: IDBDatabase,
+  key: string,
+  bytes: Uint8Array<ArrayBuffer>,
+): Promise<void> {
+  const record: MediaRecord = { fingerprint: key, samples: bytes.slice().buffer };
+  const tx = db.transaction(MEDIA_STORE, 'readwrite');
+  tx.objectStore(MEDIA_STORE).put(record);
+  await settled(tx);
+}
+
 /** Writes source PCM to the IndexedDB media store. */
 export async function writeMediaRecord(
   db: IDBDatabase,
