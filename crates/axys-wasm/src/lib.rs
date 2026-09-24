@@ -21,6 +21,7 @@ use axys_core::analysis::f0::{
     PitchFrame, PitchTrack,
 };
 use axys_core::analysis::segment::{segment, SegmentParams};
+use axys_core::audio::decode::{DecodedAudio, StreamDecoder};
 use axys_core::audio::wav::{encode_wav, BitDepth, ExportReport};
 use axys_core::blob::{Blob, BlobSet};
 use axys_core::clip::{
@@ -73,6 +74,118 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, JsValue> {
 
 fn dump<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, JsValue> {
     serde_json::to_string(value).map_err(json_err)
+}
+
+/// Decodes one imported file a step at a time, the same way in every browser.
+#[wasm_bindgen]
+pub struct AudioDecoder {
+    inner: Option<StreamDecoder>,
+}
+
+#[wasm_bindgen]
+impl AudioDecoder {
+    /// Reads the file's header. `extension` is the file's extension without the dot, or empty.
+    ///
+    /// Errors when the container or codec is not one the core reads.
+    #[wasm_bindgen(constructor)]
+    pub fn new(bytes: Vec<u8>, extension: &str) -> Result<AudioDecoder, JsValue> {
+        let extension = (!extension.is_empty()).then_some(extension);
+        let inner = StreamDecoder::open(bytes, extension).map_err(to_js)?;
+        Ok(AudioDecoder { inner: Some(inner) })
+    }
+
+    /// Rate the file declares, in Hz.
+    #[wasm_bindgen(js_name = sampleRate)]
+    pub fn sample_rate(&self) -> u32 {
+        self.inner.as_ref().map_or(0, StreamDecoder::sample_rate)
+    }
+
+    /// Decodes up to `packets` packets, returning true once the file is finished.
+    pub fn step(&mut self, packets: u32) -> Result<bool, JsValue> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("the decoder has finished"))?;
+        inner.step(packets as usize).map_err(to_js)
+    }
+
+    /// Fraction of the file read so far, 0 to 1.
+    pub fn progress(&self) -> f64 {
+        self.inner.as_ref().map_or(1.0, StreamDecoder::progress)
+    }
+
+    /// Finishes decoding and hands back the audio at `sample_rate`, or at the file's own rate
+    /// when `sample_rate` is 0.
+    pub fn finish(&mut self, sample_rate: u32) -> Result<DecodedMedia, JsValue> {
+        let inner = self
+            .inner
+            .take()
+            .ok_or_else(|| JsValue::from_str("the decoder has finished"))?;
+        let mut audio = inner.finish().map_err(to_js)?;
+        if sample_rate != 0 {
+            audio = audio.resampled(sample_rate).map_err(to_js)?;
+        }
+        let mono = audio.mono();
+        let fingerprint = axys_core::project::fingerprint(&mono);
+        Ok(DecodedMedia {
+            audio,
+            mono,
+            fingerprint,
+        })
+    }
+}
+
+/// Audio an [`AudioDecoder`] produced.
+#[wasm_bindgen]
+pub struct DecodedMedia {
+    audio: DecodedAudio,
+    mono: Vec<f32>,
+    fingerprint: String,
+}
+
+#[wasm_bindgen]
+impl DecodedMedia {
+    /// Rate the audio is held at, in Hz.
+    #[wasm_bindgen(js_name = sampleRate)]
+    pub fn sample_rate(&self) -> u32 {
+        self.audio.sample_rate
+    }
+
+    /// Rate the file declared, in Hz.
+    #[wasm_bindgen(js_name = declaredRate)]
+    pub fn declared_rate(&self) -> u32 {
+        self.audio.declared_rate
+    }
+
+    /// Channel count.
+    #[wasm_bindgen(js_name = channelCount)]
+    pub fn channel_count(&self) -> u32 {
+        self.audio.channels.len() as u32
+    }
+
+    /// Frames per channel.
+    pub fn frames(&self) -> u32 {
+        self.audio.frames() as u32
+    }
+
+    /// One channel's samples, copied out.
+    pub fn channel(&self, index: u32) -> Vec<f32> {
+        self.audio
+            .channels
+            .get(index as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The channels averaged into one, copied out.
+    pub fn mono(&self) -> Vec<f32> {
+        self.mono.clone()
+    }
+
+    /// FNV-1a 64-bit digest of the mono mix, as a project records it.
+    pub fn fingerprint(&self) -> String {
+        self.fingerprint.clone()
+    }
 }
 
 /// The analyser settings the boundary accepts as one JSON object.

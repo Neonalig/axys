@@ -2,4 +2,5 @@
 
 //! Reading and writing audio container formats.
 
+pub mod decode;
 pub mod wav;

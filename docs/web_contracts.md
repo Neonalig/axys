@@ -401,9 +401,11 @@ the clip's position; a clip left out of `setPlans` is off the lane and silent bu
 renderer for a redo. References are read straight from their channels at output time, never
 through a plan, and their pan is a balance.
 
-`audio/decode.ts` exports `decodeAudioFile(file: File, sampleRate?: number): Promise<DecodedSource>`
-using `AudioContext.decodeAudioData`, preserving the original sample rate, channel count and a
-fingerprint, and reporting an unsupported format clearly. `sampleRate` decodes at the project's
+`audio/decode.ts` exports `decodeAudioFile(file: File, sampleRate?: number, onProgress?):
+Promise<DecodedSource>`, decoding in the core through the decode worker and falling back to
+`AudioContext.decodeAudioData` for a format the core does not read. It preserves the original
+sample rate, channel count and a fingerprint, and reports an unsupported format clearly.
+`cancelDecoding()` abandons decodes in flight and `warmDecoder()` loads the worker early. `sampleRate` decodes at the project's
 rate instead, which is how a second vocal or a reference joins a project.
 
 ## Workers
@@ -413,7 +415,11 @@ posting `{ stage, progress }` messages and honouring a cancel message. `workers/
 runs offline rendering and WAV encoding at `Quality.Offline`, with progress and cancel, taking the
 chosen `depth`, `sampleRate`, `references` and `withReferences` on its `exportWav` request. The import path runs through the
 analysis worker rather than the main thread, reports its real stage and progress, and is
-cancellable by the Cancel Import command. Both are typed by `workers/protocol.ts`, which exports the request and response unions.
+cancellable by the Cancel Import command. `workers/decode.worker.ts` decodes media with the core's
+`AudioDecoder`, reporting progress between batches of packets. A client with a stall limit takes
+its worker down when a job goes that long without reporting, failing the job with
+`WorkerStalled`: 20 seconds for a decode, two minutes for an analysis. All are typed by
+`workers/protocol.ts`, which exports the request and response unions.
 
 ## Editor: `editor/`
 

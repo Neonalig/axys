@@ -20,20 +20,22 @@ linker the design bible rules out. Rejected: `trunk` (assumes a Rust-side fronte
 
 Every crate in the tree is pure Rust: `serde`, `serde_json`, `midly`, `rustfft`, `wasm-bindgen`,
 `js-sys`, `console_error_panic_hook`. No `cc` build script is pulled in, so the documented
-workflow needs no MSVC, Clang, GCC or CMake. Rejected for this reason: `symphonia` was considered
-for decoding and is pure Rust and MPL-2.0 compatible, but it is a large build for a capability the
-browser already provides (see below); `rubato` and `hound` were unnecessary once resampling and
-RIFF handling were written directly against the product's needs.
+workflow needs no MSVC, Clang, GCC or CMake. `symphonia` is pure Rust and MPL-2.0, which is
+compatible, and is accepted for decoding (see below). `rubato` and `hound` were unnecessary once
+resampling and RIFF handling were written directly against the product's needs.
 
-### Audio decoding uses the browser, WAV handling is ours
+### Audio decoding is the core's, the browser is the fallback
 
-`AudioContext.decodeAudioData` decodes every format the host browser supports, which covers WAV,
-FLAC, MP3, AAC/M4A and Ogg without shipping a decoder. Axys keeps its own RIFF WAVE reader and
-writer in `axys-core::audio::wav` because export needs a writer anyway, because it gives exact
-source facts for WAV without trusting the browser's resampling, and because it is testable
-natively. Limitation: a format the user's browser cannot decode is reported as unsupported rather
-than handled, and `decodeAudioData` resamples to the AudioContext rate, so Axys opens a context at
-the file's own rate where the browser allows it and records the original rate either way.
+A project identifies its audio by a fingerprint of the decoded PCM, and browsers do not decode
+alike: the same WAV digested differently in Firefox and in Chrome, so a project moved between them
+could not find its own audio. `axys-core::audio::decode` decodes WAV, FLAC, MP3, AAC/M4A and Ogg
+Vorbis through `symphonia` and resamples with the core's own resampler, so the same file becomes
+the same samples in every browser. It runs in `workers/decode.worker.ts` a batch of packets at a
+time, which gives import real progress and keeps a long file off the main thread. The cost is
+about 1.1 MB of WebAssembly. A format `symphonia` does not read, such as Opus, still goes to
+`AudioContext.decodeAudioData`, which is not bit-exact across browsers; relinking such a file
+relies on the name and length rule. Axys keeps its own RIFF WAVE writer in
+`axys-core::audio::wav` because export needs one.
 
 ### Canvas 2D is the editor renderer, WebGPU is detected and reported
 
