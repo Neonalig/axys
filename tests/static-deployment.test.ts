@@ -92,15 +92,8 @@ describe('static deployment', () => {
   let built = false;
 
   beforeAll(() => {
-    if (!existsSync(join(dist, 'index.html'))) {
-      execFileSync('npm', ['run', 'build'], {
-        cwd: root,
-        stdio: 'inherit',
-        shell: process.platform === 'win32',
-      });
-    }
     built = existsSync(join(dist, 'index.html'));
-  }, 600_000);
+  });
 
   it('produces a static build with no server requirement', () => {
     expect(built).toBe(true);
