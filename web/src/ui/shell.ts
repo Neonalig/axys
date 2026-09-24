@@ -19,7 +19,7 @@ import {
   MIXER_MIN_HEIGHT,
 } from '../app/preferences.js';
 import { selectionSpan } from '../app/selection.js';
-import { toolDefinition, toolWorksIn } from '../editor/tools.js';
+import { toolWorksIn } from '../editor/tools.js';
 import { barBeatAt, bpmAt, secondsToTick } from '../core/timeline.js';
 import { editModeLabel, nothingToPlay, projectEnd } from '../app/store.js';
 import type { AppState, EditMode, FollowMode, ToolId } from '../app/store.js';
@@ -39,6 +39,7 @@ import { button as control, swapGlyph } from './controls/index.js';
 import { ICONS, STATE_ICONS, type IconName } from './icons.js';
 import type { Dialog } from './dialog.js';
 import { Inspector } from './inspector.js';
+import type { InspectorTab } from './inspector.js';
 import { MixerPanel } from './mixer.js';
 import { showContextMenu } from './menu.js';
 import { showCheatsheet, showCommandPalette } from './palette.js';
@@ -80,6 +81,8 @@ export interface ShellHooks {
   runCommand(id: string): void;
   /** Whether the command can run against the current state. */
   isCommandEnabled(id: string): boolean;
+  /** Whether the setting a command turns on is on, or `undefined` for an action. */
+  isCommandChecked(id: string): boolean | undefined;
   /** Applies one edit operation to the session. */
   applyEdit(op: EditOp): void;
   /** Changes saved editor view state. */
@@ -126,8 +129,8 @@ export interface ShellHooks {
   sourceMenu(): MenuEntry[];
   /** Brings a clip forward in the editor. */
   focusSource(clip: ClipId): void;
-  /** Asks for a file and relinks a clip's or a reference's audio to it. */
-  relinkAudio(target: { clip: ClipId } | { reference: ReferenceId }): void;
+  /** Makes a clip's blobs, or a reference, the selection, so commands act on it. */
+  selectSource(target: { clip: ClipId } | { reference: ReferenceId }): void;
 }
 
 /** What the chrome is built from. */
@@ -219,23 +222,56 @@ interface ButtonMenu {
   entries(shell: AppShell): MenuEntry[] | Promise<MenuEntry[]>;
 }
 
-/** A button menu of commands, each with its icon and key. */
-function menuOf(shell: AppShell, ids: readonly string[]): MenuEntry[] {
-  return ids.flatMap((id) => {
-    const command = shell.command(id);
+/** A separator in a list of command ids given to {@link commandMenu}. */
+export const SEPARATOR = '-';
+
+/** What a menu built from commands reads about them. */
+export interface CommandAccess {
+  command(id: string): ShellCommand | undefined;
+  can(id: string): boolean;
+  checked(id: string): boolean | undefined;
+  run(id: string): void;
+}
+
+/**
+ * A menu of commands, each with its label, icon, key, whether it can run and whether it is on.
+ *
+ * @remarks Every fixed menu is built this way, so anything a menu offers is a command and so is
+ * also in the palette, the cheatsheet and on a key. {@link SEPARATOR} between ids draws a rule.
+ * `icons` gives an item a glyph of its own, or `null` for none.
+ */
+export function commandMenu(
+  access: CommandAccess,
+  ids: readonly string[],
+  icons: Readonly<Record<string, IconName | null>> = {},
+): MenuEntry[] {
+  return ids.flatMap((id): MenuEntry[] => {
+    if (id === SEPARATOR) return [{ separator: true }];
+    const command = access.command(id);
     if (command === undefined) return [];
+    const checked = access.checked(id);
+    const icon = id in icons ? icons[id] : iconFor(command);
     return [
       {
         label: command.label,
-        icon: iconFor(command),
+        ...(icon === null || icon === undefined ? {} : { icon }),
         key: command.shortcut,
-        enabled: shell.can(id),
+        enabled: access.can(id),
+        ...(checked === undefined ? {} : { checked }),
         run: () => {
-          shell.run(id);
+          access.run(id);
         },
       },
     ];
   });
+}
+
+function menuOf(
+  shell: AppShell,
+  ids: readonly string[],
+  icons: Readonly<Record<string, IconName | null>> = {},
+): MenuEntry[] {
+  return commandMenu(shell, ids, icons);
 }
 
 /** How long ago an epoch-millisecond time was, as a recent-list detail such as `3h ago`. */
@@ -261,15 +297,7 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
     entries: async (shell) => {
       const recent = await shell.recentProjects();
       return [
-        {
-          label: 'Open Project...',
-          icon: 'openProject',
-          key: 'Ctrl+O',
-          enabled: shell.can('file.open'),
-          run: () => {
-            shell.run('file.open');
-          },
-        },
+        ...menuOf(shell, ['file.open']),
         { separator: true },
         ...(recent.length === 0
           ? [{ label: 'No Recent Projects', enabled: false, run: () => {} }]
@@ -302,115 +330,30 @@ const BUTTON_MENUS: Readonly<Record<string, ButtonMenu>> = {
     onClick: true,
     entries: (shell) => [
       ...shell.sourceMenu(),
-      { separator: true },
-      {
-        label: 'Next Source',
-        icon: 'sources',
-        key: 'W',
-        enabled: shell.can('view.sources'),
-        run: () => {
-          shell.run('view.sources');
-        },
-      },
-      {
-        label: 'Previous Source',
-        icon: 'sources',
-        key: 'Shift+W',
-        enabled: shell.can('view.previousSource'),
-        run: () => {
-          shell.run('view.previousSource');
-        },
-      },
+      ...menuOf(shell, [
+        SEPARATOR,
+        'view.showOthers',
+        'view.dimOthers',
+        'view.hideOthers',
+        SEPARATOR,
+        'view.sources',
+        'view.previousSource',
+      ]),
     ],
   },
   'view.followPlayhead': {
     hint: 'Right-click for follow modes',
-    entries: (shell) => {
-      const state = shell.state;
-      const follow = state?.follow === true;
-      const mode = state?.followMode;
-      const choose = (chosen: FollowMode): void => {
-        shell.setFollowMode(chosen);
-        if (!follow) shell.run('view.followPlayhead');
-      };
-      return [
-        {
-          label: 'Off',
-          checked: !follow,
-          run: () => {
-            if (follow) shell.run('view.followPlayhead');
-          },
-        },
-        {
-          label: 'Page Ahead',
-          checked: follow && mode === 'page',
-          run: () => {
-            choose('page');
-          },
-        },
-        {
-          label: 'Keep Centred',
-          checked: follow && mode === 'centre',
-          run: () => {
-            choose('centre');
-          },
-        },
-      ];
-    },
+    entries: (shell) =>
+      menuOf(shell, ['view.followPlayhead', SEPARATOR, 'view.follow.page', 'view.follow.centre']),
   },
   'transport.toggleMetronome': {
     hint: 'Right-click for Count In',
-    entries: (shell) => [
-      {
-        label: 'Metronome',
-        icon: 'metronome',
-        key: 'M',
-        checked: shell.state?.transport.metronome === true,
-        enabled: shell.can('transport.toggleMetronome'),
-        run: () => {
-          shell.run('transport.toggleMetronome');
-        },
-      },
-      {
-        label: 'Count In',
-        checked: shell.state?.transport.countIn === true,
-        enabled: shell.can('transport.toggleCountIn'),
-        run: () => {
-          shell.run('transport.toggleCountIn');
-        },
-      },
-    ],
+    entries: (shell) => menuOf(shell, ['transport.toggleMetronome', 'transport.toggleCountIn']),
   },
   'file.saveProject': {
     hint: 'Right-click for Save As and Save with Audio',
-    entries: (shell) => [
-      {
-        label: 'Save Project',
-        icon: 'save',
-        key: 'Ctrl+S',
-        enabled: shell.can('file.saveProject'),
-        run: () => {
-          shell.run('file.saveProject');
-        },
-      },
-      {
-        label: 'Save As',
-        icon: 'save',
-        key: 'Ctrl+Shift+S',
-        enabled: shell.can('file.saveProjectAs'),
-        run: () => {
-          shell.run('file.saveProjectAs');
-        },
-      },
-      {
-        label: 'Save with Audio',
-        icon: 'save',
-        enabled: shell.can('file.saveProjectWithAudio'),
-        run: () => {
-          shell.run('file.saveProjectWithAudio');
-        },
-      },
-    ],
+    entries: (shell) =>
+      menuOf(shell, ['file.saveProject', 'file.saveProjectAs', 'file.saveProjectWithAudio']),
   },
 };
 
@@ -458,7 +401,7 @@ function buildAccentRow(shell: AppShell): HTMLElement {
       setTooltip(swatch, ACCENT_LABELS[name]);
     }
     swatch.addEventListener('click', () => {
-      shell.chooseAccent(name);
+      shell.run(`view.accent.${name}`);
       for (const sibling of group.children) {
         sibling.setAttribute('aria-checked', String(sibling === swatch));
       }
@@ -507,7 +450,43 @@ const PRESENTED_ELSEWHERE: ReadonlySet<string> = new Set([
   'edit.trimStart',
   'edit.trimEnd',
   'edit.resetTrim',
+  // In the Save button's menu.
+  'file.saveProjectWithAudio',
+  // In the canvas and mixer menus over a source, and in the missing-audio warning.
+  'file.relinkAudio',
+  'file.relinkMissing',
+  'edit.deleteReference',
+  // The project's name at the end of the bar, and the inspector's own controls.
+  'file.renameProject',
+  'edit.estimate',
+  'view.projectTab',
+  'view.propertiesTab',
+  'view.toggleInspector',
+  'view.toggleToolbarLabels',
+  // In the Sources button's menu.
+  'view.showOthers',
+  'view.dimOthers',
+  'view.hideOthers',
+  // In the Theme button's menu, with the accent swatches.
+  'view.nextAccent',
 ]);
+
+/** Families of commands presented in a menu rather than as buttons, by id prefix. */
+const PRESENTED_ELSEWHERE_PREFIXES: readonly string[] = [
+  // In the Theme button's menu.
+  'view.theme.',
+  'view.accent.',
+  // In the Follow button's menu.
+  'view.follow.',
+];
+
+/** Whether a command is presented somewhere other than as a toolbar button of its own. */
+function presentedElsewhere(id: string): boolean {
+  return (
+    PRESENTED_ELSEWHERE.has(id) ||
+    PRESENTED_ELSEWHERE_PREFIXES.some((prefix) => id.startsWith(prefix))
+  );
+}
 
 /** Commands drawn in their own group ahead of the rest of theirs. */
 const HISTORY_COMMANDS: ReadonlySet<string> = new Set(['edit.undo', 'edit.redo']);
@@ -821,7 +800,7 @@ export class AppShell {
         continue;
       }
       const commands = (byGroup.get(name) ?? []).filter(
-        (command) => !PRESENTED_ELSEWHERE.has(command.id),
+        (command) => !presentedElsewhere(command.id),
       );
       if (commands.length === 0) {
         continue;
@@ -907,7 +886,7 @@ export class AppShell {
     title.hidden = true;
     setTooltip(title, 'Rename Project');
     title.addEventListener('click', () => {
-      this.#inspector.editProjectName();
+      this.#hooks.runCommand('file.renameProject');
     });
     header.append(title);
     this.#title = title;
@@ -1054,6 +1033,10 @@ export class AppShell {
       estimate: () => {
         this.#hooks.estimate();
       },
+      run: (id) => {
+        this.#hooks.runCommand(id);
+      },
+      tooltip: (label, id) => this.#keyed(label, id),
     });
 
     this.#mixer = new MixerPanel({
@@ -1067,9 +1050,10 @@ export class AppShell {
       focus: (clip) => {
         this.#hooks.focusSource(clip);
       },
-      relinkAudio: (target) => {
-        this.#hooks.relinkAudio(target);
+      selectSource: (target) => {
+        this.#hooks.selectSource(target);
       },
+      commandMenu: (ids) => this.commandMenu(ids),
     });
 
     const footer = document.createElement('footer');
@@ -1093,9 +1077,10 @@ export class AppShell {
       onSpan: (seconds) => {
         this.#hooks.setSpan(seconds);
       },
-      onFit: () => {
-        this.#hooks.runCommand('view.zoomFit');
+      run: (id) => {
+        this.#hooks.runCommand(id);
       },
+      tooltip: (label, id) => this.#keyed(label, id),
     });
     footer.append(spacerEnd, this.#mixerToggle, this.#zoom.element);
     this.#footer = footer;
@@ -1189,11 +1174,9 @@ export class AppShell {
     this.#setFace('transport.play', {
       icon: playing ? STATE_ICONS.transport.on : STATE_ICONS.transport.off,
       label: playing ? 'Pause' : 'Play',
-      tooltip: playing
-        ? 'Pause (Space)'
-        : silent
-          ? 'No audio loaded. Relink to play'
-          : 'Play (Space)',
+      tooltip: silent
+        ? 'No audio loaded. Relink to play'
+        : this.#keyed(playing ? 'Pause' : 'Play', 'transport.play'),
       pressed: playing,
     });
     const play = this.#commandButtons.get('transport.play')?.button;
@@ -1299,7 +1282,10 @@ export class AppShell {
     this.#mixerResizer.hidden = !mixerOpen;
     this.#mixerResizer.setAttribute('aria-valuenow', String(state.mixerHeight));
     this.#mixerToggle.setAttribute('aria-pressed', String(mixerOpen));
-    setTooltip(this.#mixerToggle, `${mixerOpen ? 'Hide Mixer' : 'Show Mixer'} (K)`);
+    setTooltip(
+      this.#mixerToggle,
+      this.#keyed(mixerOpen ? 'Hide Mixer' : 'Show Mixer', 'view.toggleMixer'),
+    );
 
     // `Axys` with nothing open, `Take 3 - Axys` open and saved, `*Take 3 - Axys` unsaved. The
     // marker leads, so a truncated tab still shows it.
@@ -1406,7 +1392,7 @@ export class AppShell {
     return control({
       icon: 'mixer',
       label: 'Mixer',
-      tooltip: 'Show Mixer (K)',
+      tooltip: 'Show Mixer',
       onPress: () => {
         this.#hooks.runCommand('view.toggleMixer');
       },
@@ -1623,6 +1609,17 @@ export class AppShell {
   }
 
   /** Opens the command palette, or closes it when it is already open. */
+  /** Opens the project tab with the name ready to be typed over. */
+  renameProject(): void {
+    this.#inspector.editProjectName();
+  }
+
+  /** Opens one of the inspector's tabs, unfolding the inspector first. */
+  showInspectorTab(tab: InspectorTab): void {
+    this.#hooks.setInspectorCollapsed(false);
+    this.#inspector.showTab(tab);
+  }
+
   toggleCommandPalette(): void {
     if (this.#closePanel('palette')) {
       return;
@@ -1666,9 +1663,25 @@ export class AppShell {
     return this.#commands.find((command) => command.id === id);
   }
 
+  /** `label` with the key of the command it runs, the way every tooltip names its key. */
+  #keyed(label: string, id: string): string {
+    const key = this.command(id)?.shortcut;
+    return key === undefined ? label : `${label} (${key})`;
+  }
+
   /** Whether a command can run, for a button menu. */
   can(id: string): boolean {
     return this.#hooks.isCommandEnabled(id);
+  }
+
+  /** Whether the setting a command turns on is on, or `undefined` for an action. */
+  checked(id: string): boolean | undefined {
+    return this.#hooks.isCommandChecked(id);
+  }
+
+  /** A menu of commands by id, for a context menu drawn outside the chrome. */
+  commandMenu(ids: readonly string[]): MenuEntry[] {
+    return commandMenu(this, ids);
   }
 
   /** The theme currently chosen, for the theme menu. */
@@ -1894,32 +1907,26 @@ export class AppShell {
     for (const tool of TOOLS) {
       // The tools are the one place a rich tooltip is warranted: a header-capitalised title, one
       // supplementary line saying what the tool does, and the key. No examples and no rationale.
-      const key = toolDefinition(tool.id).key;
-      const title = key === '' ? tool.label : `${tool.label} (${key})`;
+      const id = `tools.${tool.id}`;
       const button = control({
         icon: tool.icon,
         label: tool.label,
-        tooltip: `${title}
+        tooltip: `${this.#keyed(tool.label, id)}
 ${tool.tooltip}`,
       });
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
-        this.#hooks.setTool(tool.id);
+        this.#hooks.runCommand(id);
         this.announce(`${tool.label} selected`);
       });
       button.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         void this.#openButtonMenu(button, (shell) =>
-          TOOLS.map((entry) => ({
-            label: entry.label,
-            icon: entry.icon,
-            key: toolDefinition(entry.id).key,
-            checked: shell.state?.tool === entry.id,
-            enabled: shell.can(`tools.${entry.id}`),
-            run: () => {
-              shell.run(`tools.${entry.id}`);
-            },
-          })),
+          menuOf(
+            shell,
+            TOOLS.map((entry) => `tools.${entry.id}`),
+            Object.fromEntries(TOOLS.map((entry) => [`tools.${entry.id}`, entry.icon])),
+          ),
         );
       });
       this.#toolButtons.set(tool.id, button);
@@ -1936,9 +1943,9 @@ ${tool.tooltip}`,
       const button = control({
         icon: mode.icon,
         label,
-        tooltip: `${label}
+        tooltip: `${this.#keyed(label, `tools.editMode.${mode.id}`)}
 ${mode.tooltip}
-Next Edit Mode (Q)`,
+${this.#keyed('Next Edit Mode', 'tools.nextEditMode')}`,
       });
       button.setAttribute('aria-pressed', 'false');
       button.addEventListener('click', () => {
@@ -1947,19 +1954,18 @@ Next Edit Mode (Q)`,
       });
       button.addEventListener('contextmenu', (event) => {
         event.preventDefault();
-        void this.#openButtonMenu(button, (shell) => [
-          ...MODES.map((entry) => ({
-            label: `${editModeLabel(entry.id)} Mode`,
-            icon: entry.icon,
-            checked: shell.state?.editMode === entry.id,
-            enabled: shell.can(`tools.editMode.${entry.id}`),
-            run: () => {
-              shell.run(`tools.editMode.${entry.id}`);
-            },
-          })),
-          { separator: true as const },
-          ...menuOf(shell, ['tools.nextEditMode', 'tools.previousEditMode']),
-        ]);
+        void this.#openButtonMenu(button, (shell) =>
+          menuOf(
+            shell,
+            [
+              ...MODES.map((entry) => `tools.editMode.${entry.id}`),
+              SEPARATOR,
+              'tools.nextEditMode',
+              'tools.previousEditMode',
+            ],
+            Object.fromEntries(MODES.map((entry) => [`tools.editMode.${entry.id}`, entry.icon])),
+          ),
+        );
       });
       this.#modeButtons.set(mode.id, button);
       section.append(button);
@@ -1988,13 +1994,11 @@ Next Edit Mode (Q)`,
         // No icon per entry: four copies of the same palette would say nothing, and the mark
         // against the current choice is what the menu is here to show.
         [
-          ...THEME_CHOICES.map((choice) => ({
-            label: themeLabel(choice),
-            checked: shell.themeChoice === choice,
-            run: () => {
-              shell.chooseTheme(choice);
-            },
-          })),
+          ...menuOf(
+            shell,
+            THEME_CHOICES.map((choice) => `view.theme.${choice}`),
+            Object.fromEntries(THEME_CHOICES.map((choice) => [`view.theme.${choice}`, null])),
+          ),
           { separator: true as const },
           { render: () => buildAccentRow(shell) },
         ],

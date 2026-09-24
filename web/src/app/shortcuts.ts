@@ -11,6 +11,7 @@
 import { movePitchOps } from './clipboard.js';
 import { emptySelection, selectionForRanges, selectionInMode } from './selection.js';
 import type { Command, CommandContext } from './commands.js';
+import { controlKind, controlOwnsKey } from './key-owner.js';
 import { projectEnd } from './store.js';
 import type { AppState } from './store.js';
 import type { EditOp } from '../core/types.js';
@@ -107,11 +108,13 @@ function normaliseKey(key: string): string {
 }
 
 function chordOf(event: KeyboardEvent): Chord {
+  // A digit is read from the key itself, since Shift and some layouts turn it into a symbol.
+  const digit = /^Digit(\d)$/.exec(event.code)?.[1];
   return {
     primary: event.ctrlKey || event.metaKey,
     shift: event.shiftKey,
     alt: event.altKey,
-    key: normaliseKey(event.key),
+    key: digit ?? normaliseKey(event.key),
     shiftMatters: true,
   };
 }
@@ -124,19 +127,6 @@ function sameChord(pressed: Chord, binding: Chord): boolean {
     pressed.key === binding.key &&
     (!binding.shiftMatters || pressed.shift === binding.shift)
   );
-}
-
-/** True while the keystroke belongs to a text field rather than to the editor. */
-function editingText(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName;
-  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  if (target instanceof HTMLInputElement) {
-    const type = target.type.toLowerCase();
-    return type !== 'button' && type !== 'checkbox' && type !== 'radio' && type !== 'submit';
-  }
-  return false;
 }
 
 /** Whether a key is Copy over text selected in the page, which the browser copies itself. */
@@ -287,12 +277,18 @@ export function bindShortcuts(
 
   const onKeyDown = (event: Event): void => {
     if (!(event instanceof KeyboardEvent) || event.repeat) return;
-    if (editingText(event.target)) return;
+    if (controlOwnsKey(controlKind(event.target), event)) return;
     if (copyingSelectedText(event)) return;
 
+    const pressed = chordOf(event);
+    const matching = bindings.filter((binding) => sameChord(pressed, binding.chord));
+
+    // Escape stops whatever it is bound to while that can run, and otherwise clears the selection.
     if (event.key === 'Escape') {
-      clearSelection(ctx);
       event.preventDefault();
+      const bound = matching.find((candidate) => candidate.command.enabled(ctx));
+      if (bound !== undefined) void bound.command.run(ctx);
+      else clearSelection(ctx);
       return;
     }
 
@@ -316,8 +312,6 @@ export function bindShortcuts(
     }
 
     // A key bound to several commands runs the first one enabled.
-    const pressed = chordOf(event);
-    const matching = bindings.filter((binding) => sameChord(pressed, binding.chord));
     if (matching.length === 0) return;
     event.preventDefault();
     const binding = matching.find((candidate) => candidate.command.enabled(ctx));

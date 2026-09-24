@@ -257,7 +257,10 @@ export interface Command {
   shortcut?: string;
   /** A second key that runs the same command, never shown. */
   altShortcut?: string;
+  /** Whether the command can run against the current state, which is its context. */
   enabled(ctx: CommandContext): boolean;
+  /** Whether the setting the command turns on is on; absent for an action. */
+  checked?(ctx: CommandContext): boolean;
   run(ctx: CommandContext): void | Promise<void>;
 }
 
@@ -282,6 +285,15 @@ Follow Playhead, Toggle Bars Beats, Align Guide, Help And Diagnostics. New Proje
 editor and comes before Open, asking the same question about unsaved work.
 
 Not every command is drawn where its group is: the mixer is opened from the footer, beside the zoom.
+
+Every action is a command. Every command has a shortcut, which `app/commands.test.ts` enforces,
+and a key is shared only by commands that are never enabled together. A menu is a list of command
+ids built by `commandMenu` in `ui/shell.ts`, reading each item's label, icon, key, enabled state
+and check mark from the command; only data lists, such as recent projects and the sources, carry
+items of their own. Toolbar, inspector and footer buttons run commands, and tooltips read keys
+from them. A command that needs context is enabled only while that context exists: a source
+command acts on `sourceTarget(state)`, the selected reference or the one clip the selected blobs
+belong to, and `AppState.selectedReference` is set by pressing a reference's band or its strip.
 
 One Open covers a project or a vocal, and replaces what is open. Import adds to the open project:
 a MIDI file becomes the guide, and audio is asked about, Import Vocal putting it on the lane after

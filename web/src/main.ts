@@ -42,7 +42,7 @@ import { isViewState } from './core/json.js';
 import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, ClipPart, PasteMode, Session } from './core/wasm.js';
-import { clipEnd, clipOf, clipStart, displayTitle, sourceTitle } from './core/types.js';
+import { clipEnd, clipStart, displayTitle, sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
   Clip,
@@ -96,10 +96,9 @@ import { openImportPanel, storedAnalysis } from './ui/import-dialog.js';
 import { openRelinkDialog } from './ui/relink-dialog.js';
 import type { AnalysisOutcome } from './ui/import-dialog.js';
 import { sourceMenu } from './ui/sources-menu.js';
-import type { MenuEntry } from './ui/menu.js';
-import type { IconName } from './ui/icons.js';
 import { AppShell } from './ui/shell.js';
 import type { ShellHooks } from './ui/shell.js';
+import { SEPARATOR } from './ui/shell.js';
 import type { AccentName } from './ui/accent.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
@@ -1365,7 +1364,7 @@ class AxysWorkspace implements Workspace {
    * Save worth pressing often. `askWhere` forces the picker so a copy can go elsewhere, and
    * leaves the remembered file alone so the original stays the one Save writes to.
    */
-  async saveProject(askWhere = false): Promise<void> {
+  async saveProject(askWhere = false, fileName = this.projectName): Promise<void> {
     const json = this.#projectJson();
     if (json === null) {
       this.#toast.error('Nothing to save');
@@ -1378,7 +1377,7 @@ class AxysWorkspace implements Workspace {
         this.#store.update({ dirty: false });
         this.#toast.info(`Saved ${existing.name}`);
       } else {
-        const name = `${this.projectName}.axys.json`;
+        const name = `${fileName}.axys.json`;
         const handle = await saveFileAs(json, name, PROJECT_KIND, 'application/json');
         if (handle === null && !hasHandleSupport()) {
           this.#toast.info(`Saved ${name}`);
@@ -1403,7 +1402,7 @@ class AxysWorkspace implements Workspace {
    * @remarks A copy, like Save As: the file Save writes to stays the document. Audio still
    * missing is left out and named.
    */
-  async saveProjectWithAudio(): Promise<void> {
+  async saveProjectWithAudio(fileName = this.projectName): Promise<void> {
     const session = this.#session;
     const json = this.#projectJson();
     if (!session || json === null) {
@@ -1430,7 +1429,7 @@ class AxysWorkspace implements Workspace {
       packed.add(key);
       media.push({ key, name: reference.source.name, sampleRate: rate, channels });
     }
-    const name = `${this.projectName}${PACKAGE_EXTENSION}`;
+    const name = `${fileName}${PACKAGE_EXTENSION}`;
     try {
       const handle = await saveFileAs(
         packProject(json, media),
@@ -2468,80 +2467,32 @@ function describe(error: unknown): string {
   return 'Unknown error';
 }
 
-/**
- * The menu shown over the editor.
- *
- * @remarks Every entry runs a command and takes its key and its icon from that command, so the
- * menu, the toolbar and the keyboard cannot drift apart, and the key shown is the one that works
- * whether or not the menu is open. Over open canvas the blob entries are shown disabled rather
- * than removed, so the menu keeps its shape.
- */
-function blobMenu(
-  onBlob: boolean,
-  commands: readonly Command[],
-  hooks: ShellHooks,
-  clip: ClipId | null,
-): MenuEntry[] {
-  const item = (id: string, label: string, icon: IconName, needsBlob = true): MenuEntry => ({
-    label,
-    icon,
-    key: findCommand(commands, id)?.shortcut,
-    enabled: (!needsBlob || onBlob) && hooks.isCommandEnabled(id),
-    run: () => {
-      hooks.runCommand(id);
-    },
-  });
-  return [
-    item('edit.cut', 'Cut', 'cut', false),
-    item('edit.copy', 'Copy', 'copy', false),
-    item('edit.paste', 'Paste', 'paste', false),
-    { separator: true },
-    item('edit.reset', 'Reset to Origin', 'reset'),
-    item('edit.joinBlobs', 'Join Blobs', 'join'),
-    { separator: true },
-    item('edit.excludeBlob', 'Exclude Blob', 'exclude'),
-    { separator: true },
-    item('edit.deleteBlobs', 'Delete Blobs', 'delete'),
-    item('edit.deleteClip', 'Delete Clip', 'delete'),
-    { separator: true },
-    {
-      label: 'Relink Audio...',
-      icon: 'join',
-      enabled: clip !== null,
-      run: () => {
-        if (clip !== null) hooks.relinkAudio({ clip });
-      },
-    },
-    { separator: true },
-    item('edit.trimStart', 'Trim Start', 'trimStart', false),
-    item('edit.trimEnd', 'Trim End', 'trimEnd', false),
-    item('edit.resetTrim', 'Reset Trim', 'reset'),
-    { separator: true },
-    item('transport.loopSelection', 'Loop Selection', 'loop', false),
-    item('file.exportWav', 'Export Audio', 'export', false),
-  ];
-}
+/** The menu shown over a blob or open canvas, as command ids. */
+const BLOB_MENU: readonly string[] = [
+  'edit.cut',
+  'edit.copy',
+  'edit.paste',
+  SEPARATOR,
+  'edit.reset',
+  'edit.joinBlobs',
+  SEPARATOR,
+  'edit.excludeBlob',
+  SEPARATOR,
+  'edit.deleteBlobs',
+  'edit.deleteClip',
+  SEPARATOR,
+  'file.relinkAudio',
+  SEPARATOR,
+  'edit.trimStart',
+  'edit.trimEnd',
+  'edit.resetTrim',
+  SEPARATOR,
+  'transport.loopSelection',
+  'file.exportWav',
+];
 
-/** The menu shown over a reference's band. */
-function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
-  return [
-    {
-      label: 'Relink Audio...',
-      icon: 'join',
-      run: () => {
-        hooks.relinkAudio({ reference });
-      },
-    },
-    { separator: true },
-    {
-      label: 'Delete Reference',
-      icon: 'delete',
-      run: () => {
-        hooks.applyEdit({ type: 'removeReference', reference });
-      },
-    },
-  ];
-}
+/** The menu shown over a reference's band, as command ids. */
+const REFERENCE_MENU: readonly string[] = ['file.relinkAudio', SEPARATOR, 'edit.deleteReference'];
 
 /** Which import a dropped file is, from its name and media type. */
 /** Names files being imported: one file's title, or how many there are. */
@@ -2924,8 +2875,13 @@ function buildHooks(
     focusSource(clip) {
       workspace()?.focus(clip);
     },
-    relinkAudio(target) {
-      void workspace()?.relinkAudio(target);
+    selectSource(target) {
+      if ('reference' in target) {
+        store.update({ selectedReference: target.reference, selection: emptySelection() });
+        return;
+      }
+      workspace()?.focus(target.clip);
+      context()?.editor.selectClip(target.clip);
     },
     sourceMenu() {
       return sourceMenu(store.state, (clip, others) => {
@@ -2942,6 +2898,11 @@ function buildHooks(
       const ctx = context();
       const command = findCommand(commands, id);
       return ctx !== null && command !== undefined && command.enabled(ctx);
+    },
+    isCommandChecked(id: string): boolean | undefined {
+      const ctx = context();
+      const command = findCommand(commands, id);
+      return ctx === null || command?.checked === undefined ? undefined : command.checked(ctx);
     },
     applyEdit(op: EditOp): void {
       workspace()?.apply(op);
@@ -3147,17 +3108,11 @@ async function start(): Promise<void> {
     },
     contextMenu: (hit, at) => {
       const reference = hit.reference;
-      showContextMenu(
-        reference === null
-          ? blobMenu(
-              hit.blob !== null,
-              commands,
-              hooks,
-              hit.blob === null ? (store.state.layer[0] ?? null) : clipOf(hit.blob),
-            )
-          : referenceMenu(reference, hooks),
-        at,
-      );
+      // A reference's menu acts on that reference, so it becomes the one selected first.
+      if (reference !== null) {
+        store.update({ selectedReference: reference, selection: emptySelection() });
+      }
+      showContextMenu(shell.commandMenu(reference === null ? BLOB_MENU : REFERENCE_MENU), at);
     },
     focus: (clip) => {
       workspace.focus(clip);

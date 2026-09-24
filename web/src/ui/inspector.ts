@@ -65,6 +65,10 @@ export interface InspectorHooks {
   setProjectName(name: string): void;
   /** Folds the inspector away to its rail, or opens it again. */
   setCollapsed(on: boolean): void;
+  /** Runs a command by id. */
+  run(id: string): void;
+  /** `label` with the key of the command `id`, for a tooltip. */
+  tooltip(label: string, id: string): string;
   /** Sets the tempo, meter, start and key from what the vocal's notes suggest. */
   estimate(): void;
 }
@@ -368,11 +372,11 @@ export class Inspector {
     fold.className = 'axys-icon axys-inspector-fold';
     swapGlyph(fold, stateIcon('inspectorFold', true));
     fold.addEventListener('click', () => {
-      this.#hooks.setCollapsed(!this.#collapsed);
+      this.#hooks.run('view.toggleInspector');
     });
     fold.setAttribute('aria-label', 'Hide Inspector');
     fold.setAttribute('aria-expanded', 'true');
-    setTooltip(fold, 'Hide Inspector');
+    setTooltip(fold, this.#hooks.tooltip('Hide Inspector', 'view.toggleInspector'));
     this.#fold = fold;
 
     const head = document.createElement('div');
@@ -456,9 +460,12 @@ export class Inspector {
     this.#estimate = button({
       icon: 'correct',
       label: 'Estimate From Vocal',
-      tooltip: 'Estimate tempo, time signature, start and key',
+      tooltip: this.#hooks.tooltip(
+        'Estimate tempo, time signature, start and key',
+        'edit.estimate',
+      ),
       onPress: () => {
-        this.#hooks.estimate();
+        this.#hooks.run('edit.estimate');
       },
     });
     this.#estimate.classList.add('is-labelled', 'axys-estimate');
@@ -583,8 +590,9 @@ export class Inspector {
     button.append(mark, text);
     button.setAttribute('role', 'tab');
     button.addEventListener('click', () => {
-      this.#setTab(name);
+      this.#hooks.run(`view.${name}Tab`);
     });
+    setTooltip(button, this.#hooks.tooltip(label, `view.${name}Tab`));
     tabs.append(button);
 
     const pane = document.createElement('div');
@@ -627,6 +635,11 @@ export class Inspector {
     this.#setTab('project');
     this.#projectName.focus();
     this.#projectName.select();
+  }
+
+  /** Shows one tab, as its button does. */
+  showTab(name: InspectorTab): void {
+    this.#setTab(name);
   }
 
   /** Shows one tab and marks its button, ignoring a tab that has nothing to show. */

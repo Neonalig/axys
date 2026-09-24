@@ -18,8 +18,10 @@ const STEPS: readonly number[] = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60,
 export interface ZoomControlOptions {
   /** Asks for a visible span, in seconds, about the centre of the view. */
   onSpan(seconds: number): void;
-  /** Frames the whole project. */
-  onFit(): void;
+  /** Runs a command by id, for the buttons. */
+  run(id: string): void;
+  /** `label` with the key of the command `id`, for a tooltip. */
+  tooltip(label: string, id: string): string;
 }
 
 /**
@@ -45,8 +47,9 @@ export class ZoomControl {
     const out = button({
       icon: 'zoomOut',
       label: 'Zoom Out',
+      tooltip: options.tooltip('Zoom Out', 'view.zoomOut'),
       onPress: () => {
-        this.#step(1);
+        this.#options.run('view.zoomOut');
       },
     });
     const slider = rangeInput(0, STEPS.length - 1, 1);
@@ -73,15 +76,17 @@ export class ZoomControl {
     const inward = button({
       icon: 'zoomIn',
       label: 'Zoom In',
+      tooltip: options.tooltip('Zoom In', 'view.zoomIn'),
       onPress: () => {
-        this.#step(-1);
+        this.#options.run('view.zoomIn');
       },
     });
     const fit = button({
       icon: 'zoomFit',
       label: 'Zoom Fit',
+      tooltip: options.tooltip('Zoom Fit', 'view.zoomFit'),
       onPress: () => {
-        this.#options.onFit();
+        this.#options.run('view.zoomFit');
       },
     });
 
@@ -104,15 +109,6 @@ export class ZoomControl {
     }
   }
 
-  /** Moves one step wider or narrower from wherever the view currently sits. */
-  #step(direction: 1 | -1): void {
-    const index = clampIndex(nearestStep(this.#span) + direction);
-    const chosen = STEPS[index];
-    if (chosen !== undefined) {
-      this.#options.onSpan(chosen);
-    }
-  }
-
   #showSpan(span: number): void {
     this.#readout.value = span < 1 ? `${span.toFixed(2)} s` : `${span.toFixed(1)} s`;
   }
@@ -132,8 +128,4 @@ function nearestStep(span: number): number {
     }
   }
   return best;
-}
-
-function clampIndex(index: number): number {
-  return index < 0 ? 0 : index > STEPS.length - 1 ? STEPS.length - 1 : index;
 }

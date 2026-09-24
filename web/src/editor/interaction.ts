@@ -1016,6 +1016,11 @@ export class EditorController {
     if (hit.kind === 'reference' && hit.reference !== null) {
       const reference = state.edits?.references.find((entry) => entry.id === hit.reference);
       if (reference !== undefined) {
+        // Pressing a reference picks it, so reference commands such as Delete act on it.
+        this.#store.update({
+          selection: { blobs: [], anchors: [], ranges: [] },
+          selectedReference: reference.id,
+        });
         return {
           kind: 'reference',
           reference: reference.id,
@@ -1927,6 +1932,11 @@ export class EditorController {
   }
 
   /** Selects every blob of one clip, which is what a double-click on its title means. */
+  /** Selects every blob of one clip, as a double-click on its title does. */
+  selectClip(clip: number): void {
+    this.#selectClip(clip);
+  }
+
   #selectClip(clip: number): void {
     const state = this.#store.state;
     const blobs = state.blobs.filter((blob) => clipOf(blob.id) === clip);
@@ -2164,9 +2174,11 @@ export class EditorController {
   }
 
   #setSelection(selection: Selection, stroke: number | null = null): void {
+    // Picking blobs, or open canvas, puts down whatever reference was picked.
     this.#store.update({
       selection: selectionInMode(selection, this.#store.state.editMode),
       activeStroke: stroke,
+      selectedReference: null,
     });
   }
 

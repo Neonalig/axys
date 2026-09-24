@@ -1744,9 +1744,23 @@ Export Audio without anybody maintaining a keyword list. A label prefix sorts fi
 substring, then the toolbar's own order. The row Enter would run is marked rather than focused,
 because the caret stays in the search field.
 
-Opening either needs the chrome, so `CommandContext` carries a `Chrome` with exactly two methods.
-Everything else a command opens is a dialog the command builds, because the chrome has no business
-knowing what an export looks like.
+Opening either needs the chrome, so `CommandContext` carries a `Chrome`. Besides the two panels it
+chooses the theme and the accent, renames the project and opens an inspector tab, which are the
+chrome's to do. Everything else a command opens is a dialog the command builds, because the chrome
+has no business knowing what an export looks like.
+
+### Everything is a command
+
+Menus, toolbar buttons, the inspector's buttons, the palette and the cheatsheet all read one command
+list, so an action exists once and is reachable everywhere: from a menu, from its key and from the
+palette. A fixed menu is a list of command ids, so its labels, keys and check marks cannot drift from
+the commands'. A setting a command turns on carries `checked`, which is how the Follow, Metronome,
+Sources and Theme menus mark the current choice. Every command has a key, checked by a test. The
+keys past the single letters are Ctrl+Alt chords, since plain letters and Ctrl chords are taken by
+editing and by the browser; digits are matched by the physical key, so Shift and the layout do not
+change them. A focused control keeps only the keys it acts on (`app/key-owner.ts`): a slider its
+arrows, a number field what it types. Everything else, Space included, reaches the shortcuts, so
+focus left on a control does not stop playback.
 
 ### A shifted punctuation key ignores Shift
 

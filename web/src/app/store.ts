@@ -72,6 +72,8 @@ export interface AppState {
   activeStroke: number | null;
   /** Clips and references whose audio is missing until relinked. */
   offline: OfflineMedia;
+  /** The reference picked on the canvas or the mixer, which reference commands act on. */
+  selectedReference: ReferenceId | null;
   dirty: boolean;
 }
 
@@ -288,6 +290,7 @@ export function initialState(): AppState {
     clipboard: null,
     activeStroke: null,
     offline: { clips: [], references: [] },
+    selectedReference: null,
     dirty: false,
   };
 }
