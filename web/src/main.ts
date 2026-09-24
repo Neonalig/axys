@@ -81,9 +81,7 @@ import {
   openFiles,
   OPENABLE,
   PACKAGE_KIND,
-  PROJECT_KIND,
   saveFileAs,
-  writeFile,
   writeSaveTarget,
 } from './persistence/file-access.js';
 import type { FileHandle, SaveTarget } from './persistence/file-access.js';
@@ -277,6 +275,8 @@ class AxysWorkspace implements Workspace {
   #previewing = false;
   /** Where Save Project last wrote, so a later save needs no picker. */
   #projectFile: FileHandle | null = null;
+  /** Whether the file Save writes to bundles the audio. */
+  #projectFileAudio = false;
   #onPending: ((clip: PendingClip | null) => void) | null = null;
   /** Media writes to the device still running. */
   #writes = 0;
@@ -1283,6 +1283,33 @@ class AxysWorkspace implements Workspace {
     return true;
   }
 
+  /**
+   * Opens files the operating system started Axys with, such as a project double-clicked in the
+   * file manager.
+   *
+   * @remarks A project opens in place of what is open, asking about unsaved work first, and Save
+   * goes back to the same file. Audio is imported, and a MIDI file becomes the guide.
+   */
+  async openLaunched(handles: readonly FileHandle[]): Promise<void> {
+    const launched = await Promise.all(
+      handles.map(async (handle) => ({ handle, file: await handle.getFile() })),
+    );
+    const project = launched.find(({ file }) => kindOf(file) === 'project');
+    if (project !== undefined) {
+      if (!(await this.#mayReplaceProject())) return;
+      await this.openProjectFile(project.file);
+      if (this.#session) this.#projectFile = project.handle;
+      return;
+    }
+    const midi = launched.find(({ file }) => kindOf(file) === 'midi');
+    const audio = launched.filter(({ file }) => kindOf(file) === 'audio').map(({ file }) => file);
+    if (audio.length > 0) {
+      if (this.#session) await this.dropAudio(audio, null);
+      else await this.openVocals(audio);
+    }
+    if (midi !== undefined) await this.openMidiFile(midi.file);
+  }
+
   async openMidiFile(file: File): Promise<void> {
     const session = this.#session;
     if (!session) {
@@ -1314,12 +1341,15 @@ class AxysWorkspace implements Workspace {
       if (!(await isPackage(file))) {
         const imported = await importProject(file, (json) => this.#core.readProject(json));
         await this.#openProject(imported.json, null);
+        this.#projectFileAudio = false;
         return;
       }
       this.#progress('Open Project', 0);
       const unpacked = await unpackProject(file, (done) => {
         this.#progress('Open Project', done);
       });
+      // Saving back to a file that carried its audio carries it again.
+      this.#projectFileAudio = unpacked.media.length > 0;
       const preloaded = new Map<string, StoredAudio>();
       for (const item of unpacked.media) preloaded.set(item.key, item.stored);
       await this.#openProject(this.#core.readProject(unpacked.json).json, null, preloaded);
@@ -1377,122 +1407,59 @@ class AxysWorkspace implements Workspace {
   }
 
   /**
-   * Writes the project document, and keeps a copy on the device as a safety net.
+   * Writes the project as a `.axys` file, and keeps a copy on the device as a safety net.
    *
-   * @remarks The file it last wrote to is reused without a dialog, which is the whole point of a
-   * Save worth pressing often. `askWhere` forces the picker so a copy can go elsewhere, and
-   * leaves the remembered file alone so the original stays the one Save writes to.
+   * @remarks Save reuses the file it last wrote to, or the one the project was opened from,
+   * without a dialog, which is the whole point of a Save worth pressing often, and bundles the
+   * audio when that file did. `askWhere` forces the picker so a copy can go elsewhere, and leaves
+   * the remembered file alone so the original stays the one Save writes to. `withAudio` bundles
+   * every source's audio; without it the file holds the project alone. A `.axys.json` opened from
+   * an earlier build is written back as a document, the shape it already has.
    */
-  async saveProject(askWhere = false, fileName = this.projectName): Promise<void> {
+  async saveProject(
+    askWhere = false,
+    fileName = this.projectName,
+    withAudio = this.#projectFileAudio,
+  ): Promise<void> {
     const json = this.#projectJson();
     if (json === null) {
       this.#toast.error('Nothing to save');
       return;
     }
-    try {
-      const existing = this.#projectFile;
-      if (!askWhere && existing !== null) {
-        await writeFile(existing, json);
-        this.#store.update({ dirty: false });
-        this.#toast.info(`Saved ${existing.name}`);
-      } else {
-        const name = `${fileName}.axys.json`;
-        const handle = await saveFileAs(json, name, PROJECT_KIND, 'application/json');
-        if (handle === null && !hasHandleSupport()) {
-          this.#toast.info(`Saved ${name}`);
-        } else if (handle !== null) {
-          if (!askWhere) this.#projectFile = handle;
-          this.#toast.info(`Saved ${handle.name}`);
-        } else {
-          return;
-        }
-        if (!askWhere) this.#store.update({ dirty: false });
-      }
-    } catch (error) {
-      this.#fail('Save Project', error);
-      return;
-    }
-    await this.#keepLocalCopy(json);
-  }
-
-  /**
-   * Writes the project and every source's audio as one package, always asking where.
-   *
-   * @remarks A copy, like Save As: the file Save writes to stays the document. Audio still
-   * missing is left out and named.
-   */
-  async saveProjectWithAudio(fileName = this.projectName): Promise<void> {
-    const session = this.#session;
-    const json = this.#projectJson();
-    if (!session || json === null) {
-      this.#toast.error('Nothing to save');
-      return;
-    }
-    const name = `${fileName}${PACKAGE_EXTENSION}`;
-    // Where it goes is asked first, while the press that asked for it still lets a picker open.
+    const existing = askWhere ? null : this.#projectFile;
     let target: SaveTarget | null;
-    try {
-      target = await chooseSaveTarget(name, PACKAGE_KIND, 'application/zip');
-    } catch (error) {
-      this.#fail('Save with Audio', error);
-      return;
+    if (existing !== null) {
+      target = { kind: 'file', handle: existing };
+    } else {
+      // Asked first, while the press that asked for it still lets a picker open.
+      try {
+        target = await chooseSaveTarget(
+          `${fileName}${PACKAGE_EXTENSION}`,
+          PACKAGE_KIND,
+          'application/zip',
+        );
+      } catch (error) {
+        this.#fail('Save Project', error);
+        return;
+      }
+      if (target === null) return;
     }
-    if (target === null) return;
-    const rate = session.sampleRate();
-    this.#progress('Save with Audio', 0);
+    const operation = withAudio ? 'Save with Audio' : 'Save Project';
     try {
-      // Each source goes in as it is kept on the device, and is only packed here when it is not.
-      const sources: {
-        key: string;
-        name: string;
-        channels: () => Float32Array[];
-        role: StoredRole;
-      }[] = [];
-      const packed = new Set<string>();
-      for (const entry of session.media().clips) {
-        if (!entry.attached || packed.has(entry.source.fingerprint)) continue;
-        packed.add(entry.source.fingerprint);
-        sources.push({
-          key: entry.source.fingerprint,
-          name: entry.source.name,
-          channels: () => [session.clipSamples(entry.clip)],
-          role: 'mono',
-        });
-      }
-      for (const reference of session.media().references) {
-        const channels = this.#references.get(reference.id);
-        const key = referenceKey(reference.source.fingerprint);
-        if (channels === undefined || packed.has(key)) continue;
-        packed.add(key);
-        sources.push({
-          key,
-          name: reference.source.name,
-          channels: () => channels,
-          role: 'channels',
-        });
-      }
-      const media: PackagedMedia[] = [];
-      for (const [index, source] of sources.entries()) {
-        const stored =
-          (await this.#media?.readStored(source.key).catch(() => null)) ??
-          (await storeAudio({
-            channels: source.channels(),
-            role: source.role,
-            sampleRate: rate,
-            origin: this.#origins.get(source.key),
-          }));
-        media.push({ key: source.key, name: source.name, stored });
-        this.#progress('Save with Audio', ((index + 1) / sources.length) * 0.5);
-      }
-      const blob = await packProject(json, media, (done) => {
-        this.#progress('Save with Audio', 0.5 + done * 0.5);
-      });
-      this.#progress('Save with Audio', 1);
-      await writeSaveTarget(target, blob);
+      const legacy = target.kind === 'file' && target.handle.name.endsWith('.axys.json');
+      const data = legacy ? json : await this.#projectFileData(json, withAudio, operation);
+      await writeSaveTarget(target, data);
       this.#idle();
-      const saved = target.kind === 'file' ? target.handle.name : name;
+      if (!askWhere) {
+        if (target.kind === 'file') {
+          this.#projectFile = target.handle;
+          this.#projectFileAudio = withAudio;
+        }
+        this.#store.update({ dirty: false });
+      }
+      const saved = target.kind === 'file' ? target.handle.name : target.name;
       const missing = this.#missing.clips.length + this.#missing.references.length;
-      if (missing > 0) {
+      if (withAudio && missing > 0) {
         this.#toast.warn(
           `Saved ${saved} without ${String(missing)} missing ${missing === 1 ? 'file' : 'files'}`,
         );
@@ -1500,8 +1467,75 @@ class AxysWorkspace implements Workspace {
         this.#toast.info(`Saved ${saved}`);
       }
     } catch (error) {
-      this.#fail('Save with Audio', error);
+      this.#fail(operation, error);
+      return;
     }
+    await this.#keepLocalCopy(json);
+  }
+
+  /** Writes the project and every source's audio as one file, always asking where. */
+  async saveProjectWithAudio(fileName = this.projectName): Promise<void> {
+    await this.saveProject(true, fileName, true);
+  }
+
+  /**
+   * The `.axys` file for a project: the document, and every source's audio when `withAudio`.
+   *
+   * @remarks Each source goes in as it is kept on the device, and is only packed here when it is
+   * not. Audio still missing is left out.
+   */
+  async #projectFileData(json: string, withAudio: boolean, operation: string): Promise<Blob> {
+    const session = this.#session;
+    if (!withAudio || !session) return packProject(json, []);
+    const rate = session.sampleRate();
+    this.#progress(operation, 0);
+    const sources: {
+      key: string;
+      name: string;
+      channels: () => Float32Array[];
+      role: StoredRole;
+    }[] = [];
+    const packed = new Set<string>();
+    for (const entry of session.media().clips) {
+      if (!entry.attached || packed.has(entry.source.fingerprint)) continue;
+      packed.add(entry.source.fingerprint);
+      sources.push({
+        key: entry.source.fingerprint,
+        name: entry.source.name,
+        channels: () => [session.clipSamples(entry.clip)],
+        role: 'mono',
+      });
+    }
+    for (const reference of session.media().references) {
+      const channels = this.#references.get(reference.id);
+      const key = referenceKey(reference.source.fingerprint);
+      if (channels === undefined || packed.has(key)) continue;
+      packed.add(key);
+      sources.push({
+        key,
+        name: reference.source.name,
+        channels: () => channels,
+        role: 'channels',
+      });
+    }
+    const media: PackagedMedia[] = [];
+    for (const [index, source] of sources.entries()) {
+      const stored =
+        (await this.#media?.readStored(source.key).catch(() => null)) ??
+        (await storeAudio({
+          channels: source.channels(),
+          role: source.role,
+          sampleRate: rate,
+          origin: this.#origins.get(source.key),
+        }));
+      media.push({ key: source.key, name: source.name, stored });
+      this.#progress(operation, ((index + 1) / sources.length) * 0.5);
+    }
+    const blob = await packProject(json, media, (done) => {
+      this.#progress(operation, 0.5 + done * 0.5);
+    });
+    this.#progress(operation, 1);
+    return blob;
   }
 
   /** Mirrors the document into device storage, so a lost file is not a lost session. */
@@ -2113,7 +2147,10 @@ class AxysWorkspace implements Workspace {
   async #install(session: Session, view: ViewState | null, id: string | null): Promise<void> {
     this.#session = session;
     // A fresh import has no file of its own yet, so the next Save asks where it goes.
-    if (view === null) this.#projectFile = null;
+    if (view === null) {
+      this.#projectFile = null;
+      this.#projectFileAudio = false;
+    }
 
     const edits = session.state();
     this.#projectId = id ?? newProjectId();
@@ -2575,11 +2612,6 @@ function toBytes(bytes: Uint8Array): ArrayBuffer {
   return copy;
 }
 
-/** Whether a save can hand back a file to write to again without asking. */
-function hasHandleSupport(): boolean {
-  return typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker === 'function';
-}
-
 function describe(error: unknown): string {
   if (error instanceof AxysError || error instanceof PersistenceError) return error.message;
   if (error instanceof Error) return error.message;
@@ -2629,6 +2661,23 @@ function kindOf(file: File): 'project' | 'midi' | 'audio' {
   }
   if (name.endsWith('.mid') || name.endsWith('.midi') || file.type === 'audio/midi') return 'midi';
   return 'audio';
+}
+
+/** The slice of the File Handling API's launch queue this app reads. */
+interface LaunchQueue {
+  setConsumer(consumer: (params: { files: readonly FileHandle[] }) => void): void;
+}
+
+/**
+ * Opens the files an installed Axys was started with, from the manifest's file handlers.
+ *
+ * @remarks A browser without the File Handling API has no launch queue, and nothing happens.
+ */
+function consumeLaunches(workspace: AxysWorkspace): void {
+  const queue = (globalThis as { launchQueue?: LaunchQueue }).launchQueue;
+  queue?.setConsumer((params) => {
+    if (params.files.length > 0) void workspace.openLaunched(params.files);
+  });
 }
 
 /** Accepts audio, MIDI and project files dropped anywhere on the window. */
@@ -3307,6 +3356,9 @@ async function start(): Promise<void> {
   });
 
   await restoreLastProject(workspace, projects, toast);
+  // After the restore, so a file the system opened Axys with replaces what reopened rather than
+  // being replaced by it.
+  consumeLaunches(workspace);
   noteDegradedCapabilities(caps, toast, () => {
     hooks.runCommand('help.showDiagnostics');
   });

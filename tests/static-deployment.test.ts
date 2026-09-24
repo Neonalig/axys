@@ -244,6 +244,18 @@ describe('static deployment', () => {
     expect(readFileSync(join(dist, 'index.html'), 'utf8')).toContain('manifest.webmanifest');
   });
 
+  it('declares itself the handler for its project files', () => {
+    const manifest = JSON.parse(readFileSync(join(dist, 'manifest.webmanifest'), 'utf8')) as {
+      file_handlers?: { accept: Record<string, string[]> }[];
+      launch_handler?: { client_mode: string };
+    };
+    const extensions = (manifest.file_handlers ?? []).flatMap((handler) =>
+      Object.values(handler.accept).flat(),
+    );
+    expect(extensions).toContain('.axys');
+    expect(manifest.launch_handler?.client_mode).toBe('focus-existing');
+  });
+
   it('serves the worker and the build stamp uncached', () => {
     const headers = readFileSync(join(dist, '_headers'), 'utf8');
     expect(headers).toMatch(/\/sw\.js\s+Cache-Control: no-cache/);

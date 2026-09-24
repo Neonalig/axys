@@ -155,7 +155,7 @@ export interface Workspace {
    * @remarks Goes back to the file it was last written to without asking. `askWhere` forces the
    * picker, which is how a copy is saved somewhere else.
    */
-  saveProject(askWhere?: boolean, fileName?: string): Promise<void>;
+  saveProject(askWhere?: boolean, fileName?: string, withAudio?: boolean): Promise<void>;
   /** Writes the project and its audio as one file, asking where. */
   saveProjectWithAudio(fileName?: string): Promise<void>;
   /** Asks for files and relinks each to the audio the project is missing. */
@@ -671,8 +671,7 @@ export function buildCommands(): Command[] {
           name: ctx.workspace.projectName,
           format: 'project',
           save: (name, format) => {
-            if (format === 'package') void ctx.workspace.saveProjectWithAudio(name);
-            else void ctx.workspace.saveProject(true, name);
+            void ctx.workspace.saveProject(true, name, format === 'package');
           },
         });
       },
@@ -688,8 +687,7 @@ export function buildCommands(): Command[] {
           name: ctx.workspace.projectName,
           format: 'package',
           save: (name, format) => {
-            if (format === 'package') void ctx.workspace.saveProjectWithAudio(name);
-            else void ctx.workspace.saveProject(true, name);
+            void ctx.workspace.saveProject(true, name, format === 'package');
           },
         });
       },

@@ -248,8 +248,9 @@ function pickWithInput(accept: string, multiple: boolean): Promise<File[]> {
  * open project rather than opening one, so it has its own command and its own picker.
  */
 export const OPENABLE: readonly FileKind[] = [
-  { description: 'Axys Project', accept: { 'application/json': ['.axys.json', '.json'] } },
-  { description: 'Axys Project with Audio', accept: { 'application/zip': ['.axys'] } },
+  // Projects saved by earlier builds, which wrote the document alone.
+  { description: 'Axys Project (JSON)', accept: { 'application/json': ['.axys.json', '.json'] } },
+  { description: 'Axys Project', accept: { 'application/vnd.axys.project+zip': ['.axys'] } },
   {
     description: 'Audio',
     accept: {
@@ -276,14 +277,9 @@ export const AUDIO_KIND: readonly FileKind[] = [
 /** What Import offers: audio for a vocal or a reference, or a MIDI guide. */
 export const IMPORTABLE: readonly FileKind[] = [...AUDIO_KIND, ...MIDI_KIND];
 
-/** The project document kind, for saving. */
-export const PROJECT_KIND: readonly FileKind[] = [
-  { description: 'Axys Project', accept: { 'application/json': ['.axys.json'] } },
-];
-
-/** The packaged project kind, for saving a project with its audio. */
+/** The project kind every save writes, with or without its audio. */
 export const PACKAGE_KIND: readonly FileKind[] = [
-  { description: 'Axys Project with Audio', accept: { 'application/zip': ['.axys'] } },
+  { description: 'Axys Project', accept: { 'application/vnd.axys.project+zip': ['.axys'] } },
 ];
 
 /** The audio kinds an export may be written as. */

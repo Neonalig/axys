@@ -653,9 +653,12 @@ export class MediaStore {
 `persistence/package.ts` exports `packProject(json, media, onProgress?)` and
 `unpackProject(file, onProgress?)` for a `.axys` package: a zip of `project.axys.json`,
 `manifest.json` and each source's PCM as a WAV at the smallest exact depth, 16-bit, 24-bit or
-32-bit float, under `audio/`, keyed in the manifest by its media store key. Save with Audio writes one, and
-Open, Import and a drop open one, attaching and caching its audio. `isPackage(file)` tells one
-from a document.
+32-bit float, under `audio/`, keyed in the manifest by its media store key. Every save writes
+one, with no audio unless it is bundled, and Open, Import, a drop and a launch from the file
+manager open one, attaching and caching its audio. `isPackage(file)` tells one from a `.axys.json`
+document an earlier build wrote. The manifest declares `file_handlers` for `.axys`, audio and
+MIDI, and `main.ts` reads the File Handling API's `launchQueue` after the startup restore, so a
+launched project replaces what reopened and Save writes back to it.
 
 `persistence/project-io.ts` exports `exportProject(json, name)` writing a `.axys.json` download and
 `importProject(file, read)` reading one back through the core's migration, plus

@@ -1437,14 +1437,20 @@ is loaded, with a Relink link, instead of starting a transport that ends at once
 until dismissed, since each names something still wrong, and the missing-audio warning offers
 Relink, which takes several files at once.
 
-### A project can carry its audio
+### One project file, with or without its audio
 
-Audio lives in the browser's own storage, so a `.axys.json` opened in another browser or on another
-machine has none, however deterministic the decoding. Save with Audio writes a `.axys` package
-instead: a plain zip holding the document and each source's audio as the device keeps it. The
-light `.axys.json` stays the default for Save, and Save with Audio is a copy like Save As, so Save
-goes on writing the document. It asks where the file goes before it packs, since the save picker
-only opens straight after a press, and packs with progress.
+Audio lives in the browser's own storage, so a project opened in another browser or on another
+machine has none, however deterministic the decoding. Every save writes one kind of file, `.axys`:
+a plain zip holding the document, and each source's audio as the device keeps it when the audio is
+bundled. Save writes it without the audio, Save with Audio and the Format field of Save As write
+it with. Save goes back to the file it last wrote, or the one the project was opened from, and
+bundles the audio when that file did. Save As and Save with Audio write a copy and leave that file
+alone. A save asks where the file goes before it packs, since the save picker only opens straight
+after a press, and packs with progress. One extension is also what lets the installed app open a
+project from the file manager: the manifest's `file_handlers` claim `.axys`, which `.axys.json`
+could not be without claiming every `.json` file, and `launch_handler` sends the file to the
+window already open. A `.axys.json` from an earlier build still opens, and Save writes one back
+as a document.
 
 ### Audio is kept as the smaller of its original and an exact WAV
 

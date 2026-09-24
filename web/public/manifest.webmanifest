@@ -11,6 +11,27 @@
   "background_color": "#0e1116",
   "theme_color": "#0e1116",
   "categories": ["music", "productivity", "utilities"],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": { "application/vnd.axys.project+zip": [".axys"] },
+      "icons": [{ "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml" }],
+      "launch_type": "single-client"
+    },
+    {
+      "action": "./",
+      "accept": {
+        "audio/wav": [".wav"],
+        "audio/flac": [".flac"],
+        "audio/mpeg": [".mp3"],
+        "audio/mp4": [".m4a"],
+        "audio/ogg": [".ogg"],
+        "audio/midi": [".mid", ".midi"]
+      },
+      "launch_type": "single-client"
+    }
+  ],
+  "launch_handler": { "client_mode": "focus-existing" },
   "icons": [
     { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     {
