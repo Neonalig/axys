@@ -90,6 +90,8 @@ import type { FileHandle, SaveTarget } from './persistence/file-access.js';
 import { importProject } from './persistence/project-io.js';
 import { isPackage, PACKAGE_EXTENSION, packProject, unpackProject } from './persistence/package.js';
 import type { PackagedMedia } from './persistence/package.js';
+import { restoreAudio, storeAudio } from './persistence/stored-audio.js';
+import type { AudioOrigin, StoredAudio, StoredRole } from './persistence/stored-audio.js';
 import { restoreNewest } from './persistence/restore.js';
 import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
@@ -359,6 +361,7 @@ class AxysWorkspace implements Workspace {
     this.#session = null;
     this.#missing = { clips: [], references: [] };
     this.#references.clear();
+    this.#origins.clear();
     this.#clipTracks.clear();
     this.#projectId = null;
     clearPeaks();
@@ -534,6 +537,21 @@ class AxysWorkspace implements Workspace {
 
   /** The toast naming what the project is missing, while it is on screen. */
   #missingToast: Toast | null = null;
+
+  /**
+   * The file each source was imported or relinked from this session, by media store key, where
+   * decoding that file again gives exactly the samples the source holds.
+   */
+  readonly #origins = new Map<string, AudioOrigin>();
+
+  /** Remembers the file a source's samples came from, when it gives them back exactly. */
+  #noteOrigin(key: string, decoded: DecodedSource, exact = true): void {
+    if (exact && decoded.exact) {
+      this.#origins.set(key, { file: decoded.file, fingerprint: decoded.fingerprint });
+    } else {
+      this.#origins.delete(key);
+    }
+  }
 
   /** The batch of files being worked through, while there is one. */
   #batch: FileBatch | null = null;
@@ -835,6 +853,7 @@ class AxysWorkspace implements Workspace {
         f0: params,
       });
       this.#close();
+      this.#noteOrigin(decoded.fingerprint, decoded);
       await this.#install(session, null, null);
       this.estimate(true);
       if (decoded.resampled) {
@@ -989,6 +1008,7 @@ class AxysWorkspace implements Workspace {
       this.#publish();
       const placed = session.state().clips.find((entry) => entry.id === clip);
       if (placed) this.#reveal(placed.position);
+      this.#noteOrigin(fingerprintOf(analysed.samples), decoded);
       void this.#cacheMedia(fingerprintOf(analysed.samples), analysed.samples);
       this.#toast.info(`Imported ${sourceTitle(file.name)}`);
       return placed === undefined ? null : { clip, end: clipEnd(placed) };
@@ -1155,6 +1175,7 @@ class AxysWorkspace implements Workspace {
         mime: decoded.mime,
       };
       const reference = session.addReference(source, position);
+      this.#noteOrigin(referenceKey(source.fingerprint), decoded);
       this.#keepReference(reference, source, channels);
       this.#audio.loadReference(
         reference,
@@ -1299,17 +1320,11 @@ class AxysWorkspace implements Workspace {
       const unpacked = await unpackProject(file, (done) => {
         this.#progress('Open Project', done);
       });
-      const preloaded = new Map<string, Float32Array>();
-      for (const item of unpacked.media) {
-        preloaded.set(
-          item.key,
-          item.channels.length > 1
-            ? joinChannels(item.channels)
-            : (item.channels[0] ?? new Float32Array(0)),
-        );
-      }
+      const preloaded = new Map<string, StoredAudio>();
+      for (const item of unpacked.media) preloaded.set(item.key, item.stored);
       await this.#openProject(this.#core.readProject(unpacked.json).json, null, preloaded);
-      for (const [key, samples] of preloaded) void this.#cacheMedia(key, samples);
+      // Kept as the package carried it: the same file, so nothing is repacked.
+      for (const [key, stored] of preloaded) void this.#keepStored(key, stored);
     } catch (error) {
       this.#fail('Open Project', error);
     }
@@ -1424,29 +1439,53 @@ class AxysWorkspace implements Workspace {
     }
     if (target === null) return;
     const rate = session.sampleRate();
-    const media: PackagedMedia[] = [];
-    const packed = new Set<string>();
-    for (const entry of session.media().clips) {
-      if (!entry.attached || packed.has(entry.source.fingerprint)) continue;
-      packed.add(entry.source.fingerprint);
-      media.push({
-        key: entry.source.fingerprint,
-        name: entry.source.name,
-        sampleRate: rate,
-        channels: [session.clipSamples(entry.clip)],
-      });
-    }
-    for (const reference of session.media().references) {
-      const channels = this.#references.get(reference.id);
-      const key = referenceKey(reference.source.fingerprint);
-      if (channels === undefined || packed.has(key)) continue;
-      packed.add(key);
-      media.push({ key, name: reference.source.name, sampleRate: rate, channels });
-    }
     this.#progress('Save with Audio', 0);
     try {
+      // Each source goes in as it is kept on the device, and is only packed here when it is not.
+      const sources: {
+        key: string;
+        name: string;
+        channels: () => Float32Array[];
+        role: StoredRole;
+      }[] = [];
+      const packed = new Set<string>();
+      for (const entry of session.media().clips) {
+        if (!entry.attached || packed.has(entry.source.fingerprint)) continue;
+        packed.add(entry.source.fingerprint);
+        sources.push({
+          key: entry.source.fingerprint,
+          name: entry.source.name,
+          channels: () => [session.clipSamples(entry.clip)],
+          role: 'mono',
+        });
+      }
+      for (const reference of session.media().references) {
+        const channels = this.#references.get(reference.id);
+        const key = referenceKey(reference.source.fingerprint);
+        if (channels === undefined || packed.has(key)) continue;
+        packed.add(key);
+        sources.push({
+          key,
+          name: reference.source.name,
+          channels: () => channels,
+          role: 'channels',
+        });
+      }
+      const media: PackagedMedia[] = [];
+      for (const [index, source] of sources.entries()) {
+        const stored =
+          (await this.#media?.readStored(source.key).catch(() => null)) ??
+          (await storeAudio({
+            channels: source.channels(),
+            role: source.role,
+            sampleRate: rate,
+            origin: this.#origins.get(source.key),
+          }));
+        media.push({ key: source.key, name: source.name, stored });
+        this.#progress('Save with Audio', ((index + 1) / sources.length) * 0.5);
+      }
       const blob = await packProject(json, media, (done) => {
-        this.#progress('Save with Audio', done);
+        this.#progress('Save with Audio', 0.5 + done * 0.5);
       });
       this.#progress('Save with Audio', 1);
       await writeSaveTarget(target, blob);
@@ -1670,10 +1709,21 @@ class AxysWorkspace implements Workspace {
   async #openProject(
     json: string,
     id: string | null,
-    preloaded?: ReadonlyMap<string, Float32Array>,
+    preloaded?: ReadonlyMap<string, StoredAudio>,
   ): Promise<void> {
     this.#progress('Open Project', 0);
     const session = this.#core.openSession(json);
+    const rate = session.sampleRate();
+    // Pasted copies share their source, so each is read once.
+    const loaded = new Map<string, Promise<Float32Array[] | null>>();
+    const load = (key: string, role: StoredRole, channels: number) => {
+      let pending = loaded.get(key);
+      if (pending === undefined) {
+        pending = this.#loadSource(key, role, channels, rate, preloaded);
+        loaded.set(key, pending);
+      }
+      return pending;
+    };
     const references = new Map<ReferenceId, Float32Array[]>();
     const missing: MissingMedia = { clips: [], references: [] };
     const media = session.media();
@@ -1681,9 +1731,7 @@ class AxysWorkspace implements Workspace {
     let read = 0;
     for (const entry of media.clips) {
       this.#progress('Open Project', read++ / count);
-      const samples =
-        preloaded?.get(entry.source.fingerprint) ??
-        (await this.#readMedia(entry.source.fingerprint));
+      const samples = (await load(entry.source.fingerprint, 'mono', 1))?.[0] ?? null;
       if (samples === null) {
         missing.clips.push({ clip: entry.clip, source: entry.source });
         continue;
@@ -1702,12 +1750,12 @@ class AxysWorkspace implements Workspace {
     for (const reference of media.references) {
       this.#progress('Open Project', read++ / count);
       const key = referenceKey(reference.source.fingerprint);
-      const stored = preloaded?.get(key) ?? (await this.#readMedia(key));
-      if (stored === null) {
+      const channels = await load(key, 'channels', reference.source.channels);
+      if (channels === null) {
         missing.references.push(reference);
         continue;
       }
-      references.set(reference.id, splitChannels(stored, reference.source.channels));
+      references.set(reference.id, channels);
     }
     this.#close();
     for (const [id, channels] of references) this.#references.set(id, channels);
@@ -1959,6 +2007,15 @@ class AxysWorkspace implements Workspace {
     const session = this.#session;
     if (!session) return;
     const frames = target.source.frames;
+    // The file gives the samples back only when they were kept as it decoded them.
+    const untouched =
+      decoded.frames === frames &&
+      (target.kind === 'clip' || decoded.channels === target.source.channels);
+    this.#noteOrigin(
+      target.kind === 'clip' ? target.source.fingerprint : referenceKey(target.source.fingerprint),
+      decoded,
+      untouched,
+    );
     if (target.kind === 'clip') {
       const mono = match === 'exact' ? decoded.mono : fitFrames(decoded.mono, frames);
       for (const clip of target.clips) {
@@ -1988,6 +2045,10 @@ class AxysWorkspace implements Workspace {
     const session = this.#session;
     if (!session) return;
     const { target } = snapshot;
+    // The preview's file is not the audio put back, so nothing is known about where that came from.
+    this.#origins.delete(
+      target.kind === 'clip' ? target.source.fingerprint : referenceKey(target.source.fingerprint),
+    );
     if (target.kind === 'clip') {
       for (const [clip, samples] of snapshot.clips) {
         if (samples === null) {
@@ -2146,18 +2207,79 @@ class AxysWorkspace implements Workspace {
   }
 
   /** Keeps a clip's audio on the device. `replace` overwrites what is already kept. */
-  async #cacheMedia(fingerprint: string, mono: Float32Array, replace = false): Promise<void> {
+  async #cacheMedia(
+    fingerprint: string,
+    mono: Float32Array,
+    replace = false,
+    rate = this.#session?.sampleRate() ?? 48_000,
+  ): Promise<void> {
+    await this.#storeSource(fingerprint, [mono], 'mono', rate, replace);
+  }
+
+  /**
+   * Keeps a source's audio on the device as the smaller exact file: the one it was imported from,
+   * or a WAV of its samples.
+   *
+   * @remarks `replace` overwrites what is already kept.
+   */
+  async #storeSource(
+    key: string,
+    channels: readonly Float32Array[],
+    role: StoredRole,
+    rate: number,
+    replace: boolean,
+  ): Promise<void> {
     const media = this.#media;
     if (!media) return;
+    const origin = this.#origins.get(key);
     this.#writes += 1;
     try {
-      if (!replace && (await media.has(fingerprint))) return;
-      await media.write(fingerprint, mono);
+      if (!replace && (await media.hasAny(key))) return;
+      const stored = await storeAudio({ channels, role, sampleRate: rate, origin });
+      await media.writeStored(key, stored);
     } catch {
       this.#toast.warn('Audio not cached');
     } finally {
       this.#writes -= 1;
     }
+  }
+
+  /** Keeps a source's audio on the device as a file it already has, such as one a package held. */
+  async #keepStored(key: string, stored: StoredAudio): Promise<void> {
+    const media = this.#media;
+    if (!media) return;
+    this.#writes += 1;
+    try {
+      await media.writeStored(key, stored);
+    } catch {
+      this.#toast.warn('Audio not cached');
+    } finally {
+      this.#writes -= 1;
+    }
+  }
+
+  /**
+   * A source's samples at `rate`, from what the device or a package keeps, or `null` when there
+   * are none or they no longer decode to the audio they were kept for.
+   *
+   * @remarks Audio an earlier build kept as raw PCM is read as it is and kept again in the new
+   * shape, which replaces it.
+   */
+  async #loadSource(
+    key: string,
+    role: StoredRole,
+    channels: number,
+    rate: number,
+    preloaded?: ReadonlyMap<string, StoredAudio>,
+  ): Promise<Float32Array[] | null> {
+    const stored =
+      preloaded?.get(key) ?? (await this.#media?.readStored(key).catch(() => null)) ?? null;
+    if (stored !== null) return restoreAudio(stored, rate);
+    const legacy = await this.#readMedia(key);
+    if (legacy === null) return null;
+    const restored = role === 'mono' ? [legacy] : splitChannels(legacy, channels);
+    void this.#storeSource(key, restored, role, rate, true);
+    return restored;
   }
 
   /**
@@ -2189,18 +2311,13 @@ class AxysWorkspace implements Workspace {
     channels: readonly Float32Array[],
     replace = false,
   ): Promise<void> {
-    const media = this.#media;
-    if (!media) return;
-    const key = referenceKey(source.fingerprint);
-    this.#writes += 1;
-    try {
-      if (!replace && (await media.has(key))) return;
-      await media.write(key, joinChannels(channels));
-    } catch {
-      this.#toast.warn('Audio not cached');
-    } finally {
-      this.#writes -= 1;
-    }
+    await this.#storeSource(
+      referenceKey(source.fingerprint),
+      channels,
+      'channels',
+      this.#session?.sampleRate() ?? source.sampleRate,
+      replace,
+    );
   }
 
   #projectJson(): string | null {
@@ -2407,17 +2524,7 @@ function fitChannels(channels: readonly Float32Array[], count: number): Float32A
   return [left.slice(), (right ?? left).slice()];
 }
 
-/** Channels one after the other in one buffer, which is how the media store keeps them. */
-function joinChannels(channels: readonly Float32Array[]): Float32Array {
-  const frames = channels[0]?.length ?? 0;
-  const joined = new Float32Array(frames * channels.length);
-  channels.forEach((channel, index) => {
-    joined.set(channel.subarray(0, frames), index * frames);
-  });
-  return joined;
-}
-
-/** Undoes {@link joinChannels}. */
+/** A reference's channels from the one buffer an earlier build kept them in, one after the other. */
 function splitChannels(joined: Float32Array, count: number): Float32Array[] {
   const channels = Math.max(1, Math.min(2, count));
   const frames = Math.floor(joined.length / channels);

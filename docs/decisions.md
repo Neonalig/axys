@@ -1441,17 +1441,25 @@ Relink, which takes several files at once.
 
 Audio lives in the browser's own storage, so a `.axys.json` opened in another browser or on another
 machine has none, however deterministic the decoding. Save with Audio writes a `.axys` package
-instead: a plain zip holding the document and each source's decoded PCM as a WAV. Storing the PCM
-rather than the original file keeps a package exact, since the fingerprint is taken from that
-PCM, and works for audio imported before the original was ever kept. Each WAV is written at the
-smallest depth that holds its samples exactly: audio decoded from a 16-bit file is whole 16-bit
-steps and goes back to 16 bits, the size of the file it came from, and a vocal mixed to mono from
-stereo 16-bit is half a step finer and fits 24 bits. Only audio with finer steps, resampled or
-decoded from a lossy file, is written as 32-bit float, which is larger than the MP3 it came from.
-Packing and unpacking work a slice at a time with progress, and Save with Audio asks where the file
-goes before it packs, since the save picker only opens straight after a press. The light
-`.axys.json` stays the default for Save, and Save with Audio is a copy like Save As, so Save goes
-on writing the document.
+instead: a plain zip holding the document and each source's audio as the device keeps it. The
+light `.axys.json` stays the default for Save, and Save with Audio is a copy like Save As, so Save
+goes on writing the document. It asks where the file goes before it packs, since the save picker
+only opens straight after a press, and packs with progress.
+
+### Audio is kept as the smaller of its original and an exact WAV
+
+Each source is kept on the device, and carried in a package, as one of two files that both give
+back exactly the samples in use, whichever is smaller. One is the file it was imported from: the
+core decodes a file the same way everywhere, so decoding it again at the project rate gives the
+same samples, and a fingerprint kept beside it is checked when it is. The other is a WAV at the
+smallest depth that holds the samples exactly: audio decoded from a 16-bit file is whole 16-bit
+steps and goes back to 16 bits, and a vocal mixed to mono from stereo 16-bit fits 24 bits. So a
+16-bit WAV is kept at its own size, an MP3 or a FLAC as itself, and a file resampled to the
+project rate as its smaller original. Only the WAV is possible for a format only the browser
+decodes, since that decode differs between browsers, and for audio a relink padded or trimmed.
+Keeping the file in place of the float PCM an earlier build kept costs a decode when a project
+opens. An original that no longer decodes to its fingerprint, after a decoder change, shows as
+missing audio rather than as different audio.
 
 ### File access prefers the host's own picker
 

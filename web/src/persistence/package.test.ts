@@ -9,6 +9,8 @@ import {
   packProject,
   unpackProject,
 } from './package.js';
+import { parseStored, restoreAudio, serialiseStored, storeAudio } from './stored-audio.js';
+import type { StoredAudio } from './stored-audio.js';
 
 /** Samples that are whole steps of an n-bit file. */
 function steps(bits: number, values: readonly number[]): Float32Array {
@@ -16,21 +18,23 @@ function steps(bits: number, values: readonly number[]): Float32Array {
 }
 
 describe('packProject', () => {
-  it('round-trips the document and every sample bit for bit', async () => {
+  it('carries each stored file and how it is read, unchanged', async () => {
     const mono = new Float32Array([0, 0.25, -1, 1e-30, 0.1]);
-    const left = steps(16, [16384, -16384, 1]);
-    const right = steps(16, [4096, 24576, -1]);
+    const original: StoredAudio = {
+      kind: 'original',
+      extension: 'flac',
+      role: 'channels',
+      channels: 2,
+      fingerprint: '0123456789abcdef',
+      bytes: new Uint8Array([1, 2, 3, 4, 5]),
+    };
+    const repacked = await storeAudio({ channels: [mono], role: 'mono', sampleRate: 48000 });
     const progress: number[] = [];
     const blob = await packProject(
       '{"name":"Take"}',
       [
-        { key: 'aaaa', name: 'Lead Vocals.wav', sampleRate: 48000, channels: [mono] },
-        {
-          key: 'bbbb-reference',
-          name: 'Lead Vocals.wav',
-          sampleRate: 48000,
-          channels: [left, right],
-        },
+        { key: 'aaaa', name: 'Lead Vocals.wav', stored: repacked },
+        { key: 'bbbb-reference', name: 'Lead Vocals.wav', stored: original },
       ],
       (done) => progress.push(done),
     );
@@ -42,10 +46,11 @@ describe('packProject', () => {
     expect(unpacked.json).toBe('{"name":"Take"}');
     expect(unpacked.media.map((item) => item.key)).toEqual(['aaaa', 'bbbb-reference']);
     const [first, second] = unpacked.media;
-    expect(new Uint32Array(first?.channels[0]?.buffer ?? new ArrayBuffer(0))).toEqual(
+    expect(second?.stored).toEqual(original);
+    const restored = first === undefined ? null : await restoreAudio(first.stored, 48000);
+    expect(new Uint32Array(restored?.[0]?.buffer ?? new ArrayBuffer(0))).toEqual(
       new Uint32Array(mono.buffer),
     );
-    expect(second?.channels.map((channel) => [...channel])).toEqual([[...left], [...right]]);
     expect(new Set(unpacked.media.map((item) => item.name)).size).toBe(2);
   });
 
@@ -54,6 +59,42 @@ describe('packProject', () => {
       'is not an Axys project',
     );
     expect(await isPackage(new File(['{}'], 'x.axys.json'))).toBe(false);
+  });
+});
+
+describe('storeAudio', () => {
+  const channels = [steps(16, [1, -2, 3, -4, 5, -6, 7, -8])];
+
+  it('keeps the original when it is the smaller exact file', async () => {
+    const small = new File([new Uint8Array(10)], 'take.flac');
+    const stored = await storeAudio({
+      channels,
+      role: 'mono',
+      sampleRate: 48000,
+      origin: { file: small, fingerprint: 'feedfacefeedface' },
+    });
+    expect(stored.kind).toBe('original');
+    expect(stored.extension).toBe('flac');
+    expect(stored.fingerprint).toBe('feedfacefeedface');
+  });
+
+  it('repacks when the WAV is smaller than the original', async () => {
+    const large = new File([new Uint8Array(4096)], 'take.wav');
+    const stored = await storeAudio({
+      channels,
+      role: 'mono',
+      sampleRate: 48000,
+      origin: { file: large, fingerprint: 'feedfacefeedface' },
+    });
+    expect(stored.kind).toBe('wav');
+    expect(stored.bytes.length).toBe(44 + channels[0]!.length * 2);
+  });
+
+  it('round-trips through the container the device keeps', async () => {
+    const stored = await storeAudio({ channels, role: 'mono', sampleRate: 44100 });
+    const parsed = parseStored(serialiseStored(stored));
+    expect(parsed).toEqual(stored);
+    expect(parseStored(new Uint8Array([1, 2, 3]))).toBeNull();
   });
 });
 

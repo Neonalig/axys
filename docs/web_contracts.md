@@ -665,8 +665,12 @@ what is missing; audio opened or dropped while it waits is matched to a missing 
 reference by `app/relink.ts`: a matching fingerprint, or the recorded name and length. Anything
 else opens Relink Audio, which previews the file on a chosen source until Apply or Cancel. Relink
 Audio on a blob, a reference or a mixer strip does the same for audio that is not missing. Relinked
-audio is fitted to the recorded length and cached under the recorded fingerprint. `MediaStore` keys a reference's channels, one after the other, by its
-fingerprint with a `-reference` suffix. `persistence/autosave.ts` debounces
+audio is fitted to the recorded length and cached under the recorded fingerprint. `MediaStore`
+keeps each source as a `persistence/stored-audio.ts` entry under its fingerprint, a reference's
+with a `-reference` suffix: the original file where decoding it again gives the exact samples and
+it is the smaller, and otherwise a WAV at the smallest exact depth. `readStored` and `writeStored`
+read and write one; the raw PCM an earlier build kept under the same key is still read, and is
+replaced the next time the source is kept. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
 
 `persistence/restore.ts` exports `restoreNewest(source, open, preferred)`, which picks the stored

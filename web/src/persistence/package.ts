@@ -3,18 +3,18 @@
 /**
  * Projects saved with their audio, as one file.
  *
- * A package is a zip archive: the project document, a manifest, and each source's decoded audio
- * as a WAV at the project rate. The audio is the exact PCM the project fingerprinted, so a package
- * opens anywhere with nothing to relink, and any zip tool can take the audio out. Each WAV is
- * written at the smallest depth that holds its samples exactly: audio decoded from a 16-bit file
- * goes back to 16 bits, and only audio with finer steps, such as resampled or lossy audio, is
- * written as 32-bit float.
+ * A package is a zip archive: the project document, a manifest, and each source's audio as it is
+ * kept on the device (`stored-audio.ts`): the file it was imported from where that decodes back to
+ * the exact samples and is the smaller, and otherwise a WAV of the samples at the smallest depth
+ * that holds them exactly. A package opens anywhere with nothing to relink, and any zip tool can
+ * take the audio out.
  *
- * Packing and unpacking work through the audio a slice at a time, yielding between slices, so a
- * large project reports progress instead of holding the page.
+ * Encoding a WAV and checksumming the archive work a slice at a time, yielding between slices, so
+ * a large project reports progress instead of holding the page.
  */
 
 import { PersistenceError } from './db.js';
+import type { StoredAudio, StoredRole } from './stored-audio.js';
 
 /** File extension every packaged project carries. */
 export const PACKAGE_EXTENSION = '.axys';
@@ -25,8 +25,13 @@ const DOCUMENT_PATH = 'project.axys.json';
 /** Where the manifest sits inside a package. */
 const MANIFEST_PATH = 'manifest.json';
 
-/** Package layout version this build writes. */
-const PACKAGE_VERSION = 1;
+/**
+ * Package layout version this build writes.
+ *
+ * @remarks Version 1 held a WAV per source and nothing else; version 2 says how each file is
+ * read, since a source may be kept as its original file.
+ */
+const PACKAGE_VERSION = 2;
 
 /** Frames worked through between yields to the page. */
 const SLICE_FRAMES = 1 << 17;
@@ -38,11 +43,9 @@ export type PackageProgress = (done: number) => void;
 export interface PackagedMedia {
   /** The media store key: a fingerprint, with `-reference` for a reference's channels. */
   key: string;
-  /** File name inside the package, without the folder. */
+  /** What the file inside the package is called, without the folder or the extension. */
   name: string;
-  sampleRate: number;
-  /** Each channel's samples, every channel the same length. */
-  channels: readonly Float32Array[];
+  stored: StoredAudio;
 }
 
 /** A package read back: its document and its audio. */
@@ -51,9 +54,19 @@ export interface UnpackedProject {
   media: PackagedMedia[];
 }
 
+interface ManifestEntry {
+  key: string;
+  path: string;
+  kind?: StoredAudio['kind'];
+  extension?: string;
+  role?: StoredRole;
+  channels?: number;
+  fingerprint?: string;
+}
+
 interface Manifest {
   version: number;
-  media: { key: string; path: string }[];
+  media: ManifestEntry[];
 }
 
 /** One file in a zip archive, with its checksum. */
@@ -97,14 +110,21 @@ export async function packProject(
   const used = new Set<string>();
   const entries: ZipEntry[] = [];
   const manifest: Manifest = { version: PACKAGE_VERSION, media: [] };
-  // Each source is read three times: to find its depth, to write it and to checksum it.
-  const frames = media.reduce((sum, item) => sum + (item.channels[0]?.length ?? 0), 0);
-  const tally = new Tally(frames * 3, onProgress);
+  const bytes = media.reduce((sum, item) => sum + item.stored.bytes.length, 0);
+  const tally = new Tally(bytes, onProgress);
   for (const item of media) {
-    const path = uniquePath(`audio/${safeName(item.name)}.wav`, used);
-    const { data, stride } = await encodeWav(item.channels, item.sampleRate, tally);
-    entries.push({ path, data, crc: await crc32(data, tally, stride) });
-    manifest.media.push({ key: item.key, path });
+    const { stored } = item;
+    const path = uniquePath(`audio/${safeName(item.name)}.${stored.extension || 'bin'}`, used);
+    entries.push({ path, data: stored.bytes, crc: await crc32(stored.bytes, tally, 1) });
+    manifest.media.push({
+      key: item.key,
+      path,
+      kind: stored.kind,
+      extension: stored.extension,
+      role: stored.role,
+      channels: stored.channels,
+      fingerprint: stored.fingerprint,
+    });
   }
   const text = (path: string, value: string): ZipEntry => {
     const data = encoder.encode(value);
@@ -144,17 +164,27 @@ export async function unpackProject(
     if (typeof manifest.version !== 'number' || manifest.version > PACKAGE_VERSION) {
       throw new Error('the package is from a newer version');
     }
-    const total = manifest.media.reduce(
-      (sum, entry) => sum + (entries.get(entry.path)?.length ?? 0),
-      0,
-    );
-    const tally = new Tally(total, onProgress);
     const media: PackagedMedia[] = [];
-    for (const entry of manifest.media) {
+    for (const [index, entry] of manifest.media.entries()) {
       const data = entries.get(entry.path);
       if (data === undefined) throw new Error(`${entry.path} is missing`);
-      const { sampleRate, channels } = await decodeWav(data, tally);
-      media.push({ key: entry.key, name: entry.path, sampleRate, channels });
+      // Version 1 held only WAVs, a reference's channels under a key ending in -reference.
+      const role: StoredRole =
+        entry.role ?? (entry.key.endsWith('-reference') ? 'channels' : 'mono');
+      media.push({
+        key: entry.key,
+        name: entry.path,
+        stored: {
+          kind: entry.kind ?? 'wav',
+          extension: entry.extension ?? 'wav',
+          role,
+          channels: entry.channels ?? 0,
+          fingerprint: entry.fingerprint ?? '',
+          bytes: data.slice(),
+        },
+      });
+      onProgress?.((index + 1) / manifest.media.length);
+      await yieldToPage();
     }
     return { json: decoder.decode(document), media };
   } catch (cause) {
@@ -188,7 +218,7 @@ function safeName(name: string): string {
 function uniquePath(path: string, used: Set<string>): string {
   let candidate = path;
   for (let n = 2; used.has(candidate); n += 1) {
-    candidate = path.replace(/\.wav$/, ` ${String(n)}.wav`);
+    candidate = path.replace(/(\.[^./]+)$/, ` ${String(n)}$1`);
   }
   used.add(candidate);
   return candidate;
@@ -231,17 +261,24 @@ export async function exactDepth(
   return fits16 ? 16 : fits24 ? 24 : 32;
 }
 
+/** How many bytes a WAV of `channels` at `depth` takes. */
+export function wavBytes(channels: readonly Float32Array[], depth: 16 | 24 | 32): number {
+  return 44 + (channels[0]?.length ?? 0) * Math.max(1, channels.length) * (depth / 8);
+}
+
 /**
  * A WAV of `channels`, interleaved, at the smallest depth that holds them exactly.
  *
- * @remarks `stride` is the bytes one frame takes.
+ * @remarks `stride` is the bytes one frame takes. `known` skips finding the depth when the caller
+ * already has it.
  */
 export async function encodeWav(
   channels: readonly Float32Array[],
   sampleRate: number,
   tally?: Tally,
+  known?: 16 | 24 | 32,
 ): Promise<{ data: Uint8Array<ArrayBuffer>; stride: number }> {
-  const depth = await exactDepth(channels, tally);
+  const depth = known ?? (await exactDepth(channels, tally));
   const count = Math.max(1, channels.length);
   const frames = channels[0]?.length ?? 0;
   const width = depth / 8;

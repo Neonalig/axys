@@ -51,6 +51,13 @@ export interface DecodedSource {
   mono: Float32Array;
   /** Decoded audio channel by channel. */
   channelData: readonly Float32Array[];
+  /**
+   * Whether the core decoded the file, so decoding it again anywhere gives the same samples. False
+   * for a format only the browser reads.
+   */
+  exact: boolean;
+  /** The file the audio was decoded from. */
+  file: File;
 }
 
 const MAX_FILE_BYTES = 512 * 1024 * 1024;
@@ -108,6 +115,7 @@ export async function decodeAudioFile(
       : FALLBACK_CONTEXT_RATE;
   const target = sampleRate ?? own;
   let decoded: DecodedAudio;
+  let exact = true;
   try {
     decoded = await decoder.decode(
       await readBytes(file),
@@ -125,8 +133,9 @@ export async function decodeAudioFile(
       );
     }
     decoded = await decodeInBrowser(file, target ?? declared);
+    exact = false;
   }
-  return checked(file, decoded, declared, sampleRate === undefined);
+  return { ...checked(file, decoded, declared, sampleRate === undefined), exact, file };
 }
 
 /** Rejects decoded audio that breaks an import rule, and describes the rest. */
@@ -135,7 +144,7 @@ function checked(
   decoded: DecodedAudio,
   declared: number | null,
   ownRate: boolean,
-): DecodedSource {
+): Omit<DecodedSource, 'exact' | 'file'> {
   if (decoded.frames === 0 || decoded.channels.length === 0) {
     throw new AudioDecodeError('empty', `"${file.name}" decoded to no audio.`);
   }
