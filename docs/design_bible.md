@@ -356,7 +356,7 @@ Use explicit schema versioning and migration. Large derived caches may be discar
 
 Autosave or recovery should protect meaningful work while retaining explicit save, export and version choices. Do not keep the only recoverable project state in an opaque browser cache. Provide explicit project import and export.
 
-Relinking must verify media identity rather than silently accepting a different file.
+Relinking must verify media identity rather than silently accepting a different file. A file that does not match is taken only after the user confirms it, with the result previewed first.
 
 ## 10. Licensing requirements
 

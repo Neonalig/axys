@@ -206,7 +206,7 @@ export const MIDI_KIND: readonly FileKind[] = [
 ];
 
 /** The audio kinds a vocal or a reference is imported from. */
-const AUDIO_KIND: readonly FileKind[] = [
+export const AUDIO_KIND: readonly FileKind[] = [
   {
     description: 'Audio',
     accept: {

@@ -37,6 +37,7 @@ import type { VocalStrip } from '../audio/mixer.js';
 import type { MeterReport } from '../audio/engine.js';
 import { rangeInput, swapGlyph, textInput } from './controls/index.js';
 import { ICONS, stateIcon } from './icons.js';
+import { showContextMenu } from './menu.js';
 import { setTooltip } from './tooltip.js';
 import { referenceColour, resolveTheme, sourceTheme } from './theme.js';
 import type { AppState } from '../app/store.js';
@@ -51,6 +52,8 @@ export interface MixerHooks {
   meters(): MeterReport | null;
   /** Brings a clip forward in the editor. */
   focus(clip: ClipId): void;
+  /** Asks for a file and relinks a clip's or a reference's audio to it. */
+  relinkAudio(target: { clip: ClipId } | { reference: ReferenceId }): void;
 }
 
 /** Which strip on the desk a control belongs to. */
@@ -345,6 +348,7 @@ export class MixerPanel {
       head.addEventListener('click', () => {
         this.#hooks.focus(clip.id);
       });
+      this.#bindRelink(track, { clip: clip.id });
       this.#tracks.set(clip.id, track);
       const pair = document.createElement('div');
       pair.className = 'axys-mixer-track-strips';
@@ -369,6 +373,7 @@ export class MixerPanel {
         true,
       );
       strip.classList.add('is-reference');
+      this.#bindRelink(strip, { reference: reference.id });
       this.#references.set(strip, reference.source.fingerprint);
       const head = strip.querySelector<HTMLElement>('.axys-mixer-name');
       if (head !== null) {
@@ -385,6 +390,25 @@ export class MixerPanel {
       this.#buildStrip({ kind: 'master' }, MASTER_NAME, MASTER_NAME, true),
     );
     this.#element.replaceChildren(sources, references, outputs);
+  }
+
+  /** Opens Relink Audio from a right-click anywhere on a source's track or strip. */
+  #bindRelink(element: HTMLElement, target: { clip: ClipId } | { reference: ReferenceId }): void {
+    element.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      showContextMenu(
+        [
+          {
+            label: 'Relink Audio...',
+            icon: 'join',
+            run: () => {
+              this.#hooks.relinkAudio(target);
+            },
+          },
+        ],
+        { x: event.clientX, y: event.clientY },
+      );
+    });
   }
 
   /**

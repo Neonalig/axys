@@ -26,7 +26,14 @@ import type { AppState, EditMode, FollowMode, ToolId } from '../app/store.js';
 import type { PitchCutFill } from '../app/clipboard.js';
 import type { Capability } from '../capabilities.js';
 import type { EngineReport, MeterReport } from '../audio/engine.js';
-import type { AccidentalStyle, ClipId, EditOp, MixerSettings, ViewState } from '../core/types.js';
+import type {
+  AccidentalStyle,
+  ClipId,
+  EditOp,
+  MixerSettings,
+  ReferenceId,
+  ViewState,
+} from '../core/types.js';
 import { noteCapabilities, noteEngineReport } from './diagnostics.js';
 import { button as control, swapGlyph } from './controls/index.js';
 import { ICONS, STATE_ICONS, type IconName } from './icons.js';
@@ -119,6 +126,8 @@ export interface ShellHooks {
   sourceMenu(): MenuEntry[];
   /** Brings a clip forward in the editor. */
   focusSource(clip: ClipId): void;
+  /** Asks for a file and relinks a clip's or a reference's audio to it. */
+  relinkAudio(target: { clip: ClipId } | { reference: ReferenceId }): void;
 }
 
 /** What the chrome is built from. */
@@ -1039,6 +1048,9 @@ export class AppShell {
       meters: () => this.#hooks.meters(),
       focus: (clip) => {
         this.#hooks.focusSource(clip);
+      },
+      relinkAudio: (target) => {
+        this.#hooks.relinkAudio(target);
       },
     });
 

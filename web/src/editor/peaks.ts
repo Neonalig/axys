@@ -209,6 +209,11 @@ export function peaksFor(fingerprint: string | null | undefined): PeakEnvelope |
   return cache.get(fingerprint) ?? null;
 }
 
+/** Drops the envelope kept for one source fingerprint. */
+export function dropPeaks(fingerprint: string): void {
+  cache.delete(fingerprint);
+}
+
 /** Drops every cached envelope, for closing a project. */
 export function clearPeaks(): void {
   cache.clear();

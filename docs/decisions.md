@@ -1398,6 +1398,16 @@ rate, so no hardware device is opened and the digest is comparable. `MediaStore`
 IndexedDB once at `open()` and keeps it, so a project never has half its audio in one and half in
 the other.
 
+### Relinking accepts the same file from another decoder
+
+A fingerprint digests decoded PCM, and browsers do not decode alike: the same WAV opened in Firefox
+and in Chrome digests differently. A file with the recorded name and exact length is therefore taken
+as the same audio without asking. Any other file can still be relinked, but only through Relink
+Audio, which previews it and waits for Apply. Relinked audio is padded or trimmed to the recorded
+length so every blob stays where it was, and the clip keeps its recorded `SourceInfo`, so the next
+relink is still checked against the original. A decoder of its own in the core for WAV would make
+the fingerprint agree across browsers; lossy formats would still need the leniency.
+
 ### File access prefers the host's own picker
 
 `persistence/file-access.ts` uses the File System Access API where it exists, which gives one picker

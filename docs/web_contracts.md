@@ -117,7 +117,9 @@ draws from; with one clip at zero it is that clip's own plan. Playback and expor
 joined with an unvoiced frame between them and deleted material unvoiced. `conflicts()` are
 measured inside each clip, across every clip. `proposeMappingsPreview(clips)` maps each listed
 clip to the guide on its own, or every clip when none are listed. `addClip` takes mono samples at the project rate and
-is one undo step; `attachClip` refuses audio whose fingerprint is not the clip's.
+is one undo step; `attachClip` refuses audio whose fingerprint is not the clip's. `relinkClip(clip,
+samples)` takes any audio exactly as long as the recorded source and keeps the recorded source, and
+`detachClip(clip)` takes a clip's audio away again.
 
 `AnalysedSessionInput` carries `samples`, `sampleRate`, `name`, the analysis worker's `trackJson`
 and `blobsJson`, and the optional `f0` and `segment` parameters it ran with. It is the import path:
@@ -635,7 +637,10 @@ export class MediaStore {
 `relink(file, expected: SourceInfo)` which verifies the fingerprint and refuses a different file
 with a clear message. A reopened project opens with whatever audio the device holds and names
 what is missing; audio opened or dropped while it waits is matched to a missing clip or
-reference by fingerprint. `MediaStore` keys a reference's channels, one after the other, by its
+reference by `app/relink.ts`: a matching fingerprint, or the recorded name and length. Anything
+else opens Relink Audio, which previews the file on a chosen source until Apply or Cancel. Relink
+Audio on a blob, a reference or a mixer strip does the same for audio that is not missing. Relinked
+audio is fitted to the recorded length and cached under the recorded fingerprint. `MediaStore` keys a reference's channels, one after the other, by its
 fingerprint with a `-reference` suffix. `persistence/autosave.ts` debounces
 a save of the document only, never the media, and never becomes the sole copy of the user's work.
 

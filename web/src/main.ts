@@ -11,6 +11,8 @@
 
 import { buildCommands, findCommand } from './app/commands.js';
 import { estimateEdits } from './app/estimate.js';
+import { fitFrames, likeliestSource, relinkMatch } from './app/relink.js';
+import type { RelinkMatch } from './app/relink.js';
 import { SHARP_NAMES } from './core/notes.js';
 import type { Command, CommandContext, Workspace } from './app/commands.js';
 import { startOffline } from './app/offline.js';
@@ -28,6 +30,7 @@ import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { PitchCutFill } from './app/clipboard.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
 import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
+import type { DecodedSource } from './audio/decode.js';
 import { referencePeaksKey } from './editor/layers/references.js';
 import { AudioEngine } from './audio/engine.js';
 import type { EngineReport, MeterReport } from './audio/engine.js';
@@ -38,7 +41,7 @@ import { isViewState } from './core/json.js';
 import type { ClipPlan } from './core/json.js';
 import { AxysError, loadCore } from './core/wasm.js';
 import type { AxysCore, ClipPart, PasteMode, Session } from './core/wasm.js';
-import { clipEnd, clipStart, sourceTitle } from './core/types.js';
+import { clipEnd, clipOf, clipStart, displayTitle, sourceTitle } from './core/types.js';
 import type {
   AccidentalStyle,
   Clip,
@@ -61,7 +64,7 @@ import type {
 import { EditorController } from './editor/interaction.js';
 import { freePosition, modifiersOf, rippleInsert } from './editor/tools.js';
 import type { PendingClip } from './editor/tools.js';
-import { buildPeaks, clearPeaks } from './editor/peaks.js';
+import { buildPeaks, clearPeaks, dropPeaks } from './editor/peaks.js';
 import { EditorRenderer } from './editor/renderer.js';
 import { fitView, followView, MAX_TIME_SPAN, MIN_TIME_SPAN, snapViewTo } from './editor/view.js';
 import { Autosave } from './persistence/autosave.js';
@@ -69,6 +72,7 @@ import { PersistenceError, ProjectStore } from './persistence/db.js';
 import type { ProjectSummary } from './persistence/db.js';
 import { MediaStore } from './persistence/opfs.js';
 import {
+  AUDIO_KIND,
   EXPORT_KIND,
   IMPORTABLE,
   openFile,
@@ -84,6 +88,7 @@ import type { ExportChoice, ExportRange } from './ui/export-dialog.js';
 import { confirm as confirmAction } from './ui/dialog.js';
 import { showContextMenu } from './ui/menu.js';
 import { openImportPanel, storedAnalysis } from './ui/import-dialog.js';
+import { openRelinkDialog } from './ui/relink-dialog.js';
 import type { AnalysisOutcome } from './ui/import-dialog.js';
 import { sourceMenu } from './ui/sources-menu.js';
 import type { MenuEntry } from './ui/menu.js';
@@ -142,6 +147,24 @@ interface WorkspaceDeps {
 interface MissingMedia {
   clips: { clip: ClipId; source: SourceInfo }[];
   references: Reference[];
+}
+
+/**
+ * Audio one relink replaces.
+ *
+ * @remarks Clips pasted from one another share their source, so one file relinks all of them.
+ */
+type AudioTarget =
+  | { kind: 'clip'; clips: ClipId[]; source: SourceInfo; label: string }
+  | { kind: 'reference'; reference: Reference; source: SourceInfo; label: string };
+
+/** What a target held before a relink preview, so Cancel can put it back. */
+interface AudioSnapshot {
+  target: AudioTarget;
+  /** Each clip's samples, or `null` for a clip that had none. */
+  clips: Map<ClipId, Float32Array | null>;
+  /** The reference's channels, or `null` for a reference that had none. */
+  channels: Float32Array[] | null;
 }
 
 /** A fresh id for a project's recovery copy, never shared with another project. */
@@ -1324,7 +1347,12 @@ class AxysWorkspace implements Workspace {
       try {
         session.attachClip(entry.clip, samples);
       } catch {
-        missing.clips.push({ clip: entry.clip, source: entry.source });
+        // Audio relinked without a matching fingerprint is cached under the recorded one.
+        try {
+          session.relinkClip(entry.clip, samples);
+        } catch {
+          missing.clips.push({ clip: entry.clip, source: entry.source });
+        }
       }
     }
     for (const reference of media.references) {
@@ -1369,61 +1397,290 @@ class AxysWorkspace implements Workspace {
   }
 
   /**
-   * Accepts a file as audio the open project is waiting for, when it is.
+   * Accepts a file as audio the open project is waiting for.
    *
-   * @remarks Matched by fingerprint rather than by name, so a different file with the same name
-   * is refused and a renamed copy of the right one is taken.
+   * @remarks A file matching a missing source by fingerprint, or by name and length, is taken
+   * straight away. Any other file opens Relink Audio on the likeliest missing source.
    */
   async #relink(file: File): Promise<void> {
+    const decoded = await this.#decodeForRelink(file);
+    if (decoded === null) return;
+    const targets = this.#missingTargets();
+    const found =
+      targets.find((target) => relinkMatch(decoded, target.source) === 'exact') ??
+      targets.find((target) => relinkMatch(decoded, target.source) === 'same');
+    if (found) {
+      this.#relinkNow(found, decoded, relinkMatch(decoded, found.source));
+      return;
+    }
+    if (targets.length === 0) return;
+    const sources = targets.map((target) => target.source);
+    await this.#confirmRelink(decoded, targets, likeliestSource(decoded, sources));
+  }
+
+  /**
+   * Asks for a file and relinks one clip's or reference's audio to it.
+   *
+   * @remarks Works whether or not the audio is missing. A file that does not match opens Relink
+   * Audio, which previews it until Apply.
+   */
+  async relinkAudio(what: { clip: ClipId } | { reference: ReferenceId }): Promise<void> {
+    const target =
+      'clip' in what ? this.#clipTarget(what.clip) : this.#referenceTarget(what.reference);
+    if (target === null) return;
+    let picked;
+    try {
+      picked = await openFile(AUDIO_KIND);
+    } catch (error) {
+      this.#fail('Relink Audio', error);
+      return;
+    }
+    if (picked === null) return;
+    const decoded = await this.#decodeForRelink(picked.file);
+    if (decoded === null) return;
+    const match = relinkMatch(decoded, target.source);
+    if (match !== 'different') {
+      this.#relinkNow(target, decoded, match);
+      return;
+    }
+    await this.#confirmRelink(decoded, [target], 0);
+  }
+
+  /** Decodes a file at the project rate, or reports why not and returns `null`. */
+  async #decodeForRelink(file: File): Promise<DecodedSource | null> {
     const session = this.#session;
-    if (!session) return;
+    if (!session) return null;
     this.#progress('Relink Audio', 0.2);
     try {
-      const rate = session.sampleRate();
-      const decoded = await decodeAudioFile(file, rate);
-      const clip = this.#missing.clips.find(
-        (entry) => entry.source.fingerprint === decoded.fingerprint,
-      );
-      const reference = this.#missing.references.find(
-        (entry) => entry.source.fingerprint === decoded.fingerprint,
-      );
-      if (clip) {
-        // A pasted copy shares its audio with the clip it came from, so one file relinks both.
-        const matching = this.#missing.clips.filter(
-          (entry) => entry.source.fingerprint === decoded.fingerprint,
-        );
-        for (const entry of matching) {
-          session.attachClip(entry.clip, decoded.mono);
-          this.#audio.loadClip(
-            entry.clip,
-            session.clipSamples(entry.clip),
-            session.clipTrackJson(entry.clip),
-            null,
-          );
-        }
-        this.#missing.clips = this.#missing.clips.filter((entry) => !matching.includes(entry));
-        buildPeaks(decoded.mono, rate, decoded.fingerprint);
-        void this.#cacheMedia(decoded.fingerprint, decoded.mono);
-      } else if (reference) {
-        const channels = stereoOf(decoded.channelData);
-        this.#keepReference(reference.id, reference.source, channels);
-        this.#missing.references = this.#missing.references.filter((entry) => entry !== reference);
-        this.#audio.loadReference(
-          reference.id,
-          channels.map((channel) => channel.slice()),
-          reference.position,
-        );
-        void this.#cacheReference(reference.source, channels);
-      } else {
-        throw new PersistenceError('corrupt', `${file.name} does not match any missing audio.`);
-      }
+      const decoded = await decodeAudioFile(file, session.sampleRate());
       this.#idle();
-      this.#publish();
-      this.#toast.info('Audio relinked');
-      this.#askForMissing();
+      return decoded;
+    } catch (error) {
+      this.#fail('Relink Audio', error);
+      return null;
+    }
+  }
+
+  /** Relinks a target that matches, without asking. */
+  #relinkNow(target: AudioTarget, decoded: DecodedSource, match: RelinkMatch): void {
+    try {
+      this.#putAudio(target, decoded, match);
+      this.#settle(target, decoded, match);
     } catch (error) {
       this.#fail('Relink Audio', error);
     }
+  }
+
+  /** Opens Relink Audio over `targets`, resolving once it is answered. */
+  #confirmRelink(
+    decoded: DecodedSource,
+    targets: readonly AudioTarget[],
+    initial: number,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      let snapshot: AudioSnapshot | null = null;
+      const revert = (): void => {
+        if (snapshot === null) return;
+        try {
+          this.#restoreAudio(snapshot);
+        } catch (error) {
+          this.#fail('Relink Audio', error);
+        }
+        snapshot = null;
+        this.#publish();
+      };
+      openRelinkDialog({
+        file: { name: decoded.name, duration: decoded.duration },
+        targets: targets.map((target) => ({ label: target.label, source: target.source })),
+        initial,
+        preview: (index) => {
+          revert();
+          const target = targets[index];
+          if (target === undefined) return;
+          snapshot = this.#snapshot(target);
+          try {
+            this.#putAudio(target, decoded, 'different');
+          } catch (error) {
+            this.#fail('Relink Audio', error);
+          }
+          this.#publish();
+        },
+        apply: (index) => {
+          const target = targets[index];
+          if (target !== undefined) this.#settle(target, decoded, 'different');
+          snapshot = null;
+          resolve();
+        },
+        cancel: () => {
+          revert();
+          resolve();
+        },
+      });
+    });
+  }
+
+  /** A clip's audio, shared with every clip pasted from the same source. */
+  #clipTarget(clip: ClipId): AudioTarget | null {
+    const session = this.#session;
+    if (!session) return null;
+    const entries = session.media().clips;
+    const source = entries.find((entry) => entry.clip === clip)?.source;
+    if (source === undefined) return null;
+    const clips = entries
+      .filter((entry) => entry.source.fingerprint === source.fingerprint)
+      .map((entry) => entry.clip);
+    return { kind: 'clip', clips, source, label: this.#clipLabel(clip, source) };
+  }
+
+  #referenceTarget(id: ReferenceId): AudioTarget | null {
+    const reference = this.#store.state.edits?.references.find((entry) => entry.id === id);
+    if (reference === undefined) return null;
+    return {
+      kind: 'reference',
+      reference,
+      source: reference.source,
+      label: displayTitle(reference),
+    };
+  }
+
+  #clipLabel(clip: ClipId, source: SourceInfo): string {
+    const found = this.#store.state.edits?.clips.find((entry) => entry.id === clip);
+    return found === undefined ? sourceTitle(source.name) : displayTitle(found);
+  }
+
+  /** Everything the open project is still waiting for, one target per source. */
+  #missingTargets(): AudioTarget[] {
+    const targets: AudioTarget[] = [];
+    for (const entry of this.#missing.clips) {
+      const shared = targets.find(
+        (target) =>
+          target.kind === 'clip' && target.source.fingerprint === entry.source.fingerprint,
+      );
+      if (shared?.kind === 'clip') {
+        shared.clips.push(entry.clip);
+        continue;
+      }
+      targets.push({
+        kind: 'clip',
+        clips: [entry.clip],
+        source: entry.source,
+        label: this.#clipLabel(entry.clip, entry.source),
+      });
+    }
+    for (const reference of this.#missing.references) {
+      targets.push({
+        kind: 'reference',
+        reference,
+        source: reference.source,
+        label: displayTitle(reference),
+      });
+    }
+    return targets;
+  }
+
+  #snapshot(target: AudioTarget): AudioSnapshot {
+    const session = this.#session;
+    const clips = new Map<ClipId, Float32Array | null>();
+    if (target.kind === 'reference') {
+      const kept = this.#references.get(target.reference.id);
+      return { target, clips, channels: kept?.map((channel) => channel.slice()) ?? null };
+    }
+    const attached = new Set(
+      session?.media().clips.flatMap((entry) => (entry.attached ? [entry.clip] : [])) ?? [],
+    );
+    for (const clip of target.clips) {
+      clips.set(clip, session && attached.has(clip) ? session.clipSamples(clip) : null);
+    }
+    return { target, clips, channels: null };
+  }
+
+  /** Gives a target the decoded audio, fitted to the recorded length unless it matches exactly. */
+  #putAudio(target: AudioTarget, decoded: DecodedSource, match: RelinkMatch): void {
+    const session = this.#session;
+    if (!session) return;
+    const frames = target.source.frames;
+    if (target.kind === 'clip') {
+      const mono = match === 'exact' ? decoded.mono : fitFrames(decoded.mono, frames);
+      for (const clip of target.clips) {
+        if (match === 'exact') {
+          session.attachClip(clip, mono);
+        } else {
+          session.relinkClip(clip, mono);
+        }
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      }
+      buildPeaks(mono, session.sampleRate(), target.source.fingerprint);
+      return;
+    }
+    const channels = fitChannels(decoded.channelData, target.source.channels).map((channel) =>
+      fitFrames(channel, frames),
+    );
+    this.#keepReference(target.reference.id, target.source, channels);
+    this.#audio.loadReference(
+      target.reference.id,
+      channels.map((channel) => channel.slice()),
+      target.reference.position,
+    );
+  }
+
+  /** Puts back what a target held before a preview. */
+  #restoreAudio(snapshot: AudioSnapshot): void {
+    const session = this.#session;
+    if (!session) return;
+    const { target } = snapshot;
+    if (target.kind === 'clip') {
+      for (const [clip, samples] of snapshot.clips) {
+        if (samples === null) {
+          session.detachClip(clip);
+          // Empty audio is how the engine is told a clip has none.
+          this.#audio.loadClip(clip, new Float32Array(0), session.clipTrackJson(clip), null);
+          dropPeaks(target.source.fingerprint);
+          continue;
+        }
+        session.relinkClip(clip, samples);
+        buildPeaks(samples, session.sampleRate(), target.source.fingerprint);
+        this.#audio.loadClip(clip, session.clipSamples(clip), session.clipTrackJson(clip), null);
+      }
+      return;
+    }
+    const id = target.reference.id;
+    if (snapshot.channels === null) {
+      this.#references.delete(id);
+      dropPeaks(referencePeaksKey(target.source.fingerprint));
+      this.#audio.loadReference(id, [new Float32Array(0)], target.reference.position);
+      return;
+    }
+    this.#keepReference(id, target.source, snapshot.channels);
+    this.#audio.loadReference(
+      id,
+      snapshot.channels.map((channel) => channel.slice()),
+      target.reference.position,
+    );
+  }
+
+  /** Marks a relinked target found, caches its audio and reports it. */
+  #settle(target: AudioTarget, decoded: DecodedSource, match: RelinkMatch): void {
+    const session = this.#session;
+    if (!session) return;
+    if (target.kind === 'clip') {
+      this.#missing.clips = this.#missing.clips.filter(
+        (entry) => !target.clips.includes(entry.clip),
+      );
+      const first = target.clips[0];
+      if (first !== undefined) {
+        void this.#cacheMedia(target.source.fingerprint, session.clipSamples(first), true);
+      }
+    } else {
+      const id = target.reference.id;
+      this.#missing.references = this.#missing.references.filter((entry) => entry.id !== id);
+      const channels = this.#references.get(id);
+      if (channels) void this.#cacheReference(target.source, channels, true);
+    }
+    this.#publish();
+    this.#toast.info(
+      match === 'different' ? `Relinked ${target.label} to ${decoded.name}` : 'Audio relinked',
+    );
+    this.#askForMissing();
   }
 
   /**
@@ -1524,12 +1781,13 @@ class AxysWorkspace implements Workspace {
     });
   }
 
-  async #cacheMedia(fingerprint: string, mono: Float32Array): Promise<void> {
+  /** Keeps a clip's audio on the device. `replace` overwrites what is already kept. */
+  async #cacheMedia(fingerprint: string, mono: Float32Array, replace = false): Promise<void> {
     const media = this.#media;
     if (!media) return;
     this.#writes += 1;
     try {
-      if (await media.has(fingerprint)) return;
+      if (!replace && (await media.has(fingerprint))) return;
       await media.write(fingerprint, mono);
     } catch {
       this.#toast.warn('Audio not cached');
@@ -1557,14 +1815,22 @@ class AxysWorkspace implements Workspace {
     void this.#autosave?.flush();
   }
 
-  /** Keeps a reference's channels on the device, one after the other in one buffer. */
-  async #cacheReference(source: SourceInfo, channels: readonly Float32Array[]): Promise<void> {
+  /**
+   * Keeps a reference's channels on the device, one after the other in one buffer.
+   *
+   * @remarks `replace` overwrites what is already kept.
+   */
+  async #cacheReference(
+    source: SourceInfo,
+    channels: readonly Float32Array[],
+    replace = false,
+  ): Promise<void> {
     const media = this.#media;
     if (!media) return;
     const key = referenceKey(source.fingerprint);
     this.#writes += 1;
     try {
-      if (await media.has(key)) return;
+      if (!replace && (await media.has(key))) return;
       await media.write(key, joinChannels(channels));
     } catch {
       this.#toast.warn('Audio not cached');
@@ -1742,6 +2008,14 @@ function stereoOf(channels: readonly Float32Array[]): Float32Array[] {
   return channels.slice(0, 2).map((channel) => channel.slice());
 }
 
+/** Channels mixed or doubled to `count`, one or two, the way a reference recorded them. */
+function fitChannels(channels: readonly Float32Array[], count: number): Float32Array[] {
+  const [left, right] = channels;
+  if (left === undefined) return [];
+  if (count <= 1) return [mixToMono(channels.slice(0, 2), left.length)];
+  return [left.slice(), (right ?? left).slice()];
+}
+
 /** Channels one after the other in one buffer, which is how the media store keeps them. */
 function joinChannels(channels: readonly Float32Array[]): Float32Array {
   const frames = channels[0]?.length ?? 0;
@@ -1823,7 +2097,12 @@ function describe(error: unknown): string {
  * whether or not the menu is open. Over open canvas the blob entries are shown disabled rather
  * than removed, so the menu keeps its shape.
  */
-function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHooks): MenuEntry[] {
+function blobMenu(
+  onBlob: boolean,
+  commands: readonly Command[],
+  hooks: ShellHooks,
+  clip: ClipId | null,
+): MenuEntry[] {
   const item = (id: string, label: string, icon: IconName, needsBlob = true): MenuEntry => ({
     label,
     icon,
@@ -1846,6 +2125,15 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
     item('edit.deleteBlobs', 'Delete Blobs', 'delete'),
     item('edit.deleteClip', 'Delete Clip', 'delete'),
     { separator: true },
+    {
+      label: 'Relink Audio...',
+      icon: 'join',
+      enabled: clip !== null,
+      run: () => {
+        if (clip !== null) hooks.relinkAudio({ clip });
+      },
+    },
+    { separator: true },
     item('edit.trimStart', 'Trim Start', 'trimStart', false),
     item('edit.trimEnd', 'Trim End', 'trimEnd', false),
     item('edit.resetTrim', 'Reset Trim', 'reset'),
@@ -1858,6 +2146,14 @@ function blobMenu(onBlob: boolean, commands: readonly Command[], hooks: ShellHoo
 /** The menu shown over a reference's band. */
 function referenceMenu(reference: ReferenceId, hooks: ShellHooks): MenuEntry[] {
   return [
+    {
+      label: 'Relink Audio...',
+      icon: 'join',
+      run: () => {
+        hooks.relinkAudio({ reference });
+      },
+    },
+    { separator: true },
     {
       label: 'Delete Reference',
       icon: 'delete',
@@ -2247,6 +2543,9 @@ function buildHooks(
     focusSource(clip) {
       workspace()?.focus(clip);
     },
+    relinkAudio(target) {
+      void workspace()?.relinkAudio(target);
+    },
     sourceMenu() {
       return sourceMenu(store.state, (clip, others) => {
         workspace()?.focus(clip, others);
@@ -2469,7 +2768,12 @@ async function start(): Promise<void> {
       const reference = hit.reference;
       showContextMenu(
         reference === null
-          ? blobMenu(hit.blob !== null, commands, hooks)
+          ? blobMenu(
+              hit.blob !== null,
+              commands,
+              hooks,
+              hit.blob === null ? (store.state.layer[0] ?? null) : clipOf(hit.blob),
+            )
           : referenceMenu(reference, hooks),
         at,
       );

@@ -902,6 +902,49 @@ impl Session {
         self.recompile()
     }
 
+    /// Gives a clip audio the user chose for it, whether or not it is the file it was made from.
+    ///
+    /// The clip keeps its recorded source, so a later relink is checked against the original.
+    /// `samples` must be mono at the project rate and exactly as long as the recorded source.
+    #[wasm_bindgen(js_name = relinkClip)]
+    pub fn relink_clip(&mut self, clip: u32, samples: Vec<f32>) -> Result<(), JsValue> {
+        let sample_rate = self.sample_rate;
+        let Some(runtime) = self.clips.iter_mut().find(|r| r.id == ClipId(clip)) else {
+            return Err(JsValue::from_str(&format!(
+                "the project has no clip {clip}"
+            )));
+        };
+        if samples.len() != runtime.source.frames {
+            return Err(JsValue::from_str(&format!(
+                "audio is {} frames but {} holds {}",
+                samples.len(),
+                runtime.source.name,
+                runtime.source.frames
+            )));
+        }
+        if runtime.needs_track {
+            runtime.track =
+                detect_f0(&samples, sample_rate, &runtime.analysis.f0).map_err(to_js)?;
+            runtime.needs_track = false;
+        }
+        runtime.samples = Some(samples);
+        runtime.renderers.clear();
+        self.recompile()
+    }
+
+    /// Takes a clip's audio away again, leaving the clip waiting for a relink.
+    #[wasm_bindgen(js_name = detachClip)]
+    pub fn detach_clip(&mut self, clip: u32) -> Result<(), JsValue> {
+        let Some(runtime) = self.clips.iter_mut().find(|r| r.id == ClipId(clip)) else {
+            return Err(JsValue::from_str(&format!(
+                "the project has no clip {clip}"
+            )));
+        };
+        runtime.samples = None;
+        runtime.renderers.clear();
+        self.recompile()
+    }
+
     /// Imports another vocal as one undoable edit, returning the new clip's id.
     ///
     /// `samples` must be mono at the project rate. `position` is project seconds. With `exact`
@@ -2892,6 +2935,31 @@ mod analysis_handoff_tests {
 
         assert!(reopened.undo().expect("undo"));
         assert_eq!(reopened.state_json().expect("state"), before);
+    }
+
+    #[test]
+    fn relink_takes_different_audio_and_detach_takes_it_back() {
+        let (samples, analysis) = analysed();
+        let session = Session::create(
+            samples.clone(),
+            SAMPLE_RATE,
+            "take".to_string(),
+            &analysis,
+            "",
+        )
+        .expect("session");
+        let project = session.project_json("").expect("project");
+        let mut reopened = Session::open_project(&project).expect("reopened session");
+
+        let other: Vec<f32> = samples.iter().map(|sample| sample * 0.5).collect();
+        reopened.relink_clip(0, other.clone()).expect("relinked");
+        assert_eq!(reopened.clip_samples(0).expect("attached"), other);
+
+        reopened.detach_clip(0).expect("detached");
+        assert!(reopened.clips[0].samples.is_none());
+        reopened
+            .attach_clip(0, samples)
+            .expect("original still attaches");
     }
 
     /// A group is one entry in the history however many operations it carries.
