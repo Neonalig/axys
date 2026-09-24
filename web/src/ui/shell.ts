@@ -765,6 +765,9 @@ export class AppShell {
   readonly #pitchBar: Scrollbar;
   readonly #zoom: ZoomControl;
   readonly #busy: HTMLElement;
+  readonly #busyFile: HTMLElement;
+  readonly #busyOverall: ProgressBar;
+  readonly #busyCancel: HTMLButtonElement;
   readonly #busyStage: HTMLElement;
   readonly #busyProgress: ProgressBar;
   readonly #drop: HTMLElement;
@@ -986,18 +989,25 @@ export class AppShell {
 
     const busyStage = document.createElement('p');
     busyStage.className = 'axys-busy-stage';
-    const busyProgress = new ProgressBar('Import Progress');
+    // A batch reads as a count and a bar across every file, above the bar for the file itself.
+    const busyFile = document.createElement('p');
+    busyFile.className = 'axys-busy-file';
+    const busyOverall = new ProgressBar('Overall Progress');
+    busyOverall.element.classList.add('axys-busy-progress', 'is-overall');
+    const busyProgress = new ProgressBar('File Progress');
     busyProgress.element.classList.add('axys-busy-progress');
     const cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.textContent = 'Cancel Import';
     cancel.addEventListener('click', () => {
       this.#hooks.runCommand('file.cancelImport');
     });
-    busy.append(busyStage, busyProgress.element, cancel);
+    busy.append(busyFile, busyOverall.element, busyStage, busyProgress.element, cancel);
     main.append(busy);
     this.#busy = busy;
     this.#busyStage = busyStage;
+    this.#busyFile = busyFile;
+    this.#busyOverall = busyOverall;
+    this.#busyCancel = cancel;
     this.#busyProgress = busyProgress;
 
     const drop = document.createElement('div');
@@ -1248,9 +1258,26 @@ export class AppShell {
     this.#busyStage.textContent = state.analysis.stage === '' ? 'Working' : state.analysis.stage;
     // One reading of the same work, so the cover and the status bar never show two different
     // pictures of one import.
-    const measured = state.analysis.progress > 0 ? state.analysis.progress : null;
+    const work = state.analysis;
+    const measured = work.progress > 0 ? work.progress : null;
     this.#busyProgress.set(measured);
-    this.#progress.set(measured);
+    const total = work.total ?? 1;
+    const index = work.index ?? 0;
+    const batch = total > 1;
+    this.#busyFile.hidden = work.file === undefined;
+    this.#busyFile.textContent =
+      work.file === undefined
+        ? ''
+        : batch
+          ? `${work.file}, ${String(index + 1)} of ${String(total)}`
+          : work.file;
+    this.#busyOverall.element.hidden = !batch;
+    const overall = (index + Math.max(0, work.progress)) / total;
+    this.#busyOverall.set(batch ? overall : null);
+    this.#busyCancel.hidden = work.cancel === undefined;
+    this.#busyCancel.textContent = work.cancel ?? '';
+    // The status bar shows the whole of the work, which for a batch is every file.
+    this.#progress.set(batch ? overall : measured);
 
     this.#progress.element.hidden = !state.analysis.running;
     setTooltip(

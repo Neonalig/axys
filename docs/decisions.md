@@ -1412,6 +1412,19 @@ length so every blob stays where it was, and the clip keeps its recorded `Source
 relink is still checked against the original. A decoder of its own in the core for WAV would make
 the fingerprint agree across browsers; lossy formats would still need the leniency.
 
+### A batch of files says which one it is on
+
+Importing or relinking several files runs them one at a time as one batch. A toast follows it,
+naming the file and its count, with a bar across the whole batch and a trash button in place of
+the dismiss button; it goes when the batch ends. The cover shows the same count over two bars,
+the batch and the file, and the file's bar is fed by the decoder and the analysis as they go.
+The trash button, or the cover's Cancel Import, holds the batch at its next checkpoint and asks:
+Continue, Cancel the file, or Cancel All. Work already in a worker is cancelled at once rather
+than waited for. The cover's cancel button is named for what it stops, Cancel Import or Cancel
+Export, and is absent for work that cannot stop, such as Open Project. The decode and analysis
+workers are taken down when they stop reporting, so a file that hangs a decoder fails on its own
+instead of holding the page.
+
 ### Missing audio shows, and holds its blobs still
 
 A clip whose audio is missing is drawn in the warning colour with a dotted outline and a warning

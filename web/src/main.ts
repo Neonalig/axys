@@ -30,7 +30,7 @@ import { otherSources, othersOf, placePlan, placeTrack } from './app/sources.js'
 import { AppStore, endLeniency, initialState } from './app/store.js';
 import type { PitchCutFill } from './app/clipboard.js';
 import type { AppState, FollowMode, ToolId } from './app/store.js';
-import { decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
+import { cancelDecoding, decodeAudioFile, fingerprintOf, mixToMono } from './audio/decode.js';
 import type { DecodedSource } from './audio/decode.js';
 import { referencePeaksKey } from './editor/layers/references.js';
 import { AudioEngine } from './audio/engine.js';
@@ -103,7 +103,8 @@ import type { ShellHooks } from './ui/shell.js';
 import type { AccentName } from './ui/accent.js';
 import { applyTheme, preferredTheme, watchPreferredTheme } from './ui/theme.js';
 import type { ThemeName } from './ui/theme.js';
-import type { Toast, ToastHost } from './ui/toast.js';
+import type { ProgressToast, Toast, ToastHost } from './ui/toast.js';
+import { askToCancel } from './ui/cancel-import.js';
 import { AnalysisClient, RenderClient } from './workers/client.js';
 import { WorkerCancelled } from './workers/protocol.js';
 
@@ -170,6 +171,28 @@ interface AudioSnapshot {
   clips: Map<ClipId, Float32Array | null>;
   /** The reference's channels, or `null` for a reference that had none. */
   channels: Float32Array[] | null;
+}
+
+/** Share of one file's import progress its decoding fills; analysis takes the rest. */
+const DECODE_SHARE = 0.3;
+
+/**
+ * A batch of files being imported or relinked one after another.
+ *
+ * @remarks `stop` is what the user asked to cancel: nothing, the file being worked on, or it and
+ * every file after it. `gate` holds the batch at its next checkpoint while the question is open.
+ */
+interface FileBatch {
+  /** What the batch is doing, such as Import, for the cancel question. */
+  noun: string;
+  /** What the batch is doing, such as Importing, for the toast. */
+  verb: string;
+  total: number;
+  index: number;
+  file: string;
+  stop: 'none' | 'file' | 'all';
+  gate: Promise<void> | null;
+  toast: ProgressToast;
 }
 
 /** A fresh id for a project's recovery copy, never shared with another project. */
@@ -511,6 +534,111 @@ class AxysWorkspace implements Workspace {
   /** The toast naming what the project is missing, while it is on screen. */
   #missingToast: Toast | null = null;
 
+  /** The batch of files being worked through, while there is one. */
+  #batch: FileBatch | null = null;
+
+  /** Whether an export is being rendered. */
+  #exporting = false;
+
+  /** Starts following a batch of files: the progress toast, and what the cover names. */
+  #beginBatch(files: readonly File[], noun: string, verb: string): void {
+    this.#batch?.toast.dismiss();
+    this.#batch = {
+      noun,
+      verb,
+      total: files.length,
+      index: 0,
+      file: files[0]?.name ?? '',
+      stop: 'none',
+      gate: null,
+      toast: this.#toast.progress('', `Cancel ${noun}`, () => {
+        void this.#askToCancel();
+      }),
+    };
+    this.#showBatch(0);
+  }
+
+  /** Moves the batch on to the file at `index`. */
+  #nextFile(index: number, file: File): void {
+    const batch = this.#batch;
+    if (!batch) return;
+    batch.index = index;
+    batch.file = file.name;
+    if (batch.stop === 'file') batch.stop = 'none';
+    this.#showBatch(0);
+  }
+
+  #endBatch(): void {
+    this.#batch?.toast.dismiss();
+    this.#batch = null;
+  }
+
+  /** Whether the user asked to cancel every file left in the batch. */
+  #batchStopped(): boolean {
+    return this.#batch?.stop === 'all';
+  }
+
+  /** Shows the batch's file and overall progress in its toast. */
+  #showBatch(progress: number): void {
+    const batch = this.#batch;
+    if (!batch) return;
+    const count = batch.total > 1 ? `, ${String(batch.index + 1)} of ${String(batch.total)}` : '';
+    const overall =
+      batch.total > 1 ? (batch.index + Math.max(0, progress)) / batch.total : progress;
+    batch.toast.update(`${batch.verb} ${batch.file}${count}`, overall);
+  }
+
+  /**
+   * Waits while the cancel question is open, then stops the file if it was cancelled.
+   *
+   * @throws WorkerCancelled when the file being worked on, or the whole batch, was cancelled.
+   */
+  async #checkpoint(): Promise<void> {
+    const batch = this.#batch;
+    if (!batch) return;
+    if (batch.gate !== null) await batch.gate;
+    if (batch.stop !== 'none') throw new WorkerCancelled(`${batch.noun} ${batch.file}`);
+  }
+
+  /** Holds the batch and asks whether to cancel the file, every file, or neither. */
+  async #askToCancel(): Promise<void> {
+    const batch = this.#batch;
+    if (!batch || batch.gate !== null) return;
+    let release = (): void => {};
+    batch.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const choice = await askToCancel({
+      noun: batch.noun,
+      verb: batch.verb,
+      file: batch.file,
+      index: batch.index,
+      total: batch.total,
+    });
+    if (choice !== 'continue') {
+      batch.stop = choice;
+      cancelDecoding();
+      this.#analysis.cancel();
+    }
+    batch.gate = null;
+    release();
+  }
+
+  /** Relinks files one after another as one batch. */
+  async #relinkAll(files: readonly File[]): Promise<void> {
+    if (files.length === 0) return;
+    this.#beginBatch(files, 'Relink', 'Relinking');
+    try {
+      for (const [index, file] of files.entries()) {
+        if (this.#batchStopped()) break;
+        this.#nextFile(index, file);
+        await this.#relink(file);
+      }
+    } finally {
+      this.#endBatch();
+    }
+  }
+
   /** When the last refused edit was reported, from `performance.now()`. */
   #refusedAt = -Infinity;
 
@@ -542,7 +670,7 @@ class AxysWorkspace implements Workspace {
     }
     // The link that asked took its toast away, so a cancelled picker puts it back.
     if (files.length === 0) this.#askForMissing();
-    for (const file of files) await this.#relink(file);
+    await this.#relinkAll(files);
   }
 
   pasteClips(parts: readonly ClipPart[], at: number, mode: PasteMode = 'overlap'): void {
@@ -643,7 +771,7 @@ class AxysWorkspace implements Workspace {
     const [first, ...rest] = files;
     if (first === undefined) return;
     if (this.#hasMissing()) {
-      for (const file of files) await this.#relink(file);
+      await this.#relinkAll(files);
       return;
     }
     if (ask && !(await this.#mayReplaceProject())) return;
@@ -657,13 +785,20 @@ class AxysWorkspace implements Workspace {
       askRole: false,
       fresh: true,
       importVocals: async (params) => {
-        if (!(await this.#startProject(first, params))) return null;
-        clips.push(0);
-        for (const file of rest) {
-          const added = await this.importClipFile(file, undefined, 'free', params);
-          if (added !== null) clips.push(added.clip);
+        this.#beginBatch(files, 'Import', 'Importing');
+        try {
+          if (!(await this.#startProject(first, params))) return null;
+          clips.push(0);
+          for (const [index, file] of rest.entries()) {
+            if (this.#batchStopped()) break;
+            this.#nextFile(index + 1, file);
+            const added = await this.importClipFile(file, undefined, 'free', params);
+            if (added !== null) clips.push(added.clip);
+          }
+          return this.#outcome(clips);
+        } finally {
+          this.#endBatch();
         }
-        return this.#outcome(clips);
       },
       importReferences: () => Promise.resolve(),
       analyse: (params) => this.#reanalyseClips(clips, params),
@@ -681,11 +816,15 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return false;
     }
-    this.#progress('Decode Audio', 0.05);
+    this.#progress('Decode Audio', 0);
     this.#importing = true;
     try {
-      const decoded = await decodeAudioFile(file);
+      const decoded = await decodeAudioFile(file, undefined, (done) => {
+        this.#progress('Decode Audio', done * DECODE_SHARE);
+      });
+      await this.#checkpoint();
       const analysed = await this.#analyse(decoded.mono, decoded.sampleRate, decoded.name, params);
+      await this.#checkpoint();
       const session = this.#core.openSessionFromAnalysis({
         samples: analysed.samples,
         sampleRate: analysed.sampleRate,
@@ -729,6 +868,7 @@ class AxysWorkspace implements Workspace {
           rate,
           entry.source.name,
           params,
+          0,
         );
         session.reanalyse(clip, {
           trackJson: analysed.trackJson,
@@ -800,11 +940,14 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return null;
     }
-    this.#progress('Decode Audio', 0.05);
+    this.#progress('Decode Audio', 0);
     this.#importing = true;
     try {
       const rate = session.sampleRate();
-      const decoded = await decodeAudioFile(file, rate);
+      const decoded = await decodeAudioFile(file, rate, (done) => {
+        this.#progress('Decode Audio', done * DECODE_SHARE);
+      });
+      await this.#checkpoint();
       const edits = this.#store.state.edits;
       const spans = (edits?.clips ?? []).map((clip): [number, number] => [
         clipStart(clip),
@@ -826,6 +969,7 @@ class AxysWorkspace implements Workspace {
       });
       this.#reveal(at);
       const analysed = await this.#analyse(decoded.mono, rate, decoded.name, params);
+      await this.#checkpoint();
       const clip = session.addClip({
         samples: analysed.samples,
         name: analysed.name,
@@ -886,7 +1030,7 @@ class AxysWorkspace implements Workspace {
    */
   async dropAudio(files: readonly File[], position: number | null, ripple = false): Promise<void> {
     if (this.#hasMissing()) {
-      for (const file of files) await this.#relink(file);
+      await this.#relinkAll(files);
       return;
     }
     const clips: ClipId[] = [];
@@ -894,24 +1038,40 @@ class AxysWorkspace implements Workspace {
       what: describeFiles(files),
       askRole: true,
       importVocals: async (params) => {
-        let next = position;
-        for (const file of files) {
-          let added: { clip: ClipId; end: number } | null;
-          if (position !== null && !ripple) {
-            added = await this.importClipFile(file, position, 'exact', params);
-          } else if (next !== null) {
-            added = await this.importClipFile(file, next, 'ripple', params);
-          } else {
-            added = await this.importClipFile(file, undefined, 'free', params);
+        this.#beginBatch(files, 'Import', 'Importing');
+        try {
+          let next = position;
+          for (const [index, file] of files.entries()) {
+            if (this.#batchStopped()) break;
+            this.#nextFile(index, file);
+            let added: { clip: ClipId; end: number } | null;
+            if (position !== null && !ripple) {
+              added = await this.importClipFile(file, position, 'exact', params);
+            } else if (next !== null) {
+              added = await this.importClipFile(file, next, 'ripple', params);
+            } else {
+              added = await this.importClipFile(file, undefined, 'free', params);
+            }
+            if (added === null) continue;
+            clips.push(added.clip);
+            if (position === null || ripple) next = added.end;
           }
-          if (added === null) continue;
-          clips.push(added.clip);
-          if (position === null || ripple) next = added.end;
+          return clips.length > 0 ? this.#outcome(clips) : null;
+        } finally {
+          this.#endBatch();
         }
-        return clips.length > 0 ? this.#outcome(clips) : null;
       },
       importReferences: async () => {
-        for (const file of files) await this.importReferenceFile(file, position ?? 0);
+        this.#beginBatch(files, 'Import', 'Importing');
+        try {
+          for (const [index, file] of files.entries()) {
+            if (this.#batchStopped()) break;
+            this.#nextFile(index, file);
+            await this.importReferenceFile(file, position ?? 0);
+          }
+        } finally {
+          this.#endBatch();
+        }
       },
       analyse: (params) => this.#reanalyseClips(clips, params),
       cancel: () => {
@@ -975,11 +1135,14 @@ class AxysWorkspace implements Workspace {
       this.#toast.warn('An import is already running');
       return;
     }
-    this.#progress('Decode Audio', 0.1);
+    this.#progress('Decode Audio', 0);
     this.#importing = true;
     try {
       const rate = session.sampleRate();
-      const decoded = await decodeAudioFile(file, rate);
+      const decoded = await decodeAudioFile(file, rate, (done) => {
+        this.#progress('Decode Audio', done);
+      });
+      await this.#checkpoint();
       const channels = stereoOf(decoded.channelData);
       const source: SourceInfo = {
         name: decoded.name,
@@ -1003,7 +1166,7 @@ class AxysWorkspace implements Workspace {
       void this.#cacheReference(source, channels);
       this.#toast.info(`Imported ${sourceTitle(file.name)} as a reference`);
     } catch (error) {
-      this.#fail('Import Reference', error);
+      this.#importFailed('Import Reference', error);
     } finally {
       this.#importing = false;
     }
@@ -1024,12 +1187,17 @@ class AxysWorkspace implements Workspace {
     );
   }
 
-  /** Runs the analysis worker over mono audio, reporting its stages as import progress. */
+  /**
+   * Runs the analysis worker over mono audio, reporting its stages as import progress.
+   *
+   * @remarks `from` is the share of the file's progress already done before analysis starts.
+   */
   async #analyse(
     samples: Float32Array,
     sampleRate: number,
     name: string,
     f0: F0Params,
+    from = DECODE_SHARE,
   ): Promise<{
     samples: Float32Array;
     sampleRate: number;
@@ -1040,7 +1208,8 @@ class AxysWorkspace implements Workspace {
     const result = await this.#analysis.analyse(
       { samples, sampleRate, name, f0 },
       (stage, progress) => {
-        this.#progress(stage, progress);
+        // A stage that reports nothing stays unknown rather than pinned where decoding ended.
+        this.#progress(stage, progress === 0 ? 0 : from + (1 - from) * progress);
       },
     );
     this.#lastThreshold = result.threshold;
@@ -1058,8 +1227,14 @@ class AxysWorkspace implements Workspace {
   }
 
   cancelImport(): void {
-    if (!this.#importing) return;
-    this.#analysis.cancel();
+    if (this.#batch) {
+      void this.#askToCancel();
+    } else if (this.#exporting) {
+      this.#render.cancel();
+    } else if (this.#importing) {
+      cancelDecoding();
+      this.#analysis.cancel();
+    }
   }
 
   /**
@@ -1311,7 +1486,8 @@ class AxysWorkspace implements Workspace {
       this.#toast.error(`Relink ${unlinked.source.name} to export references`);
       return;
     }
-    this.#progress('Export WAV', 0.02);
+    this.#exporting = true;
+    this.#progress('Export WAV', 0, 'Cancel Export');
     try {
       const clips = session
         .media()
@@ -1334,9 +1510,11 @@ class AxysWorkspace implements Workspace {
           sampleRate: choice.sampleRate,
         },
         (stage, progress) => {
-          this.#progress(stage, progress);
+          this.#progress(stage, progress, 'Cancel Export');
         },
       );
+      this.#exporting = false;
+      this.#idle();
       await saveFileAs(toBytes(encoded.bytes), `${this.projectName}.wav`, EXPORT_KIND, 'audio/wav');
       if (encoded.report.clippedSamples > 0) {
         this.#toast.warn(
@@ -1348,8 +1526,13 @@ class AxysWorkspace implements Workspace {
         );
       }
     } catch (error) {
-      this.#fail('Export WAV', error);
+      if (error instanceof WorkerCancelled) {
+        this.#toast.info('Export cancelled');
+      } else {
+        this.#fail('Export WAV', error);
+      }
     } finally {
+      this.#exporting = false;
       this.#idle();
     }
   }
@@ -1477,12 +1660,15 @@ class AxysWorkspace implements Workspace {
     id: string | null,
     preloaded?: ReadonlyMap<string, Float32Array>,
   ): Promise<void> {
-    this.#progress('Open Project', 0.3);
+    this.#progress('Open Project', 0);
     const session = this.#core.openSession(json);
     const references = new Map<ReferenceId, Float32Array[]>();
     const missing: MissingMedia = { clips: [], references: [] };
     const media = session.media();
+    const count = Math.max(1, media.clips.length + media.references.length);
+    let read = 0;
     for (const entry of media.clips) {
+      this.#progress('Open Project', read++ / count);
       const samples =
         preloaded?.get(entry.source.fingerprint) ??
         (await this.#readMedia(entry.source.fingerprint));
@@ -1502,6 +1688,7 @@ class AxysWorkspace implements Workspace {
       }
     }
     for (const reference of media.references) {
+      this.#progress('Open Project', read++ / count);
       const key = referenceKey(reference.source.fingerprint);
       const stored = preloaded?.get(key) ?? (await this.#readMedia(key));
       if (stored === null) {
@@ -1604,13 +1791,20 @@ class AxysWorkspace implements Workspace {
   async #decodeForRelink(file: File): Promise<DecodedSource | null> {
     const session = this.#session;
     if (!session) return null;
-    this.#progress('Relink Audio', 0.2);
+    this.#progress('Relink Audio', 0);
     try {
-      const decoded = await decodeAudioFile(file, session.sampleRate());
+      const decoded = await decodeAudioFile(file, session.sampleRate(), (done) => {
+        this.#progress('Relink Audio', done);
+      });
       this.#idle();
+      await this.#checkpoint();
       return decoded;
     } catch (error) {
-      this.#fail('Relink Audio', error);
+      if (error instanceof WorkerCancelled) {
+        this.#idle();
+      } else {
+        this.#fail('Relink Audio', error);
+      }
       return null;
     }
   }
@@ -2124,11 +2318,34 @@ class AxysWorkspace implements Workspace {
     }
   }
 
-  #progress(stage: string, progress: number): void {
+  /**
+   * Covers the editor with work in progress.
+   *
+   * @remarks `progress` is the current file's fraction, 0 while unknown. A batch adds which file
+   * it is and how many there are, and its own cancel. `cancel` labels the cover's cancel button
+   * for work outside a batch; without one the cover offers none.
+   */
+  #progress(stage: string, progress: number, cancel?: string): void {
+    const batch = this.#batch;
     this.#store.update({
       phase: this.#session ? this.#store.state.phase : 'loading',
-      analysis: { running: true, progress, stage },
+      analysis: {
+        running: true,
+        progress,
+        stage,
+        ...(batch
+          ? {
+              file: batch.file,
+              index: batch.index,
+              total: batch.total,
+              cancel: `Cancel ${batch.noun}`,
+            }
+          : cancel === undefined
+            ? {}
+            : { cancel }),
+      },
     });
+    this.#showBatch(progress);
   }
 
   #idle(): void {

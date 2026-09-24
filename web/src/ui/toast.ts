@@ -8,6 +8,7 @@
 
 import { button } from './controls/index.js';
 import { animateOut } from './motion.js';
+import { ProgressBar } from './progress.js';
 import { setTooltip } from './tooltip.js';
 
 /** Severity of a notification. */
@@ -24,6 +25,12 @@ export interface ToastLink {
 export interface Toast {
   /** Removes the notification immediately. */
   dismiss(): void;
+}
+
+/** A notification following work in progress, on screen until the work ends. */
+export interface ProgressToast extends Toast {
+  /** Replaces the message and the fraction done, 0 to 1, or `null` while it is unknown. */
+  update(message: string, progress: number | null): void;
 }
 
 /**
@@ -68,6 +75,8 @@ export class ToastHost {
   /** Each toast's countdown, drawn as the line along its foot; the toast leaves when it ends. */
   readonly #countdowns = new Map<HTMLElement, Animation | null>();
   readonly #messages = new Map<HTMLElement, string>();
+  /** Toasts following work in progress. */
+  readonly #working = new Set<HTMLElement>();
   #hovered = false;
   #focused = false;
   #paused = false;
@@ -117,6 +126,40 @@ export class ToastHost {
   /** Reports a failure that stopped what the user asked for. */
   error(message: string, link?: ToastLink): Toast {
     return this.#push('error', message, link);
+  }
+
+  /**
+   * Follows work in progress, with a bar and a button that asks to stop it.
+   *
+   * @remarks There is no dismiss button: the toast goes when the work ends. `onCancel` runs
+   * from the button and decides what stopping means.
+   */
+  progress(message: string, cancelLabel: string, onCancel: () => void): ProgressToast {
+    const toast = document.createElement('div');
+    toast.className = 'axys-toast is-info is-working';
+    toast.setAttribute('role', 'status');
+    const text = document.createElement('span');
+    text.className = 'axys-toast-text';
+    text.textContent = message;
+    const cancel = button({ icon: 'delete', label: cancelLabel, onPress: onCancel });
+    const bar = new ProgressBar(cancelLabel);
+    bar.element.classList.add('axys-toast-progress');
+    toast.append(text, cancel, bar.element);
+    this.#element.append(toast);
+    this.#working.add(toast);
+    this.#countdowns.set(toast, null);
+    this.#messages.set(toast, message);
+    return {
+      update: (next, progress) => {
+        if (text.textContent !== next) text.textContent = next;
+        this.#messages.set(toast, next);
+        bar.set(progress !== null && progress > 0 ? progress : null);
+      },
+      dismiss: () => {
+        this.#working.delete(toast);
+        this.#remove(toast);
+      },
+    };
   }
 
   /** Removes every notification on screen. */
@@ -202,8 +245,9 @@ export class ToastHost {
     toast.append(copy, close);
 
     this.#element.append(toast);
-    // Toasts still playing their exit are on their way out and do not count.
-    const staying = [...this.#countdowns.keys()];
+    // Toasts still playing their exit are on their way out and do not count, and one following
+    // work stays for as long as the work does.
+    const staying = [...this.#countdowns.keys()].filter((entry) => !this.#working.has(entry));
     for (const oldest of staying.slice(0, Math.max(0, staying.length + 1 - MAX_STACK))) {
       this.#remove(oldest);
     }
@@ -262,6 +306,7 @@ export class ToastHost {
   }
 
   #remove(toast: HTMLElement): void {
+    this.#working.delete(toast);
     if (!this.#countdowns.has(toast)) return;
     this.#countdowns.get(toast)?.pause();
     this.#countdowns.delete(toast);

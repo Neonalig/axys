@@ -47,7 +47,7 @@ export interface AppState {
   selection: Selection;
   tool: ToolId;
   transport: TransportState;
-  analysis: { running: boolean; progress: number; stage: string };
+  analysis: WorkProgress;
   /** Whether the view scrolls to keep the playhead in sight. Panning the view clears it. */
   follow: boolean;
   /** How the view keeps up while following. */
@@ -73,6 +73,23 @@ export interface AppState {
   /** Clips and references whose audio is missing until relinked. */
   offline: OfflineMedia;
   dirty: boolean;
+}
+
+/**
+ * Long-running work the editor is covered by, such as an import.
+ *
+ * @remarks `progress` is the current item's fraction done, 0 while it is unknown. A batch of
+ * files names the one being worked on in `file` and counts them with `index`, from 0, and
+ * `total`. `cancel` labels the button that stops the work, or is absent where it cannot stop.
+ */
+export interface WorkProgress {
+  running: boolean;
+  progress: number;
+  stage: string;
+  file?: string;
+  index?: number;
+  total?: number;
+  cancel?: string;
 }
 
 /** Sources whose audio is missing. */
