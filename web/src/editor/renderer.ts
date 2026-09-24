@@ -44,6 +44,9 @@ const GHOST_ALPHA = 0.55;
 /** Opacity of what the edit mode does not edit. */
 const DISABLED_ALPHA = 0.35;
 
+/** Opacity of the kept pitch lines while a new one is being drawn. */
+const DRAWING_STROKE_ALPHA = 0.45;
+
 /** Opacity of the clips outside the editor's layer, per way of showing them. */
 const OTHERS_ALPHA = { show: 0.5, dim: 0.2 } as const;
 
@@ -233,6 +236,8 @@ export class EditorRenderer {
       hover === null ? null : { blob: hover.id, elapsed: performance.now() - hover.since };
     const preview = this.#preview;
     const dragged = preview?.kind === 'clipDrag' ? this.#splitFor(state, preview.clip) : null;
+    // While a line is being drawn the lines already kept step back, so the new one stands out.
+    const drawing = preview?.kind === 'curve' || preview?.kind === 'bezier';
     const pointer = this.#hover;
     // The reference name tab under the pointer is drawn faint, so the waveform shows through it.
     const hoveredTitle =
@@ -244,6 +249,7 @@ export class EditorRenderer {
       this.#scrolling && marquee !== null ? marquee.elapsed : 0,
       dragged === null ? -1 : dragged.clip,
       hoveredTitle,
+      drawing ? 1 : 0,
     ]);
     if (this.#baseKey !== null && sameBaseKey(this.#baseKey, key)) {
       return base;
@@ -281,7 +287,7 @@ export class EditorRenderer {
       this.invalidate();
     }
     this.#faint(ctx, pitchAlpha, (layer) => {
-      drawPitch(layer, state, viewport, theme);
+      drawPitch(layer, state, viewport, theme, drawing ? DRAWING_STROKE_ALPHA : 1);
     });
     drawPitchLabels(ctx, state, viewport, theme);
     drawRuler(ctx, state, viewport, theme);
